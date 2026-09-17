@@ -1,0 +1,3 @@
+모델,금액,통화,단위,포장수량,세금,가격종류,유효기한,가격기준
+TEST-A,11000,KRW,개,10,VAT excluded,quotation,2099-12-31,pack
+TEST-B,,KRW,개,1,VAT excluded,quotation,2099-12-31,pack
