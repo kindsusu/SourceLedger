@@ -8,6 +8,14 @@ SourceLedger는 출처를 탐색하고 상품 가격과 원문·근거를 보존
 
 수집 결과에는 원본 URL, 수집 시각(UTC), 원문 필드, CSS/JSON/표 위치, 증거 파일 경로와 SHA-256을 남깁니다. 상품·가격·통화가 원문 근거와 함께 확인된 행은 `verified`가 될 수 있습니다. 비교 조건이 부족하면 `verified`여도 `comparable=false`이며 가격 비교에는 넣지 않습니다. 특히 묶음(pack)인지 개별(each)인지 원문 `price_basis` 근거가 없으면 정규화 단가를 계산하지 않고 빈칸으로 남깁니다.
 
+## 동작 구조
+
+[![SourceLedger 수집 구조](docs/architecture/sourceledger.png)](docs/ARCHITECTURE.ko.md)
+
+범위와 한도가 정해진 에이전트가 출처 후보에서 추출 규칙을 제안하고, 새 원문을 수집해 검증한 관측을 SQLite에 기록한 뒤 XLSX 보고서를 만듭니다. 없는 값은 채우지 않습니다. 선택적 검색·모델 보조·활성화에는 명시적인 조건을 적용합니다.
+
+코드에 근거한 흐름과 스킬 설치·재생성 방법은 [구조 및 Archify 안내](docs/ARCHITECTURE.ko.md) ([English](docs/ARCHITECTURE.md))에 정리했습니다. [인터랙티브 HTML](docs/architecture/sourceledger.html)을 다운로드해 로컬 브라우저에서 열면 됩니다. GitHub는 뷰어 실행 대신 소스를 표시합니다. [Archify](https://github.com/tt-a1i/archify)는 이 구조도를 만드는 문서화 도구입니다.
+
 ## 빠른 시작
 
 Python 3.11 이상 환경에서 설치합니다.

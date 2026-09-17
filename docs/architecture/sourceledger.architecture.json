@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "SourceLedger Architecture",
+    "locale": "en",
+    "output": "sourceledger.html",
+    "quality_profile": "showcase",
+    "viewBox": [920, 470]
+  },
+  "components": [
+    {
+      "id": "operator-cli",
+      "type": "frontend",
+      "label": "Operator CLI",
+      "sublabel": "setup, research, collect",
+      "pos": [20, 200],
+      "size": [140, 72]
+    },
+    {
+      "id": "research-brief",
+      "type": "backend",
+      "label": "Research Brief",
+      "sublabel": "industry · product · market",
+      "pos": [190, 200],
+      "size": [150, 72]
+    },
+    {
+      "id": "optional-search",
+      "type": "external",
+      "label": "Optional Search",
+      "sublabel": "configured SearXNG",
+      "tag": "opt-in",
+      "pos": [370, 20],
+      "size": [170, 72]
+    },
+    {
+      "id": "bounded-agent",
+      "type": "backend",
+      "label": "Bounded Research Agent",
+      "sublabel": "scope · budgets · resume",
+      "pos": [370, 200],
+      "size": [170, 72]
+    },
+    {
+      "id": "proposal-recipes",
+      "type": "database",
+      "label": "Extraction Proposals",
+      "sublabel": "review-only candidates",
+      "tag": "not verified prices",
+      "pos": [570, 20],
+      "size": [170, 76]
+    },
+    {
+      "id": "source-web",
+      "type": "external",
+      "label": "Authorized Sources",
+      "sublabel": "pages · local files",
+      "pos": [570, 380],
+      "size": [170, 72]
+    },
+    {
+      "id": "collection-pipeline",
+      "type": "backend",
+      "label": "Collection Pipeline",
+      "sublabel": "fetch · extract · validate",
+      "pos": [570, 200],
+      "size": [170, 72]
+    },
+    {
+      "id": "evidence-files",
+      "type": "database",
+      "label": "Evidence Files",
+      "sublabel": "raw bytes · SHA-256",
+      "pos": [780, 20],
+      "size": [140, 72]
+    },
+    {
+      "id": "sqlite-ledger",
+      "type": "database",
+      "label": "SQLite Ledger",
+      "sublabel": "system of record",
+      "pos": [780, 200],
+      "size": [140, 72]
+    },
+    {
+      "id": "xlsx-report",
+      "type": "frontend",
+      "label": "XLSX Report",
+      "sublabel": "human-readable output",
+      "pos": [780, 380],
+      "size": [140, 72]
+    }
+  ],
+  "connections": [
+    {
+      "id": "cli-defines-brief",
+      "from": "operator-cli",
+      "to": "research-brief",
+      "label": "defines scope",
+      "labelDy": -42,
+      "variant": "emphasis"
+    },
+    {
+      "id": "brief-starts-agent",
+      "from": "research-brief",
+      "to": "bounded-agent",
+      "label": "starts bounded run",
+      "labelDy": -42,
+      "variant": "emphasis"
+    },
+    {
+      "id": "search-supplies-results",
+      "from": "optional-search",
+      "to": "bounded-agent",
+      "label": "candidate results",
+      "labelDy": 90,
+      "fromSide": "bottom",
+      "toSide": "top",
+      "variant": "dashed"
+    },
+    {
+      "id": "agent-proposes-recipes",
+      "from": "bounded-agent",
+      "to": "proposal-recipes",
+      "label": "proposes selectors",
+      "labelAt": [555, 110],
+      "variant": "dashed"
+    },
+    {
+      "id": "agent-runs-collection",
+      "from": "bounded-agent",
+      "to": "collection-pipeline",
+      "label": "fresh collection",
+      "labelDy": 54,
+      "variant": "emphasis"
+    },
+    {
+      "id": "proposals-feed-collection",
+      "from": "proposal-recipes",
+      "to": "collection-pipeline",
+      "label": "candidate selectors",
+      "labelDy": 32,
+      "variant": "dashed"
+    },
+    {
+      "id": "sources-feed-pipeline",
+      "from": "source-web",
+      "to": "collection-pipeline",
+      "label": "source responses",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "pipeline-saves-evidence",
+      "from": "collection-pipeline",
+      "to": "evidence-files",
+      "label": "preserves evidence"
+    },
+    {
+      "id": "pipeline-writes-ledger",
+      "from": "collection-pipeline",
+      "to": "sqlite-ledger",
+      "label": "observations + status",
+      "labelDy": 54,
+      "variant": "emphasis"
+    },
+    {
+      "id": "ledger-exports-report",
+      "from": "sqlite-ledger",
+      "to": "xlsx-report",
+      "label": "exports report",
+      "labelAt": [850, 326],
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Trust boundary",
+      "items": [
+        "Search results and proposed recipes are candidates, not verified commercial observations.",
+        "Fresh collection validates fields; missing fields and failed sources remain visible."
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Optional capabilities",
+      "items": [
+        "SearXNG is optional; Ollama may assist selector proposals only.",
+        "Automatic agent activation needs explicit --activate and known samples; manual collection does not."
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Alternate entry point",
+      "items": [
+        "MCP dispatches collection to an independent worker that uses the same pipeline.",
+        "MCP reads ledger records and reports; it does not control the research agent."
+      ]
+    }
+  ]
+}
