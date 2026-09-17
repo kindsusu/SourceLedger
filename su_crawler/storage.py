@@ -32,7 +32,7 @@ def workspace_lock(directory: Path):
                 import fcntl
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise RunBusyError("같은 출력 폴더에서 수집이 이미 실행 중입니다") from exc
+            raise RunBusyError("Collection is already running in this output directory") from exc
         yield
     finally:
         handle.close()
@@ -75,7 +75,7 @@ class Store:
     def run(self, run_id: str) -> dict:
         row = self.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if row is None:
-            raise ValueError("존재하지 않는 실행 ID입니다")
+            raise ValueError("Run ID does not exist")
         return dict(row)
 
     def tasks(self, run_id: str) -> list[dict]:

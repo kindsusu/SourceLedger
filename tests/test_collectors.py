@@ -77,7 +77,7 @@ def test_public_source_cannot_reach_private_address(tmp_path):
     with server() as url:
         result = collect(source(url + "/ok", internal=False), str(tmp_path), "http")
     assert result.status == "policy_denied"
-    assert "정책" in result.message
+    assert "policy" in result.message
 
 
 def test_internal_source_rejects_link_local_and_special_addresses(monkeypatch, tmp_path):
@@ -121,11 +121,11 @@ def test_robots_policy(tmp_path):
 
 
 def test_robots_fetch_failure_is_not_reported_as_explicit_denial(monkeypatch, tmp_path):
-    monkeypatch.setattr("su_crawler.collectors._robots_decision", lambda *args: ("unavailable", "robots.txt 확인 실패"))
+    monkeypatch.setattr("su_crawler.collectors._robots_decision", lambda *args: ("unavailable", "Unable to check robots.txt"))
     with server() as url:
         result = collect(source(url + "/ok", internal=True, robots=True), str(tmp_path), "http")
     assert result.status == "failed"
-    assert result.message == "robots.txt 확인 실패"
+    assert result.message == "Unable to check robots.txt"
 
 
 def test_file_stays_within_base_directory(tmp_path):

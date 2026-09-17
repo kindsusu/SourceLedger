@@ -1,0 +1,7 @@
+{
+  "schema": "source-ledger/known-samples/v1",
+  "samples": [
+    {"source_id": "catalog", "product_id": "demo_a", "price": "12000", "currency": "KRW"},
+    {"source_id": "quotation", "product_id": "demo_a", "price": "11000", "currency": "KRW"}
+  ]
+}

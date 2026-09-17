@@ -130,6 +130,6 @@ def test_mcp_refuses_queue_without_worker(tmp_path):
     path.write_text(json.dumps(config), encoding="utf-8")
     server = build_server(path)
     import pytest
-    with pytest.raises(Exception, match="독립 작업자"):
+    with pytest.raises(Exception, match="independent worker"):
         asyncio.run(server.call_tool("start_collection", {}))
     assert not list((tmp_path / "output/dispatch").glob("*.json"))

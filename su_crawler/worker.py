@@ -60,7 +60,7 @@ def listen(config_path: Path, *, idle_timeout: float = 0):
                         continue
                     run_id = path.stem
                     if not re.fullmatch(r"[a-f0-9]{32}", run_id) or receipt.get("config_hash") != fingerprint:
-                        atomic_json(path, {**receipt, "status": "failed", "reason": "실행 ID 또는 설정 불일치"})
+                        atomic_json(path, {**receipt, "status": "failed", "reason": "Run ID or configuration does not match"})
                         continue
                     state.update(status="working", run_id=run_id)
                     atomic_json(path, {**receipt, "status": "starting", "at": utc_now()})

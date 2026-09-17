@@ -16,7 +16,7 @@ import xlsxwriter
 from .models import CollectionConfig
 
 
-SHEETS = ("실행 요약", "수집 현황", "가격 비교", "관측 이력", "출처 근거", "검토 필요")
+SHEETS = ("Run Summary", "Collection Status", "Price Comparison", "Observation History", "Source Evidence", "Review Required")
 
 
 def _text(value: Any) -> str:
@@ -100,7 +100,7 @@ def _write_value(ws: Any, row: int, col: int, value: Any, text_fmt: Any | None =
 def _setup_sheet(ws: Any, headers: list[str], formats: dict[str, Any], demo: bool) -> int:
     start = 0
     if demo:
-        ws.merge_range(0, 0, 0, max(0, len(headers) - 1), "테스트 자료 — 실제 시장가격 아님", formats["banner"])
+        ws.merge_range(0, 0, 0, max(0, len(headers) - 1), "Demo data — not market prices", formats["banner"])
         start = 1
     for col, header in enumerate(headers):
         ws.write(start, col, header, formats["header"])
@@ -151,8 +151,8 @@ def export_report(
             if product_id in by_product and (product_id, source.id) not in task_keys:
                 coverage_rows.append({
                     "id": "", "product_id": product_id, "source_id": source.id,
-                    "status": "계획 누락", "attempts": None,
-                    "reason": "계획된 제품·출처 조합에 수집 작업이 없습니다.",
+                    "status": "not_planned", "attempts": None,
+                    "reason": "No collection task exists for the planned product-source combination.",
                     "backend": "", "updated_at": "",
                 })
 
@@ -172,17 +172,17 @@ def export_report(
         }
 
         # 1. Run summary
-        ws = wb.add_worksheet(SHEETS[0]); row = _setup_sheet(ws, ["항목", "값"], fmts, demo)
-        summary = [("실행 ID", run.get("id")), ("상태", run.get("status")), ("시작 시각 (UTC)", _utc(run.get("started_at"))),
-                   ("종료 시각 (UTC)", _utc(run.get("finished_at"))), ("테스트 자료", "예" if demo else "아니오"),
-                   ("계획 수집 작업", len(coverage_rows)), ("관측 수", len(observations)), ("제품 수", len(config.products)), ("출처 수", len(config.sources))]
+        ws = wb.add_worksheet(SHEETS[0]); row = _setup_sheet(ws, ["Field", "Value"], fmts, demo)
+        summary = [("Run ID", run.get("id")), ("Status", run.get("status")), ("Started at (UTC)", _utc(run.get("started_at"))),
+                   ("Finished at (UTC)", _utc(run.get("finished_at"))), ("Demo data", "Yes" if demo else "No"),
+                   ("Planned collection tasks", len(coverage_rows)), ("Observations", len(observations)), ("Products", len(config.products)), ("Sources", len(config.sources))]
         for key, value in summary:
             _write_value(ws, row, 0, key, fmts["text"]); _write_value(ws, row, 1, value, fmts["text"]); row += 1
         ws.set_column(0, 0, 24); ws.set_column(1, 1, 48)
         _finish_sheet(ws, 1 if demo else 0, row, 1)
 
         # 2. Planned coverage and task outcomes (never drop missing work).
-        ws = wb.add_worksheet(SHEETS[1]); row = _setup_sheet(ws, ["작업 ID", "제품", "출처", "상태", "시도", "사유", "백엔드", "갱신 시각 (UTC)"], fmts, demo)
+        ws = wb.add_worksheet(SHEETS[1]); row = _setup_sheet(ws, ["Task ID", "Product", "Source", "Status", "Attempts", "Reason", "Backend", "Updated at (UTC)"], fmts, demo)
         for task in coverage_rows:
             values = [task.get("id"), by_product.get(task.get("product_id"), None).name if task.get("product_id") in by_product else task.get("product_id"),
                       by_source.get(task.get("source_id"), None).name if task.get("source_id") in by_source else task.get("source_id"), task.get("status"), task.get("attempts"), task.get("reason"), task.get("backend"), task.get("updated_at")]
@@ -196,7 +196,7 @@ def export_report(
         _finish_sheet(ws, 1 if demo else 0, row, 7)
 
         # 3. Only verified, fresh, explicitly comparable observations.
-        ws = wb.add_worksheet(SHEETS[2]); row = _setup_sheet(ws, ["비교 키", "제품 ID", "제품", "출처", "가격", "가격 원문", "정규화 금액", "계산식", "통화", "단위", "포장 수량", "수집 시각 (UTC)", "근거 URL", "그룹 수", "최저", "최고", "중앙값"], fmts, demo)
+        ws = wb.add_worksheet(SHEETS[2]); row = _setup_sheet(ws, ["Comparison Key", "Product ID", "Product", "Source", "Price", "Raw Price", "Normalized Amount", "Calculation", "Currency", "Unit", "Pack Quantity", "Collected at (UTC)", "Evidence URL", "Group Count", "Minimum", "Maximum", "Median"], fmts, demo)
         comparable = [o for o in observations if o.get("comparable") is True and o.get("status") == "verified" and o.get("freshness") == "observed" and _decimal(o.get("amount")) is not None and o.get("comparison_key")]
         # One latest verified observation per (comparison key, product, source).
         latest: dict[tuple[str, str, str], dict[str, Any]] = {}
@@ -224,7 +224,7 @@ def export_report(
         _finish_sheet(ws, 1 if demo else 0, row, 16)
 
         # 4. Full raw observation history, including unavailable/review rows.
-        ws = wb.add_worksheet(SHEETS[3]); row = _setup_sheet(ws, ["관측 ID", "작업 ID", "제품", "출처", "상태", "사유", "수집 시각 (UTC)", "금액", "금액 원문", "정규화 금액", "계산식", "통화", "단위", "비교 가능", "신선도", "추출 방식", "원문 필드 JSON"], fmts, demo)
+        ws = wb.add_worksheet(SHEETS[3]); row = _setup_sheet(ws, ["Observation ID", "Task ID", "Product", "Source", "Status", "Reason", "Collected at (UTC)", "Amount", "Raw Amount", "Normalized Amount", "Calculation", "Currency", "Unit", "Comparable", "Freshness", "Extraction Method", "Raw Fields JSON"], fmts, demo)
         for obs in observations:
             values = [obs.get("id"), obs.get("task_id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), obs.get("reason"), obs.get("collected_at"), obs.get("amount") if obs.get("status") == "verified" else None, _raw_price(obs), obs.get("normalized_amount"), obs.get("calculation"), obs.get("currency"), obs.get("unit"), obs.get("comparable"), obs.get("freshness"), obs.get("extraction_method"), obs.get("raw_fields")]
             for col, value in enumerate(values):
@@ -237,7 +237,7 @@ def export_report(
         _finish_sheet(ws, 1 if demo else 0, row, 16)
 
         # 5. One row per observation with locator, raw evidence and hash/file reference.
-        ws = wb.add_worksheet(SHEETS[4]); row = _setup_sheet(ws, ["관측 ID", "제품", "출처", "원본 URL", "근거 파일", "SHA-256", "로케이터", "추출 방식", "필드 근거 JSON", "원문 필드 JSON"], fmts, demo)
+        ws = wb.add_worksheet(SHEETS[4]); row = _setup_sheet(ws, ["Observation ID", "Product", "Source", "Source URL", "Evidence File", "SHA-256", "Locator", "Extraction Method", "Field Evidence JSON", "Raw Fields JSON"], fmts, demo)
         for obs in observations:
             values = [obs.get("id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("source_url"), obs.get("evidence_path"), obs.get("evidence_sha256"), obs.get("locator"), obs.get("extraction_method"), obs.get("evidence"), obs.get("raw_fields")]
             for col, value in enumerate(values):
@@ -248,17 +248,17 @@ def export_report(
         _finish_sheet(ws, 1 if demo else 0, row, 9)
 
         # 6. All non-final rows needing a human, with explicit task failures too.
-        ws = wb.add_worksheet(SHEETS[5]); row = _setup_sheet(ws, ["유형", "ID", "제품", "출처", "상태", "사유", "원문 금액", "근거 URL", "갱신 시각 (UTC)"], fmts, demo)
+        ws = wb.add_worksheet(SHEETS[5]); row = _setup_sheet(ws, ["Type", "ID", "Product", "Source", "Status", "Reason", "Raw Amount", "Evidence URL", "Updated at (UTC)"], fmts, demo)
         for task in coverage_rows:
             if task.get("status") not in {"verified", "completed"}:
-                values = ["작업", task.get("id"), task.get("product_id"), task.get("source_id"), task.get("status"), task.get("reason"), None, None, task.get("updated_at")]
+                values = ["Task", task.get("id"), task.get("product_id"), task.get("source_id"), task.get("status"), task.get("reason"), None, None, task.get("updated_at")]
                 for col, value in enumerate(values):
                     if col == 8: _write_utc(ws, row, col, value, fmts["date"], fmts["text"])
                     else: _write_value(ws, row, col, value, fmts["note"] if col == 5 else fmts["text"])
                 row += 1
         for obs in observations:
             if not (obs.get("status") == "verified" and obs.get("freshness") == "observed" and obs.get("comparable") is True):
-                values = ["관측", obs.get("id"), obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), obs.get("reason"), _raw_price(obs), obs.get("source_url"), obs.get("collected_at")]
+                values = ["Observation", obs.get("id"), obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), obs.get("reason"), _raw_price(obs), obs.get("source_url"), obs.get("collected_at")]
                 for col, value in enumerate(values):
                     if col == 7 and _safe_url(value): ws.write_url(row, col, _safe_url(value), fmts["link"], _text(value))
                     elif col == 8: _write_utc(ws, row, col, value, fmts["date"], fmts["text"])

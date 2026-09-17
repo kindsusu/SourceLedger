@@ -52,7 +52,7 @@ def _conflicts(rows: list[dict]):
     for group in groups.values():
         if len({r["amount"] for r in group}) > 1:
             for row in group:
-                row.update(status="review", reason="같은 상품·조건에서 원문 가격이 상충함", amount=None,
+                row.update(status="review", reason="Source prices conflict for the same product and conditions", amount=None,
                            normalized_amount=None, comparable=False, comparison_key=None)
 
 
@@ -61,7 +61,7 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
     from .validation import _expiry
     run = store.run(run_id)
     if run["config_hash"] != config_fingerprint(config):
-        raise ValueError("원래 실행 설정과 일치하지 않습니다")
+        raise ValueError("Configuration does not match the original run")
     sources = {s.id: s for s in config.sources}
     rows = store.observations(run_id)
     now = datetime.now(timezone.utc)
@@ -69,14 +69,14 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
         try:
             captured = datetime.fromisoformat(row["collected_at"].replace("Z", "+00:00"))
             if captured.tzinfo is None or captured > now + timedelta(minutes=5):
-                row.update(freshness="unknown", comparable=False, reason=row["reason"] + "; 수집시각 확인 필요")
+                row.update(freshness="unknown", comparable=False, reason=row["reason"] + "; collection time needs review")
             elif now - captured > timedelta(hours=sources[row["source_id"]].freshness_hours):
-                row.update(freshness="stale", comparable=False, reason=row["reason"] + "; 재확인 기한 초과")
+                row.update(freshness="stale", comparable=False, reason=row["reason"] + "; revalidation deadline exceeded")
         except (ValueError, KeyError):
             row.update(freshness="unknown", comparable=False)
         expired, expiry_problem = _expiry(row.get("raw_fields", {}).get("valid_to"), now.isoformat())
         if expired or expiry_problem:
-            row.update(comparable=False, reason=row["reason"] + "; 보고서 시점 유효기한 만료 또는 확인 필요")
+            row.update(comparable=False, reason=row["reason"] + "; validity date at report time expired or needs review")
     path = Path(config.output_dir) / f"{'demo-' if config.demo else ''}prices-{run_id}.xlsx"
     export_report(config, run, store.tasks(run_id), rows, path)
     with store.db:
@@ -99,11 +99,11 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
             fingerprint = config_fingerprint(config)
             run_id = resume_id or new_run_id or uuid.uuid4().hex
             if not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}", run_id):
-                raise ValueError("실행 ID 형식이 올바르지 않습니다")
+                raise ValueError("Invalid run ID format")
             if resume_id:
                 run = store.run(run_id)
                 if run["config_hash"] != fingerprint:
-                    raise ValueError("설정이 변경되어 재개할 수 없습니다. 새 실행을 시작하세요")
+                    raise ValueError("Configuration changed; start a new run instead of resuming")
                 if run["status"] in {"completed", "partial"} and run["report_path"] and Path(run["report_path"]).is_file():
                     return run
             else:
@@ -131,19 +131,19 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                     tasks = tasks[:max_tasks - processed]
                 if time.monotonic() >= deadline:
                     for task in tasks:
-                        store.update_task(task["id"], "budget_exhausted", "실행 시간 한도 도달")
+                        store.update_task(task["id"], "budget_exhausted", "Run time limit reached")
                     continue
                 backends = ["file"] if source.kind == "file" else source.backends
                 # A supplied recipe requires the browser state after the clicks.
                 if source.recipe:
                     backends = [b for b in backends if b == "playwright"] or ["playwright"]
                 best: tuple[FetchResult, list[Candidate]] | None = None
-                last = FetchResult(source.id, "failed", backends[0], message="수집하지 못함")
+                last = FetchResult(source.id, "failed", backends[0], message="Collection did not complete")
                 used = max(t["attempts"] for t in tasks)
                 max_calls = source.max_attempts * len(backends)
                 for call in range(used, max_calls):
                     if time.monotonic() >= deadline:
-                        last = FetchResult(source.id, "budget_exhausted", "none", message="실행 시간 한도 도달")
+                        last = FetchResult(source.id, "budget_exhausted", "none", message="Run time limit reached")
                         break
                     backend = backends[call % len(backends)]
                     for task in tasks:
@@ -153,7 +153,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                         last = collector(bounded, config.base_dir, backend)
                     except Exception as exc:
                         # Exception payloads can contain credential-bearing URLs; report type only.
-                        last = FetchResult(source.id, "failed", backend, message=f"수집기 오류: {type(exc).__name__}")
+                        last = FetchResult(source.id, "failed", backend, message=f"Collector error: {type(exc).__name__}")
                     with store.db:
                         store.db.execute("INSERT INTO attempts(run_id,source_id,backend,status,at,data) VALUES(?,?,?,?,?,?)",
                                          (run_id, source.id, backend, last.status, last.fetched_at,
@@ -163,7 +163,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                             candidates = extract(last, source)
                         except Exception as exc:
                             candidates = []
-                            last.message = f"추출 규칙 확인 필요: {type(exc).__name__}"
+                            last.message = f"Extraction rules need review: {type(exc).__name__}"
                         best = (last, candidates)
                         matching = [c for c in candidates if any(_matches(c, product_map[t["product_id"]]) for t in tasks)]
                         if matching and all(any(_matches(c, product_map[t["product_id"]]) for c in matching) for t in tasks):
@@ -194,7 +194,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                         else:
                             known_candidates = [c for c in candidates if c.fields]
                             state = "product_not_found" if known_candidates else "review"
-                            reason = "지정 상품 식별자가 원문에서 확인되지 않음" if known_candidates else (fetched.message or "추출 후보 없음: CSS·열 매핑·PDF 규칙 또는 OCR 확인 필요")
+                            reason = "Configured product identifier was not found in the source" if known_candidates else (fetched.message or "No extraction candidate: review CSS/column mapping, PDF rules, or OCR")
                         store.finish_task(task["id"], state, reason, fetched.backend, rows)
                 else:
                     for task in tasks:

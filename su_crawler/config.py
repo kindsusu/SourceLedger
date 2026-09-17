@@ -15,49 +15,49 @@ def load_config(path: str | Path) -> CollectionConfig:
     raw = json.loads(path.read_text(encoding="utf-8-sig"))
     allowed = {"name", "products", "sources", "output_dir", "demo", "max_run_seconds"}
     if set(raw) - allowed:
-        raise ValueError(f"알 수 없는 설정: {sorted(set(raw) - allowed)}")
+        raise ValueError(f"Unknown configuration keys: {sorted(set(raw) - allowed)}")
     products = [Product(**v) for v in raw["products"]]
     sources = [Source(**v) for v in raw["sources"]]
     if not products or not sources:
-        raise ValueError("상품과 출처가 각각 하나 이상 필요합니다")
+        raise ValueError("At least one product and one source are required")
     for items in (products, sources):
         ids = [i.id for i in items]
         if len(set(ids)) != len(ids) or any(not re.fullmatch(r"[A-Za-z0-9_-]+", i) for i in ids):
-            raise ValueError("상품/출처 ID는 중복 없는 영문·숫자·밑줄·하이픈이어야 합니다")
+            raise ValueError("Product and source IDs must be unique and use letters, numbers, underscores, or hyphens")
     product_ids = {p.id for p in products}
     for product in products:
         if not product.identifiers or any(not str(v).strip() for v in product.identifiers.values()):
-            raise ValueError(f"상품 {product.id}: 원문과 대조할 identifiers가 필요합니다")
+            raise ValueError(f"Product {product.id}: identifiers are required for source matching")
     for source in sources:
         if source.kind not in {"web", "file"}:
-            raise ValueError(f"지원하지 않는 출처 종류: {source.kind}")
+            raise ValueError(f"Unsupported source type: {source.kind}")
         if not source.product_ids or set(source.product_ids) - product_ids:
-            raise ValueError(f"출처 {source.id}: 연결할 상품 ID 확인 필요")
+            raise ValueError(f"Source {source.id}: configure at least one product ID")
         if len(source.product_ids) != len(set(source.product_ids)):
-            raise ValueError("출처별 상품 ID 중복")
+            raise ValueError("Source product IDs must not be duplicated")
         if isinstance(source.max_attempts, bool) or not isinstance(source.max_attempts, int) or not 1 <= source.max_attempts <= 5:
-            raise ValueError("max_attempts는 1~5 정수입니다")
+            raise ValueError("max_attempts must be an integer from 1 to 5")
         for key in ("timeout_seconds", "freshness_hours", "min_interval_seconds"):
             value = getattr(source, key)
             if not isinstance(value, (float, int)) or not math.isfinite(value) or value < 0 or (key != "min_interval_seconds" and value == 0):
-                raise ValueError(f"출처 {source.id}: {key} 값 확인 필요")
+                raise ValueError(f"Source {source.id}: configure {key}")
         if source.decimal_separator not in {".", ","}:
-            raise ValueError("decimal_separator는 . 또는 , 입니다")
+            raise ValueError("decimal_separator must be . or ,")
         if source.kind == "web":
             parsed = urlsplit(source.location)
             if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
-                raise ValueError("웹 출처는 인증값 없는 HTTP(S) URL이어야 합니다")
+                raise ValueError("Web sources must use an HTTP(S) URL without credentials")
             if not source.allowed_domains or parsed.hostname.lower() not in [d.lower() for d in source.allowed_domains]:
-                raise ValueError(f"출처 {source.id}: URL 호스트를 allowed_domains에 명시하세요")
+                raise ValueError(f"Source {source.id}: add the URL host to allowed_domains")
             if not source.backends or set(source.backends) - {"http", "playwright", "crawl4ai"}:
-                raise ValueError("지원 수집기는 http/playwright/crawl4ai입니다")
+                raise ValueError("Supported collectors are http, playwright, and crawl4ai")
         if source.profile_dir:
             source.profile_dir = str(resolve_path(str(path.parent), source.profile_dir))
         if source.file_root:
             source.file_root = str(resolve_path(str(path.parent), source.file_root))
     seconds = raw.get("max_run_seconds", 600)
     if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0:
-        raise ValueError("max_run_seconds는 양수여야 합니다")
+        raise ValueError("max_run_seconds must be positive")
     return CollectionConfig(
         name=raw.get("name", path.stem), products=products, sources=sources,
         output_dir=str(resolve_path(str(path.parent), raw.get("output_dir", "outputs"))),

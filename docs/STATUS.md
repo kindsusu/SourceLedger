@@ -2,33 +2,35 @@
 
 [English](STATUS.md) | [한국어](IMPLEMENTATION_STATUS.md)
 
-SourceLedger currently provides a working collection engine, not an unrestricted autonomous research agent.
+SourceLedger provides an evidence-first collection engine and a bounded research-onboarding path. It is not an unrestricted autonomous research agent.
 
-## Available
+## Implemented
 
-- Explicit product identifiers, source URLs/files, and extraction rules.
-- HTTP and local files, with optional Playwright browser actions and a Crawl4AI adapter.
-- HTML/JSON-LD, JSON, CSV, XLSX, and explicitly configured text-PDF extraction.
-- Evidence files, source locations, collection timestamps, and SHA-256 hashes.
-- Strict price, currency, product, specification, and commercial-condition validation.
-- SQLite run history, resumable tasks, and six-sheet XLSX reports. Missing prices remain blank.
-- A local MCP server and an independently started queue worker.
-- Bounded link and sitemap discovery within configured source domains.
+- **Research workspace:** `init` creates an English or Korean first-run workspace for one lead product: industry, product, and market. It stores explicit identifiers, authorized same-host source candidates, readiness, and next actions. It does not ask for an analysis-purpose field or secret values.
+- **Bounded candidate discovery:** a saved candidate seed can discover same-host links within a limit. HTTP is tried first and the configured browser fallback is used for a blocked or unavailable page. Results remain candidates and never become prices, active sources, or extraction rules automatically.
+- **Draft and activation controls:** an explicit-identifier workspace can produce a draft configuration. `verify` checks the exact configuration and retained evidence; optional known samples add independent product/price checks. `activate` accepts only the exact verified configuration and evidence. It rejects changed configuration, missing or altered evidence, stale evidence, missing assigned products, and mismatched known samples. Receipts are local audit records, not signed attestations.
+- **Existing collection engine:** explicit product identifiers, source URLs/files, extraction rules, HTTP/file collection, optional Playwright browser actions, and optional Crawl4AI adapter.
+- **Evidence and validation:** retained source bytes, locators, timestamps, SHA-256 hashes, and strict product, price, currency, specification, and commercial-condition validation. Missing prices remain blank.
+- **Storage and reporting:** SQLite run history, resumable tasks, evidence files, and six-sheet XLSX reports. The default workbook labels are English; Korean onboarding and documentation are available.
+- **Local MCP operation:** a local MCP server registers configured jobs for an independently started worker. Bounded discovery and research workspaces are separate from active `run` configuration; running a configured collection does not require activation.
 
-## Verified baseline
+## Validation scope
 
-The Windows test suite passes 44 tests. It includes real local Chrome actions, evidence capture, an actual stdio MCP session, collection continuing after MCP disconnect, and report generation. Six demo workbook sheets were visually inspected. Demo values are synthetic, not market prices.
+On 2026-09-17, the integrated Windows suite passed **74 tests** (`python -m pytest tests -q`). This includes a real local HTTP onboarding-to-collection flow, actual local browser actions, MCP disconnection recovery, and XLSX checks. Browser fallback after a simulated HTTP block is covered by a controlled test; real-site block recovery is not established.
 
-## Still required for unattended research
+The earlier collection baseline recorded **44 passing tests** on Windows/Python 3.12, including local Chrome actions, evidence capture, stdio MCP, worker continuation after MCP disconnect, and XLSX rendering. That number is a historical baseline, not a claim about the current integrated suite.
 
-- First-run industry, product, and market setup.
-- Search-provider integration, source discovery, and persistent candidate review.
-- Source onboarding, extraction-rule generation, independent validation, and change recovery.
-- Scheduling, bounded budgets, operational alerts, and service deployment.
-- Representative real-site evaluation and client-specific Claude/ChatGPT connection testing.
+Current integration coverage includes first-run workspaces, English/Korean input handling, saved candidates, bounded same-host discovery with browser fallback, draft generation, verification receipts, optional known samples, and activation rejection for changed or missing evidence. Known samples are optional: without them, `verify` validates configuration and evidence integrity but does not claim an independent price-ground-truth check.
 
-Crawl4AI is an optional, unverified runtime in this environment. Agent-Reach informed routing and diagnostics; it is not directly integrated. ego-lite was reviewed but depends on a macOS application. UCP, commerce-agents, and insane-search are design references rather than integrated runtimes. No paid Ultimate Web Scraper MCP connection has been made.
+Demo values are synthetic and are not market prices. Representative live-site accuracy, access success, and browser recovery must be measured on the intended sites.
 
-Primary delivery remains SQLite plus evidence and XLSX. CSV export, ERP integration, and analytical/simulation functions are not part of the current implementation.
+## Not implemented or not verified
 
-Earlier design notes in this repository are retained as historical planning documents; implemented behavior is described here and in the README.
+- Search-provider integration, arbitrary web search, and automatic source discovery beyond an explicit same-host seed
+- AI-generated extraction rules, recipe proposals, self-repair, and an agent planning loop
+- Scheduling, service deployment, alerts, and ongoing unattended operations
+- Claude or ChatGPT client UI connection verification and remote artifact delivery
+- Representative live-site collection evaluation
+- OCR for scanned PDFs, ERP integration, CSV export, and analysis/simulation features
+
+Crawl4AI is optional and unverified against live sites in this environment. Agent-Reach informed diagnostics and routing design, but is not a direct runtime dependency. ego-lite is not directly integrated on Windows. UCP, commerce-agents, insane-search, and paid Ultimate Web Scraper MCP remain design references or unconnected services.

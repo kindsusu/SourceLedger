@@ -74,7 +74,7 @@ def test_stale_reexport_preserves_observation(tmp_path):
     assert next(r for r in store.observations(run["id"]) if r["id"] == row["id"])["amount"] == row["amount"]
     from openpyxl import load_workbook
     wb = load_workbook(run["report_path"], read_only=True)
-    assert any("stale" in str(r) for r in wb["관측 이력"].values)
+    assert any("stale" in str(r) for r in wb["Observation History"].values)
     wb.close()
     store.close()
 
@@ -107,8 +107,8 @@ def test_expired_at_reexport_is_excluded_without_rewriting_history(tmp_path):
         store.db.execute("UPDATE observations SET data=? WHERE id=?", (json.dumps(row), row["id"]))
     report_for_run(config, store, run["id"])
     wb = load_workbook(run["report_path"], read_only=True)
-    assert wb["가격 비교"].max_row == 3  # banner + header + unexpired source only
-    assert any("보고서 시점 유효기한" in str(r) for r in wb["검토 필요"].values)
+    assert wb["Price Comparison"].max_row == 3  # banner + header + unexpired source only
+    assert any("validity date at report time" in str(r) for r in wb["Review Required"].values)
     wb.close()
     assert next(r for r in store.observations(run["id"]) if r["id"] == row["id"])["comparable"] is True
     store.close()

@@ -20,16 +20,16 @@ def build_server(config_path: Path, *, port: int = 8765):
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
     def get_capabilities() -> dict:
-        """설정된 수집 범위와 로컬 도구 설치 상태. 사이트 접속 성공을 보증하지 않음."""
+        """Configured collection scope and local tool status; does not guarantee site access."""
         from .doctor import doctor
         return {"name": config.name, "demo": config.demo, "products": len(config.products), "sources": len(config.sources), "backends": doctor(), "worker": worker_status(output)}
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True))
     def start_collection() -> dict:
-        """미리 설정한 범위의 작업을 독립 실행 중인 작업자에게 등록. UWS/외부 AI 호출 없음."""
+        """Register configured-scope tasks with an independently running worker; no UWS or external AI calls."""
         worker = worker_status(output)
         if not worker["online"] or worker.get("config_hash") != config_fingerprint(config):
-            raise ValueError("같은 설정의 독립 작업자가 필요합니다. 별도 터미널에서 python -m su_crawler.worker --config <설정파일> 을 실행하세요")
+            raise ValueError("An independent worker with the same configuration is required. Run python -m su_crawler.worker --config <config-file> in another terminal")
         run_id = uuid.uuid4().hex
         dispatch = output / "dispatch"
         dispatch.mkdir(parents=True, exist_ok=True)
@@ -40,9 +40,9 @@ def build_server(config_path: Path, *, port: int = 8765):
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
     def get_collection_status(run_id: str) -> dict:
-        """실행 상태와 상품별 누락·검토 사유를 조회."""
+        """Retrieve run status and product-level missing or review reasons."""
         if not run_id.isalnum() or len(run_id) > 80:
-            raise ValueError("잘못된 실행 ID")
+            raise ValueError("Invalid run ID")
         store = Store(output)
         try:
             worker = worker_status(output)
@@ -55,16 +55,16 @@ def build_server(config_path: Path, *, port: int = 8765):
                     raise
                 run, tasks = receipt, []
             if receipt and receipt.get("status") == "failed":
-                run = {**run, "status": "failed", "reason": receipt.get("reason", "작업자 실패")}
+                run = {**run, "status": "failed", "reason": receipt.get("reason", "Worker failed")}
             elif run["status"] in {"queued", "starting", "running"} and not worker["online"]:
-                run = {**run, "status": "interrupted", "reason": "작업자 응답 없음. 동일 설정으로 작업자를 다시 실행하면 재개합니다"}
+                run = {**run, "status": "interrupted", "reason": "Worker did not respond. Restart a worker with the same configuration to resume"}
             return {"run": run, "tasks": tasks, "worker": worker}
         finally:
             store.close()
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=True))
     def get_price_observations(run_id: str, offset: int = 0, limit: int = 50) -> dict:
-        """검증 상태·근거 포함 관측 조회. 미확인 수치를 채우지 마세요."""
+        """Retrieve observations with verification status and evidence. Do not fill unverified values."""
         if offset < 0 or not 1 <= limit <= 200:
             raise ValueError("offset>=0, limit=1..200")
         store = Store(output)
@@ -77,7 +77,7 @@ def build_server(config_path: Path, *, port: int = 8765):
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def export_price_report(run_id: str) -> dict:
-        """DB에서 엑셀을 다시 생성. 반환 경로는 로컬 경로이며 원격 다운로드 링크가 아님."""
+        """Regenerate an XLSX report from the database. Returned path is local, not a remote download link."""
         from .pipeline import report_for_run
         from .storage import workspace_lock
         with workspace_lock(output):

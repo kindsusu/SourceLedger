@@ -22,7 +22,7 @@ import httpx
 from .models import FetchResult, Source, resolve_path, utc_now
 
 
-USER_AGENT = "su-price-crawler/0.1 (+authorized price research)"
+USER_AGENT = "source-ledger/0.2 (+authorized price research)"
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_REDIRECTS = 10
 _PASSWORD_FIELD = re.compile(r"<input\b[^>]*(?:type\s*=\s*['\"]?password|name\s*=\s*['\"]password['\"]?)", re.I)
@@ -50,7 +50,7 @@ def _resolved_addresses(host: str, port: int) -> set[ipaddress.IPv4Address | ipa
             for record in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         }
     except (socket.gaierror, ValueError) as exc:
-        raise PolicyError(f"호스트 주소를 확인할 수 없습니다: {host}") from exc
+        raise PolicyError(f"Unable to resolve host address: {host}") from exc
 
 
 def _is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -65,17 +65,17 @@ def _is_forbidden_even_internal(address: ipaddress.IPv4Address | ipaddress.IPv6A
 def _check_url(source: Source, url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise PolicyError("http/https URL만 수집할 수 있습니다")
+        raise PolicyError("Only HTTP(S) URLs can be collected")
     if parsed.username or parsed.password:
-        raise PolicyError("URL에 인증 정보를 포함할 수 없습니다")
+        raise PolicyError("URLs must not contain credentials")
     if not _host_allowed(parsed.hostname, source.allowed_domains):
-        raise PolicyError(f"허용되지 않은 도메인입니다: {parsed.hostname}")
+        raise PolicyError(f"Domain is not allowed: {parsed.hostname}")
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     addresses = _resolved_addresses(parsed.hostname, port)
     if not addresses or any(_is_forbidden_even_internal(address) for address in addresses):
-        raise PolicyError("특수 목적·링크 로컬 주소 접근은 허용되지 않습니다")
+        raise PolicyError("Special-use and link-local addresses are not allowed")
     if not source.internal and any(not _is_public(a) for a in addresses):
-        raise PolicyError("공개 소스에서 사설·로컬 주소 접근은 허용되지 않습니다")
+        raise PolicyError("Public sources cannot access private or local addresses")
 
 
 def _safe_url(url: str) -> str:
@@ -120,16 +120,16 @@ def _read_limited(response: httpx.Response) -> bytes:
     if declared:
         try:
             if int(declared) > MAX_RESPONSE_BYTES:
-                raise ValueError("응답 크기 제한을 초과했습니다")
+                raise ValueError("Response exceeds the size limit")
         except ValueError as exc:
-            if str(exc).startswith("응답"):
+            if str(exc).startswith("Response"):
                 raise
     chunks: list[bytes] = []
     size = 0
     for chunk in response.iter_bytes():
         size += len(chunk)
         if size > MAX_RESPONSE_BYTES:
-            raise ValueError("응답 크기 제한을 초과했습니다")
+            raise ValueError("Response exceeds the size limit")
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -145,11 +145,11 @@ def _file_collect(source: Source, base_dir: str) -> FetchResult:
     try:
         path.relative_to(base)
     except ValueError:
-        return _result(source, "file", "policy_denied", message="기준 디렉터리 밖의 파일입니다")
+        return _result(source, "file", "policy_denied", message="File is outside the configured base directory")
     if not path.is_file():
-        return _result(source, "file", "failed", message="파일을 찾을 수 없습니다")
+        return _result(source, "file", "failed", message="File was not found")
     if path.stat().st_size > MAX_RESPONSE_BYTES:
-        return _result(source, "file", "failed", message="파일 크기 제한을 초과했습니다")
+        return _result(source, "file", "failed", message="File exceeds the size limit")
     try:
         return _result(
             source,
@@ -160,7 +160,7 @@ def _file_collect(source: Source, base_dir: str) -> FetchResult:
             final_url=path.as_uri(),
         )
     except OSError as exc:
-        return _result(source, "file", "failed", message=f"파일 읽기 실패: {exc}")
+        return _result(source, "file", "failed", message=f"Unable to read file: {exc}")
 
 
 def _get_following_policy(client: httpx.Client, source: Source, url: str) -> tuple[httpx.Response, list[dict[str, Any]]]:
@@ -177,7 +177,7 @@ def _get_following_policy(client: httpx.Client, source: Source, url: str) -> tup
             return response, trace
         response.close()
         current = urljoin(str(response.url), location)
-    raise httpx.TooManyRedirects("리다이렉트 제한을 초과했습니다")
+    raise httpx.TooManyRedirects("Redirect limit exceeded")
 
 
 def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[str, str]:
@@ -188,24 +188,24 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
         response, _ = _get_following_policy(client, source, robots_url)
         if 400 <= response.status_code < 500:
             response.close()
-            return "allowed", "robots.txt 없음"
+            return "allowed", "robots.txt not found"
         if response.status_code >= 500:
             response.close()
-            return "unavailable", "robots.txt 서버 오류"
+            return "unavailable", "robots.txt server error"
         data = _read_limited(response).decode(response.encoding or "utf-8", errors="replace")
         parser = RobotFileParser()
         parser.set_url(robots_url)
         parser.parse(data.splitlines())
-        return ("allowed", "robots.txt 허용") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt 거절")
+        return ("allowed", "robots.txt allows collection") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt disallows collection")
     except (httpx.HTTPError, OSError, ValueError, PolicyError):
-        return "unavailable", "robots.txt 확인 실패"
+        return "unavailable", "Unable to check robots.txt"
 
 
 def _http_collect(source: Source) -> FetchResult:
     try:
         _check_url(source, source.location)
     except PolicyError:
-        return _result(source, "http", "policy_denied", message="URL 정책에 의해 요청이 거절되었습니다")
+        return _result(source, "http", "policy_denied", message="Request denied by URL policy")
     timeout = httpx.Timeout(source.timeout_seconds)
     try:
         with httpx.Client(
@@ -217,18 +217,18 @@ def _http_collect(source: Source) -> FetchResult:
             if source.respect_robots:
                 robots, reason = _robots_decision(client, source, source.location)
                 if robots == "disallowed":
-                    return _result(source, "http", "policy_denied", message="robots.txt가 수집을 허용하지 않습니다")
+                    return _result(source, "http", "policy_denied", message="robots.txt does not allow collection")
                 if robots == "unavailable":
                     return _result(source, "http", "failed", message=reason)
             response, trace = _get_following_policy(client, source, source.location)
             final_url = str(response.url)
             if response.status_code == 401:
                 response.close()
-                return _result(source, "http", "needs_auth", final_url=final_url, message="HTTP 401 인증 필요", trace=trace)
+                return _result(source, "http", "needs_auth", final_url=final_url, message="HTTP 401 authentication required", trace=trace)
             if response.status_code in {403, 429}:
                 status = response.status_code
                 response.close()
-                return _result(source, "http", "blocked", final_url=final_url, message=f"HTTP {status} 접근 제한", trace=trace)
+                return _result(source, "http", "blocked", final_url=final_url, message=f"HTTP {status} access restricted", trace=trace)
             if response.status_code >= 400:
                 status = response.status_code
                 response.close()
@@ -237,23 +237,23 @@ def _http_collect(source: Source) -> FetchResult:
             media = response.headers.get("content-type", "").split(";", 1)[0] or _media_type(final_url)
             if media in {"text/html", "application/xhtml+xml"}:
                 if _is_auth_page(content, response.encoding or "utf-8"):
-                    return _result(source, "http", "needs_auth", content=content, media_type=media, final_url=final_url, message="로그인 화면 감지", trace=trace)
+                    return _result(source, "http", "needs_auth", content=content, media_type=media, final_url=final_url, message="Login page detected", trace=trace)
             return _result(source, "http", "fetched", content=content, media_type=media, final_url=final_url, trace=trace)
     except PolicyError:
-        return _result(source, "http", "policy_denied", message="URL 정책에 의해 요청이 거절되었습니다")
+        return _result(source, "http", "policy_denied", message="Request denied by URL policy")
     except httpx.TimeoutException:
-        return _result(source, "http", "timeout", message="요청 시간 초과")
+        return _result(source, "http", "timeout", message="Request timed out")
     except (httpx.HTTPError, OSError, ValueError) as exc:
-        return _result(source, "http", "failed", message=f"수집 실패 ({type(exc).__name__})")
+        return _result(source, "http", "failed", message=f"Collection failed ({type(exc).__name__})")
 
 
 def _safe_step(step: dict[str, Any]) -> tuple[str, str]:
     action = str(step.get("action", ""))
     if action not in {"click", "select", "fill", "wait_for", "assert_text"}:
-        raise PolicyError(f"허용되지 않은 브라우저 동작입니다: {action}")
+        raise PolicyError(f"Browser action is not allowed: {action}")
     selector = step.get("selector")
     if not isinstance(selector, str) or not selector.strip():
-        raise PolicyError(f"{action} 동작에 selector가 필요합니다")
+        raise PolicyError(f"The {action} action requires a selector")
     return action, selector
 
 
@@ -261,12 +261,12 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
     try:
         _check_url(source, source.location)
     except PolicyError:
-        return _result(source, "playwright", "policy_denied", message="URL 정책에 의해 요청이 거절되었습니다")
+        return _result(source, "playwright", "policy_denied", message="Request denied by URL policy")
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return _result(source, "playwright", "tool_unavailable", message="playwright 패키지가 설치되지 않았습니다")
+        return _result(source, "playwright", "tool_unavailable", message="The playwright package is not installed")
 
     trace: list[dict[str, Any]] = []
     deadline = time.monotonic() + source.timeout_seconds
@@ -339,7 +339,7 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 with httpx.Client(timeout=httpx.Timeout(min(source.timeout_seconds, max(0.1, deadline - time.monotonic()))), follow_redirects=False, headers={"User-Agent": USER_AGENT}, trust_env=False) as client:
                     robots, reason = _robots_decision(client, source, source.location)
                     if robots == "disallowed":
-                        return _result(source, "playwright", "policy_denied", message="robots.txt가 수집을 허용하지 않습니다", trace=trace)
+                        return _result(source, "playwright", "policy_denied", message="robots.txt does not allow collection", trace=trace)
                     if robots == "unavailable":
                         return _result(source, "playwright", "failed", message=reason, trace=trace)
             navigation = page.goto(source.location, wait_until="domcontentloaded", timeout=remaining_ms())
@@ -347,9 +347,9 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             status = navigation.status if navigation else 0
             trace.append({"event": "navigate", "url": _safe_url(page.url), "status": status, "at": utc_now()})
             if status == 401:
-                return _result(source, "playwright", "needs_auth", final_url=page.url, message="HTTP 401 인증 필요", trace=trace)
+                return _result(source, "playwright", "needs_auth", final_url=page.url, message="HTTP 401 authentication required", trace=trace)
             if status in {403, 429}:
-                return _result(source, "playwright", "blocked", final_url=page.url, message=f"HTTP {status} 접근 제한", trace=trace)
+                return _result(source, "playwright", "blocked", final_url=page.url, message=f"HTTP {status} access restricted", trace=trace)
             if status >= 400:
                 return _result(source, "playwright", "failed", final_url=page.url, message=f"HTTP {status}", trace=trace)
 
@@ -363,51 +363,51 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 elif action == "select":
                     value = step.get("value")
                     if not isinstance(value, str):
-                        raise PolicyError("select 동작에 문자열 value가 필요합니다")
+                        raise PolicyError("The select action requires a string value")
                     locator.select_option(value, timeout=timeout_ms)
                 elif action == "fill":
                     value = step.get("value")
                     if not isinstance(value, str):
-                        raise PolicyError("fill 동작에 문자열 value가 필요합니다")
+                        raise PolicyError("The fill action requires a string value")
                     locator.fill(value, timeout=timeout_ms)
                 elif action == "wait_for":
                     locator.wait_for(state=str(step.get("state", "visible")), timeout=timeout_ms)
                 elif action == "assert_text":
                     expected = step.get("text")
                     if not isinstance(expected, str):
-                        raise PolicyError("assert_text 동작에 문자열 text가 필요합니다")
+                        raise PolicyError("The assert_text action requires string text")
                     actual = locator.inner_text(timeout=timeout_ms)
                     if expected not in actual:
-                        raise AssertionError("브라우저 텍스트 검증 실패")
+                        raise AssertionError("Browser text assertion failed")
                 # Inputs and expected text are deliberately excluded from trace.
                 trace.append({"event": "recipe_step", "index": index, "action": action, "selector": _safe_selector(selector), "url": _safe_url(page.url), "at": utc_now()})
                 _check_url(source, page.url)
                 latest_status = document_status.get("latest", 0)
                 if latest_status == 401:
-                    return _result(source, "playwright", "needs_auth", final_url=page.url, message="HTTP 401 인증 필요", trace=trace)
+                    return _result(source, "playwright", "needs_auth", final_url=page.url, message="HTTP 401 authentication required", trace=trace)
                 if latest_status in {403, 429}:
-                    return _result(source, "playwright", "blocked", final_url=page.url, message=f"HTTP {latest_status} 접근 제한", trace=trace)
+                    return _result(source, "playwright", "blocked", final_url=page.url, message=f"HTTP {latest_status} access restricted", trace=trace)
                 if latest_status >= 400:
                     return _result(source, "playwright", "failed", final_url=page.url, message=f"HTTP {latest_status}", trace=trace)
 
             html = page.content().encode("utf-8")
             if _is_auth_page(html):
-                return _result(source, "playwright", "needs_auth", content=html, media_type="text/html", final_url=page.url, message="로그인 화면 감지", trace=trace)
+                return _result(source, "playwright", "needs_auth", content=html, media_type="text/html", final_url=page.url, message="Login page detected", trace=trace)
             screenshot = page.screenshot(full_page=True, timeout=remaining_ms())
             final_url = page.url
             _check_url(source, final_url)
             return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url, screenshot=screenshot, trace=trace)
     except PlaywrightTimeoutError:
-        return _result(source, "playwright", "timeout", message="브라우저 동작 시간 초과", trace=trace)
+        return _result(source, "playwright", "timeout", message="Browser action timed out", trace=trace)
     except PolicyError:
-        return _result(source, "playwright", "policy_denied", message="브라우저 동작 정책에 의해 거절되었습니다", trace=trace)
+        return _result(source, "playwright", "policy_denied", message="Browser action denied by policy", trace=trace)
     except AssertionError as exc:
         return _result(source, "playwright", "failed", message=str(exc), trace=trace)
     except Exception as exc:
         text = str(exc)
         if "Executable doesn't exist" in text or "browserType.launch" in text:
-            return _result(source, "playwright", "tool_unavailable", message="Playwright 브라우저 실행 파일을 사용할 수 없습니다", trace=trace)
-        return _result(source, "playwright", "failed", message=f"브라우저 수집 실패 ({type(exc).__name__})", trace=trace)
+            return _result(source, "playwright", "tool_unavailable", message="Playwright browser executable is unavailable", trace=trace)
+        return _result(source, "playwright", "failed", message=f"Browser collection failed ({type(exc).__name__})", trace=trace)
     finally:
         if context is not None:
             try:
@@ -430,13 +430,13 @@ async def _crawl4ai_run(url: str, timeout_seconds: float) -> tuple[str, str]:
             timeout=timeout_seconds,
         )
         if not result.success:
-            raise RuntimeError(result.error_message or "crawl4ai 수집 실패")
+            raise RuntimeError(result.error_message or "Crawl4AI collection failed")
         return result.html, result.url or url
 
 
 def _crawl4ai_collect(source: Source) -> FetchResult:
     if importlib.util.find_spec("crawl4ai") is None:
-        return _result(source, "crawl4ai", "tool_unavailable", message="crawl4ai 패키지가 설치되지 않았습니다")
+        return _result(source, "crawl4ai", "tool_unavailable", message="The crawl4ai package is not installed")
     # Validate redirect policy with the strict HTTP collector before handing the
     # verified final URL to the optional browser adapter.
     preflight = _http_collect(source)
@@ -450,23 +450,23 @@ def _crawl4ai_collect(source: Source) -> FetchResult:
     except RuntimeError as exc:
         return _result(source, "crawl4ai", "failed", message=str(exc), trace=preflight.trace)
     except PolicyError:
-        return _result(source, "crawl4ai", "policy_denied", message="URL 정책에 의해 요청이 거절되었습니다", trace=preflight.trace)
+        return _result(source, "crawl4ai", "policy_denied", message="Request denied by URL policy", trace=preflight.trace)
     except Exception as exc:
-        return _result(source, "crawl4ai", "failed", message=f"crawl4ai 수집 실패 ({type(exc).__name__})", trace=preflight.trace)
+        return _result(source, "crawl4ai", "failed", message=f"Crawl4AI collection failed ({type(exc).__name__})", trace=preflight.trace)
 
 
 def collect(source: Source, base_dir: str, backend: str) -> FetchResult:
     """Collect one source with an explicitly selected backend."""
     if backend == "file":
         if source.kind != "file":
-            return _result(source, backend, "policy_denied", message="file backend는 file 소스에만 사용할 수 있습니다")
+            return _result(source, backend, "policy_denied", message="The file backend can only read file sources")
         return _file_collect(source, base_dir)
     if source.kind == "file":
-        return _result(source, backend, "policy_denied", message="file 소스는 file backend로만 읽을 수 있습니다")
+        return _result(source, backend, "policy_denied", message="File sources can only be read by the file backend")
     if backend == "http":
         return _http_collect(source)
     if backend == "playwright":
         return _browser_collect(source, base_dir)
     if backend == "crawl4ai":
         return _crawl4ai_collect(source)
-    return _result(source, backend, "tool_unavailable", message=f"지원하지 않는 backend입니다: {backend}")
+    return _result(source, backend, "tool_unavailable", message=f"Unsupported backend: {backend}")

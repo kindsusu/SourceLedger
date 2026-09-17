@@ -26,20 +26,20 @@ def _system_chrome() -> Path | None:
 
 def _playwright_browser_ready() -> tuple[bool, str]:
     if importlib.util.find_spec("playwright") is None:
-        return False, "Python 패키지가 설치되지 않았습니다"
+        return False, "Python package is not installed"
     try:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as pw:
             executable = Path(pw.chromium.executable_path)
             if executable.is_file():
-                return True, f"Chromium 실행 파일 확인: {executable.name}"
+                return True, f"Chromium executable found: {executable.name}"
             system_browser = _system_chrome()
             if system_browser:
-                return True, f"시스템 브라우저 실행 파일 확인: {system_browser.name}"
-            return False, "패키지는 설치됐지만 Chromium 실행 파일이 없습니다"
+                return True, f"System browser executable found: {system_browser.name}"
+            return False, "Package is installed but no Chromium executable was found"
     except Exception as exc:
-        return False, f"패키지는 설치됐지만 실행 상태를 확인하지 못했습니다: {exc}"
+        return False, f"Package is installed but its runtime could not be checked: {exc}"
 
 
 def doctor() -> list[dict]:
@@ -49,13 +49,13 @@ def doctor() -> list[dict]:
     httpx_installed = importlib.util.find_spec("httpx") is not None
     agent_reach_command = shutil.which("agent-reach") or shutil.which("agent_reach")
     return [
-        {"backend": "file", "status": "available", "installed": True, "connected": True, "reason": "Python 표준 파일 읽기"},
+        {"backend": "file", "status": "available", "installed": True, "connected": True, "reason": "Python standard file reading"},
         {
             "backend": "http",
             "status": "available" if httpx_installed else "unavailable",
             "installed": httpx_installed,
             "connected": httpx_installed,
-            "reason": "httpx 로컬 실행" if httpx_installed else "필수 httpx 패키지가 설치되지 않았습니다",
+            "reason": "httpx available locally" if httpx_installed else "Required httpx package is not installed",
         },
         {
             "backend": "playwright",
@@ -69,20 +69,20 @@ def doctor() -> list[dict]:
             "status": "installed" if crawl4ai_installed else "unavailable",
             "installed": crawl4ai_installed,
             "connected": False,
-            "reason": "선택 패키지는 설치됐지만 브라우저 런타임 연결은 실제 실행 시 확인합니다" if crawl4ai_installed else "선택 패키지가 설치되지 않았습니다",
+            "reason": "Optional package is installed; browser runtime connectivity is checked at collection time" if crawl4ai_installed else "Optional package is not installed",
         },
         {
             "backend": "agent_reach",
             "status": "available" if agent_reach_command else "unavailable",
             "installed": bool(agent_reach_command),
             "connected": False,
-            "reason": "CLI는 확인했지만 외부 reader 연결은 자동 사용하지 않습니다" if agent_reach_command else "선택 CLI가 설치되지 않았으며 자동 설치하지 않습니다",
+            "reason": "CLI found, but external reader connections are not used automatically" if agent_reach_command else "Optional CLI is not installed and will not be installed automatically",
         },
         {
             "backend": "ego_lite",
             "status": "unsupported",
             "installed": False,
             "connected": False,
-            "reason": "ego-lite는 macOS 앱 종속이며 현재 Windows 실행 환경을 지원하지 않습니다",
+            "reason": "ego-lite depends on a macOS app path and is not supported in this Windows runtime",
         },
     ]

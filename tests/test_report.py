@@ -19,14 +19,14 @@ def test_evidence_first_workbook(tmp_path):
     assert out.exists()
     wb = load_workbook(out, read_only=True, data_only=False)
     assert wb.sheetnames == list(SHEETS)
-    assert wb["가격 비교"]["E3"].value == 0
-    assert wb["가격 비교"]["F3"].value == "0"
-    assert wb["관측 이력"]["H4"].value is None
-    assert wb["검토 필요"]["G3"].value is None
-    assert wb["검토 필요"]["H3"].value is None
-    assert wb["관측 이력"]["Q3"].value.startswith('{')  # formula-looking raw source stays text
-    assert wb["실행 요약"]["A1"].value == "테스트 자료 — 실제 시장가격 아님"
-    assert wb["수집 현황"].max_row == 3  # banner + header + planned task
+    assert wb["Price Comparison"]["E3"].value == 0
+    assert wb["Price Comparison"]["F3"].value == "0"
+    assert wb["Observation History"]["H4"].value is None
+    assert wb["Review Required"]["G3"].value is None
+    assert wb["Review Required"]["H3"].value is None
+    assert wb["Observation History"]["Q3"].value.startswith('{')  # formula-looking raw source stays text
+    assert wb["Run Summary"]["A1"].value == "Demo data — not market prices"
+    assert wb["Collection Status"].max_row == 3  # banner + header + planned task
 
 
 def test_comparison_uses_latest_source_observation_and_group_statistics(tmp_path):
@@ -42,7 +42,7 @@ def test_comparison_uses_latest_source_observation_and_group_statistics(tmp_path
         dict(base, id="bad", source_id="s2", source_name="출처 2", source_url="https://b.example", amount="NaN", collected_at="2026-01-03T00:00:00Z"),
     ]
     out = export_report(cfg, {"id": "r"}, [], observations, tmp_path / "stats.xlsx")
-    ws = load_workbook(out, read_only=True, data_only=True)["가격 비교"]
+    ws = load_workbook(out, read_only=True, data_only=True)["Price Comparison"]
     rows = list(ws.iter_rows(min_row=2, values_only=True))
     assert len(rows) == 2
     assert {r[4] for r in rows} == {20, 40}  # old source row and NaN excluded

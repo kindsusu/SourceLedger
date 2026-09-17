@@ -1,0 +1,29 @@
+{
+  "name": "SourceLedger verification demo — synthetic prices only",
+  "demo": true,
+  "output_dir": "../outputs/verification",
+  "products": [
+    {"id": "demo_a", "name": "Synthetic part A", "identifiers": {"model": "TEST-A"}}
+  ],
+  "sources": [
+    {
+      "id": "catalog", "name": "Synthetic HTML catalogue", "kind": "file",
+      "location": "fixtures/catalog.html", "product_ids": ["demo_a"],
+      "row_selector": ".product",
+      "selectors": {
+        "model": ".model", "price": ".price", "currency": ".currency", "unit": ".unit",
+        "pack_quantity": ".pack", "tax": ".tax", "price_type": ".type", "price_basis": ".basis"
+      }
+    },
+    {
+      "id": "quotation", "name": "Synthetic internal quotation", "kind": "file",
+      "location": "fixtures/quotation.csv", "internal": true, "account_scope": "demo-company",
+      "product_ids": ["demo_a"],
+      "columns": {
+        "model": "모델", "price": "금액", "currency": "통화", "unit": "단위",
+        "pack_quantity": "포장수량", "tax": "세금", "price_type": "가격종류",
+        "valid_to": "유효기한", "price_basis": "가격기준"
+      }
+    }
+  ]
+}

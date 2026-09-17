@@ -4,7 +4,7 @@
 
 ![SourceLedger — Collect information. Preserve its source.](SourceLedger.png)
 
-SourceLedger is a local, evidence-first tool for collecting prices for preconfigured products and sources, preserving the source material, and creating XLSX reports. It never estimates prices or substitutes missing values with zero.
+SourceLedger is a local, evidence-first tool for researching sources, collecting product prices, preserving source material, and creating XLSX reports. It never estimates prices or substitutes missing values with zero.
 
 Each collection records the source URL, UTC timestamp, raw fields, CSS/JSON/table location, evidence-file path, and SHA-256 hash. A row can be `verified` only when the product, price, and currency are supported by source evidence. A verified row is excluded from comparisons when its conditions are insufficient (`comparable=false`). For example, SourceLedger does not calculate a normalized unit price without source evidence of whether a price is for a pack or an individual item.
 
@@ -41,6 +41,17 @@ Run a bounded batch with `run --max-tasks N`, then continue it with `run --resum
 
 ## Configuration
 
+Start a research workspace on first use. English is the default; `--lang ko` enables Korean setup prompts and next actions.
+
+```powershell
+source-ledger init
+source-ledger research-status
+```
+
+Setup asks for industry, product, and market. It does not ask for an analysis purpose. Then register authorized source URLs, optionally discover links, supply exact identifiers, and create a collection draft. See [the getting-started guide](docs/GETTING_STARTED.md) for the complete workflow and [the roadmap](docs/ROADMAP.md) for remaining automation work.
+
+The research workspace supports one product lead; collection configurations support multiple exact products. Candidate discovery does not generate extraction rules. Fill in and check the draft rules before verification.
+
 Configuration is JSON. Each product has `identifiers` to match against source material; each source has a fixed `location` and `product_ids`. A web source must list its URL host in `allowed_domains`. Internal material is limited to local file sources under `file_root`, or to authorized internal web sources. A file source may read only from its base directory or explicitly configured `file_root`.
 
 ```json
@@ -76,13 +87,27 @@ Set `profile_dir` to reuse a dedicated, already authenticated browser profile. I
 
 ### Discovering URL candidates
 
-`discover` reads one configured source once and returns up to the requested number of URL candidates from HTML links or an XML sitemap. Candidates are limited to HTTP(S) URLs in the same `allowed_domains`; fragments, duplicates, and URLs containing credentials are discarded. Candidates are neither price evidence nor automatic source configuration.
+`discover` reads one configured source and returns up to the requested number of URL candidates from HTML links or an XML sitemap. It tries each configured backend at most once, including Playwright after an HTTP failure or an empty link result. A policy denial stops fallback. Candidates are limited to HTTP(S) URLs in the same `allowed_domains`; fragments, duplicates, and URLs containing credentials are discarded.
 
 ```powershell
 source-ledger discover --config examples/demo.json --source-id catalog --limit 100
 ```
 
-Review the product scope and selector/column mappings, then add sources to the configuration yourself. Arbitrary web search, automatic learning, and automatic expansion of collection scope are not provided.
+`source-discover` saves these links as candidates in the research workspace. Review their relevance, trim the draft to intended sources, and supply selector/column mappings. Candidates never become verified price observations by discovery alone.
+
+### Verify and activate
+
+This offline example checks two synthetic prices against known samples, writes a validation receipt, and creates an active configuration.
+
+```powershell
+source-ledger verify --config examples/verification.json --samples examples/verification.samples.json --receipt .sourceledger/verification.receipt.json
+source-ledger activate --config examples/verification.json --receipt .sourceledger/verification.receipt.json --output .sourceledger/active.json
+source-ledger run --config .sourceledger/active.json
+```
+
+Every configured product must have a source; every source/product task must be verified and have a current comparable observation. Activation rechecks the exact config, original evidence bytes, extracted fields, price validity, and any supplied samples. Changed rules, missing evidence, or an expired receipt require new verification. Receipts and active configs refuse overwrite; use a new filename for another version.
+
+Without `--samples`, verification checks source consistency only. A receipt is a local audit record, not a signed guarantee of real-world accuracy. Existing `run --config` remains available for manually maintained configs; activation is an explicit workflow, not a mandatory runtime security boundary.
 
 ## MCP
 
@@ -100,13 +125,14 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 
 ## Current limits
 
-- The first-run setup wizard and autonomous agent loop are not implemented. Configure products and sources in JSON before collection.
+- First-run setup, saved candidates, drafts, and configuration verification are available. Search-provider integration, AI-generated extraction rules, and an autonomous agent loop remain unimplemented.
 - Discovery is limited to configured HTML/sitemap sources. Arbitrary web search, automatic learning, and automated login are not provided.
 - Claude and ChatGPT UI connections have not been verified. Remote ChatGPT use requires an authenticated deployment and an artifact download path.
 - Crawl4AI is optional and has not been installed or validated against live sites in this environment.
 - Services that incur cost or external transfer, including UWS, Jina, and Exa, are not connected.
 - Agent-Reach informed the doctor/routing design but has no direct runtime integration. ego-lite depends on a macOS app path and is not directly integrated on Windows.
 - Windows service installation and scheduling for continuous operation are not implemented.
+- English is the default for CLI help, errors, and XLSX labels. Korean documentation, setup prompts, and research next actions are available; full Korean interface/report localization is not implemented.
 
 ## Before a real deployment
 
@@ -117,6 +143,6 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 - Business definitions for `price_basis`, pack quantity, unit-price calculation, and price type
 - The intended connection target (Claude Desktop or ChatGPT) and its execution environment
 
-Scanned-document OCR, collecting outside configured sources, ERP integration, and the first-run autonomous workflow require separate design and validation once the relevant sources and access constraints are available.
+Scanned-document OCR, collecting outside configured sources, and autonomous rule generation require separate design and validation once representative sources are available. ERP integration and analysis/simulation features are outside this scope.
 
 See [implementation status](docs/STATUS.md) for implemented scope and validation.

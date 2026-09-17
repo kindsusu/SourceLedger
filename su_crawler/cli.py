@@ -10,12 +10,72 @@ from .pipeline import execute
 from .storage import Store
 
 
+DEFAULT_WORKSPACE = ".sourceledger/research.json"
+
+
+def _pairs(values: list[str] | None) -> dict[str, str]:
+    result = {}
+    for value in values or []:
+        key, separator, text = value.partition("=")
+        key, text = key.strip(), text.strip()
+        if not separator or not key or not text or key in result:
+            raise ValueError("Use unique, non-empty KEY=VALUE entries.")
+        result[key] = text
+    return result
+
+
+def _init(args) -> dict:
+    from .research import init_workspace
+    prompts = {
+        "en": {"industry": "Industry", "product": "Product or product group", "market": "Target market or region"},
+        "ko": {"industry": "산업군", "product": "상품 또는 상품군", "market": "대상 시장 또는 지역"},
+    }
+    values = {key: getattr(args, key) for key in prompts[args.lang]}
+    missing = [key for key, value in values.items() if not value or not value.strip()]
+    if missing and not sys.stdin.isatty():
+        raise ValueError("Non-interactive setup requires " + ", ".join("--" + key for key in missing))
+    for key in missing:
+        values[key] = input(prompts[args.lang][key] + ": ").strip()
+    return init_workspace(args.workspace, **values, locale=args.lang)
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="근거를 보존하는 가격 수집기")
+    parser = argparse.ArgumentParser(description="SourceLedger: collect prices and preserve source evidence.")
     sub = parser.add_subparsers(dest="command", required=True)
+    setup = sub.add_parser("init", help="Create a research workspace; prompt for missing topic fields.")
+    setup.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    setup.add_argument("--lang", choices=["en", "ko"], default="en")
+    for field in ("industry", "product", "market"):
+        setup.add_argument("--" + field)
+    research = sub.add_parser("research-status", help="Show candidates, readiness, and next actions.")
+    research.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    source = sub.add_parser("source-add", help="Save an authorized URL candidate without fetching it.")
+    source.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    source.add_argument("--url", required=True)
+    source.add_argument("--scope", choices=["public", "internal"], default="public")
+    source.add_argument("--name")
+    candidates = sub.add_parser("source-discover", help="Discover bounded links from one saved candidate.")
+    candidates.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    candidates.add_argument("--source-id", required=True)
+    candidates.add_argument("--limit", type=int, default=100)
+    product = sub.add_parser("product-set", help="Replace explicit product identifiers and optional specifications.")
+    product.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    product.add_argument("--identifier", action="append", required=True, metavar="KEY=VALUE")
+    product.add_argument("--spec", action="append", metavar="KEY=VALUE", help="Replace required specs when supplied.")
+    draft = sub.add_parser("draft", help="Write an unvalidated collection config for saved candidates.")
+    draft.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    draft.add_argument("--output", required=True)
+    verify = sub.add_parser("verify", help="Collect and validate the exact configuration and optional known samples.")
+    verify.add_argument("--config", required=True)
+    verify.add_argument("--receipt", required=True)
+    verify.add_argument("--samples")
+    activate = sub.add_parser("activate", help="Write a config only when its validation receipt still passes.")
+    activate.add_argument("--config", required=True)
+    activate.add_argument("--receipt", required=True)
+    activate.add_argument("--output", required=True)
     for name in ("run", "status", "observations", "export"):
         p = sub.add_parser(name)
         p.add_argument("--config", required=True)
@@ -35,7 +95,28 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)
     try:
-        if args.command == "doctor":
+        if args.command == "init":
+            result = _init(args)
+        elif args.command in {"research-status", "source-add", "source-discover", "product-set", "draft"}:
+            from . import research
+            if args.command == "research-status":
+                result = research.research_status(args.workspace)
+            elif args.command == "source-add":
+                result = research.add_source(args.workspace, url=args.url, scope=args.scope, name=args.name)
+            elif args.command == "source-discover":
+                result = research.discover_candidates(args.workspace, source_id=args.source_id, limit=args.limit)
+            elif args.command == "product-set":
+                result = research.set_product(args.workspace, identifiers=_pairs(args.identifier),
+                                              required_specs=_pairs(args.spec) if args.spec is not None else None)
+            else:
+                result = research.generate_draft(args.workspace, output_path=args.output)
+        elif args.command == "verify":
+            from .activation import verify_config
+            result = verify_config(args.config, receipt_path=args.receipt, samples_path=args.samples)
+        elif args.command == "activate":
+            from .activation import activate_config
+            result = activate_config(args.config, receipt_path=args.receipt, output_path=args.output)
+        elif args.command == "doctor":
             from .doctor import doctor
             result = doctor()
         elif args.command == "serve-mcp":
@@ -48,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
             config = load_config(args.config)
             source = next((s for s in config.sources if s.id == args.source_id), None)
             if source is None:
-                raise ValueError("없는 출처 ID")
+                raise ValueError("Unknown source ID.")
             result = discover(source, config.base_dir, limit=args.limit)
         else:
             config = load_config(args.config)
@@ -69,8 +150,8 @@ def main(argv: list[str] | None = None) -> int:
                 finally:
                     store.close()
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        return 0
-    except (ValueError, OSError, RuntimeError) as exc:
+        return 1 if args.command == "verify" and not result["eligible"] else 0
+    except (ValueError, OSError, RuntimeError, EOFError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
