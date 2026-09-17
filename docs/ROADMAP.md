@@ -16,9 +16,9 @@ After initial setup, SourceLedger should discover relevant sources, collect evid
 ## Stages
 
 1. **First-run research workspace — implemented.** Save industry, one lead product, market, identifiers, and authorized candidates in English or Korean. The regular collection configuration remains separate and supports multiple products.
-2. **Bounded source discovery and draft — seed implemented.** Persist explicit candidates; discover bounded same-host links with HTTP/browser fallback; generate a draft only from explicit identifiers and candidates. Search-provider integration remains pending.
+2. **Bounded source discovery and draft — implemented.** Persist explicit candidates, discover same-host links with HTTP/browser fallback, and optionally query a configured SearXNG server. Search results remain candidates with provenance. Generate drafts only from explicit identifiers and candidates.
 3. **Verification and activation — implemented.** Verify exact configuration and retained evidence, optionally check known samples, and activate only an unchanged passing configuration. Local receipts are audit records, not signatures.
-4. **Rule proposals and adaptive collection — pending.** Add AI-supported extraction-rule and browser-recipe proposals, human-reviewable validation, change detection, and recovery. An agent runtime is not yet present.
+4. **Rule proposals and bounded execution — implemented in 0.3.** Structured-data and semantic-HTML proposals, optional local Ollama selectors, checkpointed source processing, fresh combined verification, and optional sample-gated activation. Browser action planning, rule-change repair, and live model evaluation remain pending.
 5. **Operations and client delivery — pending.** Add scheduling, restart recovery, bounded model/browser usage, exception notifications, client UI verification, and controlled deployment.
 
 ## Acceptance criteria for the next stage
@@ -28,4 +28,4 @@ After initial setup, SourceLedger should discover relevant sources, collect evid
 - Representative intended sites measure extraction accuracy, access outcomes, and browser fallback behavior before unattended operation is claimed.
 - Scheduling and agent actions have explicit time, browser, and model-cost limits with actionable failure records.
 
-This roadmap describes staged work. It does not claim that search-provider integration, AI rule generation, an agent loop, or unattended operation are already available.
+Next priority: evaluate representative intended sites and configured providers, then add controlled recipe recovery and operations. A bounded controller is available; unrestricted autonomous operation is not.

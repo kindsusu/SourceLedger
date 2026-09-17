@@ -22,7 +22,7 @@ import httpx
 from .models import FetchResult, Source, resolve_path, utc_now
 
 
-USER_AGENT = "source-ledger/0.2 (+authorized price research)"
+USER_AGENT = "source-ledger/0.3 (+authorized price research)"
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_REDIRECTS = 10
 _PASSWORD_FIELD = re.compile(r"<input\b[^>]*(?:type\s*=\s*['\"]?password|name\s*=\s*['\"]password['\"]?)", re.I)

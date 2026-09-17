@@ -1,0 +1,9 @@
+{
+  "provider": "ollama",
+  "endpoint": "http://127.0.0.1:11434/api/chat",
+  "model": "YOUR_INSTALLED_LOCAL_MODEL",
+  "local_only": true,
+  "timeout_seconds": 30,
+  "max_input_chars": 30000,
+  "num_predict": 1200
+}

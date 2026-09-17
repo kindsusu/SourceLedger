@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "source-ledger"
-version = "0.2.0"
+version = "0.3.0"
 description = "Evidence-first product price collection, provenance storage, and XLSX reporting"
 requires-python = ">=3.11"
 dependencies = ["httpx>=0.27,<1", "beautifulsoup4>=4.12,<5", "XlsxWriter>=3.2,<4", "openpyxl>=3.1,<4", "pypdf>=5,<7"]

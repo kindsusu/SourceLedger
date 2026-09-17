@@ -2,7 +2,7 @@
 
 [English](GETTING_STARTED.md) | [한국어](GETTING_STARTED.ko.md)
 
-SourceLedger 0.2는 초기 설정과 범위가 정해진 수집 흐름을 제공합니다. 처음에는 사용자가 주제·접근 가능한 출처·정확한 식별자·추출 규칙을 정합니다. 이후 저장한 규칙으로 반복 수집합니다. 검색과 AI 규칙 생성은 후속 범위입니다.
+이 안내는 사용자가 주제·접근 가능한 출처·정확한 식별자·추출 규칙을 정하고 반복 수집하는 수동 설정 흐름입니다. 0.3의 [검색·규칙 제안·에이전트 실행](AUTOMATION.ko.md)을 이용하면 설정 작업을 줄일 수 있습니다.
 
 ## 1. 주제 입력
 
@@ -79,4 +79,4 @@ source-ledger run --config .sourceledger/active-v1.json
 
 같은 연구의 `output_dir`을 유지하면 새 `run`마다 SQLite에 실행·관측이 누적됩니다. 미완료 실행은 `run --resume RUN_ID`로 이어갑니다. 근거는 SHA-256과 함께 보존되며 실행별 XLSX를 생성합니다. 없는 값은 빈칸입니다. CSV는 입력을 지원하며 출력은 SQLite와 XLSX입니다.
 
-현재 확인 범위는 [구현 상태](IMPLEMENTATION_STATUS.md), 검색·규칙 생성·예약 운영·클라이언트 연결 등 후속 작업은 [로드맵](ROADMAP.ko.md)을 참고하세요.
+현재 확인 범위는 [구현 상태](IMPLEMENTATION_STATUS.md), 규칙 복구·예약 운영·클라이언트 연결 등 후속 작업은 [로드맵](ROADMAP.ko.md)을 참고하세요.

@@ -2,7 +2,7 @@
 
 [English](GETTING_STARTED.md) | [한국어](GETTING_STARTED.ko.md)
 
-SourceLedger 0.2 provides a bounded onboarding and collection workflow. An operator supplies the initial topic, authorized source URLs, exact product identifiers, and extraction rules. Saved rules then support repeated collection. Search and AI rule generation are future work.
+This guide covers manual onboarding and collection. An operator supplies the initial topic, authorized source URLs, exact product identifiers, and extraction rules. Saved rules support repeated collection. Version 0.3 additionally provides [bounded search, rule proposals, and agent execution](AUTOMATION.md).
 
 ## 1. Enter the topic
 
@@ -79,4 +79,4 @@ Activation creates a standalone config with absolute file paths. It does not reg
 
 Keep the same `output_dir` for a research series. Each new `run` appends a run and its observations to SQLite; `run --resume RUN_ID` continues an unfinished run. Evidence files retain their SHA-256 hashes, and XLSX files are generated for each run. Unknown values remain blank. CSV is supported as input, while output remains SQLite plus XLSX.
 
-See [implementation status](STATUS.md) for tested behavior and [the roadmap](ROADMAP.md) for autonomous search, rule generation, scheduling, and client integrations still to be built.
+See [implementation status](STATUS.md) for tested behavior and [the roadmap](ROADMAP.md) for recipe recovery, scheduling, and client integration work.

@@ -50,7 +50,21 @@ source-ledger research-status
 
 Setup asks for industry, product, and market. It does not ask for an analysis purpose. Then register authorized source URLs, optionally discover links, supply exact identifiers, and create a collection draft. See [the getting-started guide](docs/GETTING_STARTED.md) for the complete workflow and [the roadmap](docs/ROADMAP.md) for remaining automation work.
 
-The research workspace supports one product lead; collection configurations support multiple exact products. Candidate discovery does not generate extraction rules. Fill in and check the draft rules before verification.
+The research workspace supports one product lead; collection configurations support multiple exact products. `draft` creates a manual starting point; `propose` can inspect source HTML and suggest extraction rules. Both remain separate from verified observations.
+
+### Bounded research execution
+
+Version 0.3 adds optional SearXNG keyword search, source-backed selector proposals, and a checkpointed controller. After setup, register authorized URLs and exact identifiers, then run:
+
+```powershell
+source-ledger product-set --identifier model=YOUR_EXACT_MODEL
+source-ledger source-add --url "https://your-vendor.example/product"
+source-ledger agent --run-dir .sourceledger/runs/run-001 --max-sources 3 --max-seconds 120
+```
+
+The agent proposes rules for selected sources, then performs a fresh combined collection and verification into SQLite and XLSX. Incomplete sources remain visible. `--resume` preserves saved scope and budgets; `--max-steps` pauses at a source boundary. External operations use bounded timeouts; the overall time budget is cooperative, not a hard process kill.
+
+Keyword search requires an explicitly configured SearXNG server. Optional Ollama assistance accepts a configured loopback server with cloud disabled and an installed local model; model calls default to zero. Models return selectors only. Automatic activation additionally requires `--activate` and known samples covering every selected source. See the [automation guide](docs/AUTOMATION.md) for configuration, limits, and tested scope.
 
 Configuration is JSON. Each product has `identifiers` to match against source material; each source has a fixed `location` and `product_ids`. A web source must list its URL host in `allowed_domains`. Internal material is limited to local file sources under `file_root`, or to authorized internal web sources. A file source may read only from its base directory or explicitly configured `file_root`.
 
@@ -125,8 +139,9 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 
 ## Current limits
 
-- First-run setup, saved candidates, drafts, and configuration verification are available. Search-provider integration, AI-generated extraction rules, and an autonomous agent loop remain unimplemented.
-- Discovery is limited to configured HTML/sitemap sources. Arbitrary web search, automatic learning, and automated login are not provided.
+- Keyword search requires your configured SearXNG instance. No shared/public search endpoint is silently chosen.
+- Selector proposals support structured data and semantic HTML, with optional local model assistance. New browser action plans, automated login, and unattended rule self-repair are not implemented.
+- SearXNG/Ollama request paths are tested with controlled responses; actual servers, models, and representative live sites remain to be validated. Loopback transport alone does not establish where a proxy executes a model; configure Ollama with cloud disabled.
 - Claude and ChatGPT UI connections have not been verified. Remote ChatGPT use requires an authenticated deployment and an artifact download path.
 - Crawl4AI is optional and has not been installed or validated against live sites in this environment.
 - Services that incur cost or external transfer, including UWS, Jina, and Exa, are not connected.
@@ -143,6 +158,6 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 - Business definitions for `price_basis`, pack quantity, unit-price calculation, and price type
 - The intended connection target (Claude Desktop or ChatGPT) and its execution environment
 
-Scanned-document OCR, collecting outside configured sources, and autonomous rule generation require separate design and validation once representative sources are available. ERP integration and analysis/simulation features are outside this scope.
+Scanned-document OCR, autonomous browser navigation, rule recovery, and scheduled operation require further design and validation. ERP integration and analysis/simulation features are outside this scope.
 
 See [implementation status](docs/STATUS.md) for implemented scope and validation.

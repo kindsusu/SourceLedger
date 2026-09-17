@@ -261,7 +261,8 @@ def research_status(path: str | Path) -> dict[str, Any]:
             "status": source["status"], "scope": source["scope"],
         } for source in value["sources"]],
         "next_actions": next_actions,
-        "search": {"status": "search_provider_unconfigured", "network_calls": 0},
+        "search": {"status": "search_provider_unconfigured", "network_calls": 0,
+                   "note": "Pass --provider-config to search or --search-config to agent; provider settings are kept outside this workspace."},
     }
 
 

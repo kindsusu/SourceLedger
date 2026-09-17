@@ -37,7 +37,8 @@ def test_init_defaults_to_english_and_korean_changes_only_locale(tmp_path):
     assert status["focus"] == "research candidates only; verified config tracked separately via receipts"
     assert status["sources"] == []
     assert status["next_actions"][0] == "Set an exact model, SKU, or other product identifier."
-    assert status["search"] == {"status": "search_provider_unconfigured", "network_calls": 0}
+    assert status["search"]["status"] == "search_provider_unconfigured"
+    assert status["search"]["network_calls"] == 0
     ko_status = research.research_status(korean_path)
     assert ko_status["next_actions"][0] == "정확한 모델, SKU 또는 다른 상품 식별자를 설정하세요."
 

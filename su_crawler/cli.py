@@ -61,6 +61,31 @@ def main(argv: list[str] | None = None) -> int:
     candidates.add_argument("--workspace", default=DEFAULT_WORKSPACE)
     candidates.add_argument("--source-id", required=True)
     candidates.add_argument("--limit", type=int, default=100)
+    search = sub.add_parser("search", help="Find candidate sources through an explicitly configured SearXNG server.")
+    search.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    search.add_argument("--provider-config")
+    search.add_argument("--query")
+    search.add_argument("--limit", type=int, default=10)
+    proposal = sub.add_parser("propose", help="Propose source-backed extraction rules without activating them.")
+    proposal.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    proposal.add_argument("--source-id", required=True)
+    proposal.add_argument("--output-dir", required=True)
+    proposal.add_argument("--model-config")
+    proposal.add_argument("--max-model-calls", type=int, default=0)
+    proposal.add_argument("--timeout", type=float, default=30)
+    agent = sub.add_parser("agent", help="Run or resume a bounded search, proposal, and verification batch.")
+    agent.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    agent.add_argument("--run-dir", required=True)
+    agent.add_argument("--search-config")
+    agent.add_argument("--model-config")
+    agent.add_argument("--samples")
+    agent.add_argument("--source-id", action="append")
+    agent.add_argument("--max-sources", type=int, default=3)
+    agent.add_argument("--max-model-calls", type=int, default=0)
+    agent.add_argument("--max-seconds", type=float, default=120)
+    agent.add_argument("--max-steps", type=int)
+    agent.add_argument("--activate", action="store_true")
+    agent.add_argument("--resume", action="store_true")
     product = sub.add_parser("product-set", help="Replace explicit product identifiers and optional specifications.")
     product.add_argument("--workspace", default=DEFAULT_WORKSPACE)
     product.add_argument("--identifier", action="append", required=True, metavar="KEY=VALUE")
@@ -110,6 +135,21 @@ def main(argv: list[str] | None = None) -> int:
                                               required_specs=_pairs(args.spec) if args.spec is not None else None)
             else:
                 result = research.generate_draft(args.workspace, output_path=args.output)
+        elif args.command == "search":
+            from .search import search_workspace
+            result = search_workspace(args.workspace, provider_path=args.provider_config, query=args.query, limit=args.limit)
+        elif args.command == "propose":
+            from .proposals import propose_source
+            result = propose_source(args.workspace, source_id=args.source_id, output_dir=args.output_dir,
+                                    model_config_path=args.model_config, timeout_seconds=args.timeout,
+                                    max_model_calls=args.max_model_calls)
+        elif args.command == "agent":
+            from .agent import run_agent
+            result = run_agent(args.workspace, run_dir=args.run_dir, search_config_path=args.search_config,
+                               model_config_path=args.model_config, samples_path=args.samples, source_ids=args.source_id,
+                               max_sources=args.max_sources, max_model_calls=args.max_model_calls,
+                               max_seconds=args.max_seconds, max_steps=args.max_steps,
+                               activate=args.activate, resume=args.resume)
         elif args.command == "verify":
             from .activation import verify_config
             result = verify_config(args.config, receipt_path=args.receipt, samples_path=args.samples)
@@ -150,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
                 finally:
                     store.close()
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        if args.command in {"search", "propose", "agent"}:
+            return 0 if result.get("status") in {"searched", "proposed", "completed", "paused"} else 1
         return 1 if args.command == "verify" and not result["eligible"] else 0
     except (ValueError, OSError, RuntimeError, EOFError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
