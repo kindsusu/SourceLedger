@@ -1,0 +1,15 @@
+include README.md README.ko.md pyproject.toml
+include setup.cmd setup.sh source-ledger.cmd source-ledger.sh
+include SourceLedger.png
+recursive-include scripts *.py
+recursive-include requirements *.txt
+recursive-include examples *.json
+recursive-include examples/fixtures *.csv *.html
+recursive-include docs *.md
+recursive-include docs/architecture *.json *.html *.png *.txt
+recursive-include tests *.py *.html
+prune .tmp
+prune .sourceledger
+prune .research
+prune outputs
+prune .venv

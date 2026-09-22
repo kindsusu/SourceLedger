@@ -93,6 +93,29 @@ def _evidence_problem(row: dict[str, Any], config: CollectionConfig,
         cache[hash_key] = _file_hash(path)
     if cache[hash_key] != expected_hash:
         return "source evidence hash mismatch"
+    artifacts = row.get("evidence_artifacts") or {}
+    if not isinstance(artifacts, dict):
+        return "source evidence artifact manifest is invalid"
+    if artifacts:
+        if not {"content", "receipt"}.issubset(artifacts) or set(artifacts) - {"content", "receipt", "screenshot"}:
+            return "source evidence artifact manifest is invalid"
+        evidence_root = (Path(config.output_dir) / "evidence").resolve()
+        for name, artifact in artifacts.items():
+            if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str) or not isinstance(artifact.get("sha256"), str):
+                return "source evidence artifact manifest is invalid"
+            artifact_path = Path(artifact["path"]).resolve()
+            if not artifact_path.is_relative_to(evidence_root):
+                return "source evidence artifact is outside the evidence directory"
+            if not artifact_path.is_file():
+                return f"source {name} artifact is missing"
+            artifact_key = ('hash', str(artifact_path))
+            if artifact_key not in cache:
+                cache[artifact_key] = _file_hash(artifact_path)
+            if cache[artifact_key] != artifact["sha256"]:
+                return f"source {name} artifact hash mismatch"
+        if (Path(artifacts["content"]["path"]).resolve() != path.resolve()
+                or artifacts["content"]["sha256"] != expected_hash):
+            return "source content artifact does not match the observation"
     # Bind the stored fields to the evidence bytes using the same deterministic
     # extractor.  A matching file hash alone cannot detect a modified database.
     from .extraction import extract
@@ -106,8 +129,10 @@ def _evidence_problem(row: dict[str, Any], config: CollectionConfig,
     # capture or downgrading a retained rendered snapshot to a static response.
     backend = 'verification'
     final_url = row.get('source_url') or source.location
-    if source.adapter:
+    if source.adapter or artifacts or row.get('evidence_mode', 'unknown') != 'unknown':
         receipt_path = path.with_name(f"{expected_hash}.{stable_id(row.get('collected_at'), source.id)}.json")
+        if artifacts and Path(artifacts['receipt']['path']).resolve() != receipt_path.resolve():
+            return 'source receipt artifact does not match the observation'
         receipt_key = ('receipt', str(receipt_path))
         if receipt_key not in cache:
             try:
@@ -122,6 +147,8 @@ def _evidence_problem(row: dict[str, Any], config: CollectionConfig,
                 or receipt.get('backend') not in {'file', 'http', 'playwright', 'crawl4ai'}):
             return 'source fetch receipt does not match the observation'
         backend = receipt['backend']
+        if artifacts and receipt.get('artifacts') != {key: value for key, value in artifacts.items() if key != 'receipt'}:
+            return 'source fetch receipt artifact manifest does not match the observation'
     extract_key = ('extract', resolved, expected_hash, _json_hash(asdict(source)), backend, final_url)
     if extract_key not in cache:
         cache[extract_key] = extract(FetchResult(source.id, "fetched", backend,
@@ -151,7 +178,7 @@ def _evidence_problem(row: dict[str, Any], config: CollectionConfig,
     }
     semantics.update(key for key in (
         'value_origin', 'source_visibility', 'derived_values', 'derived_amount',
-        'price_profile', 'verification_level', 'rental_conditions', 'review_flags'
+        'price_profile', 'verification_level', 'rental_conditions', 'review_flags', 'evidence_mode'
     ) if key in row)
     if any(recomputed.get(key) != row.get(key) for key in semantics):
         return "stored observation semantics do not match source evidence"

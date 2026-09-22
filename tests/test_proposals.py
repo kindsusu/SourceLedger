@@ -35,11 +35,11 @@ def test_semantic_proposal_preserves_evidence_and_never_fabricates_conditions(tm
     result = proposals.propose_source(path, source_id=source_id, output_dir=tmp_path / "proposal", max_model_calls=0)
     assert result["status"] == "needs_review"
     assert result["method"] == "semantic"
-    assert calls == ["http"]
+    assert calls == ["http", "playwright"]
     assert result["model_calls"] == 0
     assert result["draft_path"] and result["eligible_for_verification"] is False
     assert "pack_quantity" not in result["rules"]["selectors"]
-    evidence = (tmp_path / "proposal" / "evidence.http.html").read_bytes()
+    evidence = (tmp_path / "proposal" / "evidence.playwright.html").read_bytes()
     assert result["evidence_sha256"] == hashlib.sha256(evidence).hexdigest()
     assert result["preview_observations"][0]["raw_fields"]["price"] == "12000"
     assert result["preview_observations"][0]["evidence_path"] == result["evidence_path"]
@@ -49,6 +49,44 @@ def test_semantic_proposal_preserves_evidence_and_never_fabricates_conditions(tm
     assert draft["sources"][0]["account_scope"] == "public"
     assert draft["sources"][0]["location"] == "https://example.com/p"
     assert draft["output_dir"] == str((tmp_path / "proposal" / "collection").resolve())
+
+
+@pytest.mark.parametrize("browser_status", ["timeout", "tool_unavailable", "fetched"])
+def test_failed_or_empty_browser_keeps_http_preview_with_original_evidence(tmp_path, monkeypatch, browser_status):
+    path, source_id = workspace(tmp_path)
+    html = '''<article class="product"><span data-field="model">TEST-A</span>
+      <span class="price">12000</span><span class="currency">KRW</span></article>'''
+    calls = []
+    def capture(source, base, backend):
+        calls.append(backend)
+        if backend == "http":
+            return fetched(source, html, backend)
+        return FetchResult(source.id, browser_status, backend, content=b"<html>empty</html>")
+    monkeypatch.setattr(proposals, "collect", capture)
+    result = proposals.propose_source(path, source_id=source_id, output_dir=tmp_path / "p", max_model_calls=0)
+    assert calls == ["http", "playwright"]
+    assert result["status"] == "needs_review"
+    assert result["capture"]["backend"] == "http"
+    assert result["evidence_path"].endswith("evidence.http.html")
+    preview = result["preview_observations"][0]
+    assert preview["raw_fields"]["price"] == "12000"
+    assert preview["evidence_sha256"] == result["evidence_sha256"] == hashlib.sha256(html.encode()).hexdigest()
+    assert preview["evidence_path"] == result["evidence_path"]
+    assert preview["source_visibility"] == "unconfirmed"
+    assert result["eligible_for_verification"] is False
+
+
+def test_browser_policy_denial_blocks_earlier_unconfirmed_proposal(tmp_path, monkeypatch):
+    path, source_id = workspace(tmp_path)
+    html = '<article class="product"><b class="model">TEST-A</b><b class="price">12000</b></article>'
+    monkeypatch.setattr(proposals, "collect", lambda source, base, backend:
+                        fetched(source, html) if backend == "http" else
+                        FetchResult(source.id, "policy_denied", backend, message="Destination denied"))
+    result = proposals.propose_source(path, source_id=source_id, output_dir=tmp_path / "p")
+    assert result["status"] == "blocked"
+    assert result["draft_path"] is None
+    assert result["preview_observations"] == []
+    assert result["eligible_for_verification"] is False
 
 
 def test_jsonld_exact_product_is_structured_but_missing_conditions_remain_review(tmp_path, monkeypatch):

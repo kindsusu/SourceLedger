@@ -104,9 +104,10 @@ def test_agent_pause_resume_does_not_repeat_completed_source(tmp_path):
                       "--source-id", ids[0], "--source-id", ids[1], "--max-steps", "1", "--max-seconds", "30")
         resumed = cli("agent", "--workspace", str(workspace), "--run-dir", str(tmp_path / "run"), "--resume", expected=1)
     assert initial["status"] == "paused"
-    # The first source is a completed proposal.  Final verification happens
-    # once, after every selected source has been proposed.
-    assert initial["tasks"][0]["status"] in {"proposed", "verified"}
+    # The first source reached a terminal proposal outcome. A missing or
+    # temporarily unavailable browser can correctly leave static HTML in
+    # needs_review; resume must still not repeat that completed attempt.
+    assert initial["tasks"][0]["status"] in {"proposed", "verified", "needs_review"}
     assert resumed["tasks"][0]["attempt_dir"] == initial["tasks"][0]["attempt_dir"]
     assert resumed["tasks"][1]["status"] in {"needs_review", "failed"}
     assert resumed["status"] == "needs_review"

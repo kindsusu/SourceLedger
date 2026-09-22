@@ -22,6 +22,81 @@ def _matches(candidate: Candidate, product: Product) -> bool:
                for key, value in product.identifiers.items())
 
 
+def _candidate_quality(candidate: Candidate, decimal_separator: str = ".") -> tuple[int, ...]:
+    """Rank evidence quality without treating duplicate rows as stronger proof."""
+    from .validation import _amount
+
+    price = candidate.fields.get("price")
+    estimate = candidate.derived_values.get("estimated_price")
+    has_price = _amount(price, decimal_separator)[0] is not None
+    has_estimate = _amount(estimate, decimal_separator)[0] is not None
+    visibility = getattr(candidate, "source_visibility", "unconfirmed")
+    mode = getattr(candidate, "evidence_mode", "unknown")
+    visibility_rank = {"hidden": 0, "unconfirmed": 1, "not_applicable": 2, "visible": 3}.get(visibility, 0)
+    mode_rank = {"static_html": 0, "unknown": 1, "document_text": 2,
+                 "structured_record": 2, "rendered_dom": 3}.get(mode, 1)
+    def field_proven(name: str, value) -> bool:
+        proof = candidate.evidence.get(name) or {}
+        if (not str(proof.get("location", "")).strip() or proof.get("raw") is None
+                or str(proof["raw"]).strip() != str(value).strip()
+                or proof.get("formula_cache_missing")):
+            return False
+        display_state = proof.get("display_state")
+        if mode == "unknown":
+            return visibility != "hidden"
+        if mode in {"document_text", "structured_record"}:
+            return display_state == "not_applicable"
+        return display_state == "visible"
+    price_proven = has_price and visibility != "hidden" and field_proven("price", price)
+    estimate_proven = (has_estimate and visibility != "hidden"
+                       and field_proven("derived_values.estimated_price", estimate))
+    directly_proven = price_proven or estimate_proven
+    condition_fields = {
+        "currency", "unit", "pack_quantity", "tax", "price_type", "price_basis",
+        "option", "options", "quantity_tier", "min_order", "member_condition",
+        "membership", "shipping", "delivery", "availability", "term_months",
+        "deposit_amount", "advance_amount", "annual_mileage_km", "trim", "condition",
+        "insurance", "upfront_deposit_amount", "deposit_installment_amount",
+        "deposit_installment_months", "deposit_percent", "deposit_percent_basis", "vehicle_value",
+    }
+    proven_conditions = sum(
+        value is not None and name in candidate.evidence
+        for name, value in candidate.fields.items() if name in condition_fields
+    )
+    nested_conditions = candidate.fields.get("rental_conditions")
+    if isinstance(nested_conditions, dict):
+        proven_conditions += sum(
+            value is not None and (f"rental_conditions.{name}" in candidate.evidence
+                                   or "rental_conditions" in candidate.evidence)
+            for name, value in nested_conditions.items() if name in condition_fields
+        )
+    return (
+        int(price_proven), int(estimate_proven),
+        int(directly_proven), int(has_price), int(has_estimate),
+        visibility_rank, mode_rank, min(proven_conditions, len(condition_fields)),
+    )
+
+
+def _response_quality(candidates: list[Candidate], decimal_separator: str = ".") -> tuple[int, ...]:
+    """Rank one response for one product; completeness only breaks proof ties."""
+    if not candidates:
+        return (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    best = max(_candidate_quality(candidate, decimal_separator) for candidate in candidates)
+    condition_sets = {
+        json.dumps({key: value for key, value in candidate.fields.items()
+                    if key not in {"price", "amount", "name", "description"}},
+                   ensure_ascii=False, sort_keys=True, default=str)
+        for candidate in candidates
+    }
+    return (1, *best, min(len(condition_sets), 100), min(len(candidates), 100))
+
+
+def _has_sufficient_evidence(candidates: list[Candidate], decimal_separator: str = ".") -> bool:
+    qualities = [_candidate_quality(candidate, decimal_separator) for candidate in candidates]
+    commercial = [quality for quality in qualities if quality[3] or quality[4]]
+    return bool(commercial) and all(quality[0] or quality[1] for quality in commercial)
+
+
 def _save_evidence(directory: Path, result: FetchResult, source: Source) -> tuple[str, str]:
     digest = hashlib.sha256(result.content).hexdigest()
     dest = directory / "evidence" / digest[:2]
@@ -36,11 +111,17 @@ def _save_evidence(directory: Path, result: FetchResult, source: Source) -> tupl
         # retrieved bytes; never accept the filename as proof of its content.
         path.write_bytes(result.content)
     receipt = dest / f"{digest}.{stable_id(result.fetched_at, source.id)}.json"
+    artifacts = {"content": {"path": str(path), "sha256": digest}}
+    if result.screenshot:
+        screenshot = receipt.with_suffix(".png")
+        screenshot.write_bytes(result.screenshot)
+        artifacts["screenshot"] = {"path": str(screenshot), "sha256": hashlib.sha256(result.screenshot).hexdigest()}
     receipt.write_text(json.dumps({"source_id": source.id, "url": result.final_url, "at": result.fetched_at,
         "backend": result.backend, "hash": digest, "recipe_version": source.recipe_version, "account_scope": source.account_scope,
-        "trace": result.trace, "http_metadata": result.http_metadata}, ensure_ascii=False, indent=2), encoding="utf-8")
-    if result.screenshot:
-        receipt.with_suffix(".png").write_bytes(result.screenshot)
+        "trace": result.trace, "http_metadata": result.http_metadata,
+        "artifacts": artifacts}, ensure_ascii=False, indent=2), encoding="utf-8")
+    artifacts["receipt"] = {"path": str(receipt), "sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()}
+    result.evidence_artifacts = artifacts
     return str(path), digest
 
 
@@ -90,7 +171,7 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
 
 def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_id: str | None = None, collector=None,
             max_tasks: int | None = None,
-            prefetched: dict[str, tuple[FetchResult, list[Candidate]]] | None = None) -> dict:
+            prefetched: dict[str, tuple[FetchResult, list[Candidate]] | list[tuple[FetchResult, list[Candidate]]]] | None = None) -> dict:
     """Bounded, resumable collection. max_tasks is useful for supervised batches."""
     from .collectors import collect
     from .extraction import extract
@@ -146,26 +227,29 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                     backends = [b for b in backends if b == "playwright"] or ["playwright"]
                 responses: list[tuple[FetchResult, list[Candidate]]] = []
                 best_by_task: dict[str, int] = {}
-                score_by_task: dict[str, tuple[int, int, int]] = {}
+                score_by_task: dict[str, tuple[int, ...]] = {}
                 fallback_index: int | None = None
-                fallback_score = (-1, -1, -1)
+                fallback_score: tuple[int, ...] = (-1,)
                 last = FetchResult(source.id, "failed", backends[0], message="Collection did not complete")
                 used = max(t["attempts"] for t in tasks)
                 captured = (prefetched or {}).get(source.id)
-                max_calls = used + 1 if captured else source.max_attempts * len(backends)
+                captured_responses = ([captured] if isinstance(captured, tuple) else list(captured or []))
+                max_calls = used + len(captured_responses) if captured_responses else source.max_attempts * len(backends)
                 for call in range(used, max_calls):
                     if time.monotonic() >= deadline:
                         last = FetchResult(source.id, "budget_exhausted", "none", message="Run time limit reached")
                         break
-                    backend = captured[0].backend if captured else backends[call % len(backends)]
+                    captured_response = captured_responses[call - used] if captured_responses else None
+                    backend = captured_response[0].backend if captured_response else backends[call % len(backends)]
                     bounded = replace(source, timeout_seconds=min(source.timeout_seconds, max(0.1, deadline - time.monotonic())))
-                    saved = None if captured else load_snapshot(store, directory, source, backend)
+                    saved = None if captured_response else load_snapshot(store, directory, source, backend)
                     try:
-                        last = captured[0] if captured else conditional_fetch(collector, bounded, config.base_dir, backend, saved)
+                        last = captured_response[0] if captured_response else conditional_fetch(collector, bounded, config.base_dir, backend, saved)
                     except Exception as exc:
                         # Exception payloads can contain credential-bearing URLs; report type only.
                         last = FetchResult(source.id, "failed", backend, message=f"Collector error: {type(exc).__name__}")
-                    attempts = next((event['attempts'] for event in last.trace if captured and event.get('event') == 'prefetched_attempts'), None)
+                    attempts = next((event['attempts'] for event in last.trace
+                                     if len(captured_responses) == 1 and event.get('event') == 'prefetched_attempts'), None)
                     attempts = attempts or [{'backend': backend, 'status': last.status, 'at': last.fetched_at,
                                              'message': last.message, 'trace': last.trace}]
                     for attempt in attempts:
@@ -177,7 +261,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                                               json.dumps({'message': attempt['message'], 'trace': attempt['trace']}, ensure_ascii=False)))
                     if last.status == "fetched":
                         try:
-                            candidates = captured[1] if captured else extract_current(last, source, saved, extract)
+                            candidates = captured_response[1] if captured_response else extract_current(last, source, saved, extract)
                         except Exception as exc:
                             candidates = []
                             last.message = f"Extraction rules need review: {type(exc).__name__}"
@@ -189,39 +273,43 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                         for task in tasks:
                             product = product_map[task["product_id"]]
                             matches = [candidate for candidate in candidates if _matches(candidate, product)]
-                            priced = sum(candidate.fields.get("price") is not None
-                                         or candidate.derived_values.get("estimated_price") is not None
-                                         for candidate in matches)
-                            score = (int(bool(matches)), priced, len(matches))
-                            if score > score_by_task.get(task["id"], (-1, -1, -1)):
+                            score = _response_quality(matches, source.decimal_separator)
+                            if score > score_by_task.get(task["id"], (-1,)):
                                 score_by_task[task["id"]] = score
                                 best_by_task[task["id"]] = response_index
                             matched_tasks += int(bool(matches))
-                            priced_matches += priced
-                        score = (matched_tasks, priced_matches, len(candidates))
+                            priced_matches += int(any(candidate.fields.get("price") is not None for candidate in matches))
+                        score = (matched_tasks, priced_matches,
+                                 max((_candidate_quality(c, source.decimal_separator) for c in candidates), default=(-1,)))
                         if score > fallback_score:
                             fallback_index, fallback_score = response_index, score
-                        # Coverage can be assembled from separate original
-                        # responses, provided every task has its own priced row.
-                        if source.kind == "file" or all(
-                                score_by_task.get(task["id"], (0, 0, 0))[1] > 0
-                                and score_by_task[task["id"]][1] == score_by_task[task["id"]][2] for task in tasks):
+                        # A visible, directly supported price is sufficient;
+                        # missing optional commercial conditions do not cause
+                        # retries beyond the configured finite budget.
+                        if (not captured_responses and (source.kind == "file" or all(
+                                _has_sufficient_evidence([
+                                    candidate for candidate in responses[best_by_task[task["id"]]][1]
+                                    if _matches(candidate, product_map[task["product_id"]])
+                                ], source.decimal_separator) for task in tasks if task["id"] in best_by_task)
+                                and len(best_by_task) == len(tasks))):
                             break
-                    if last.status in {"policy_denied", "needs_auth"}:
+                    if not captured_responses and last.status in {"policy_denied", "needs_auth"}:
                         # Auth can still be handled by an explicitly configured browser profile.
                         if last.status == "policy_denied" or backend == "playwright":
                             break
-                    if call + 1 < max_calls:
+                    if not captured_responses and call + 1 < max_calls:
                         time.sleep(min(source.min_interval_seconds, max(0, deadline - time.monotonic())))
                 if responses:
-                    selected_indexes = set(best_by_task.values())
+                    selected_indexes = set(range(len(responses))) if captured_responses else set(best_by_task.values())
                     if fallback_index is not None:
                         selected_indexes.add(fallback_index)
                     evidence_by_response: dict[int, tuple[str, str]] = {}
                     for response_index in sorted(selected_indexes):
                         fetched, candidates = responses[response_index]
                         evidence_path, digest = _save_evidence(directory, fetched, source)
-                        save_snapshot(store, source, fetched, candidates, evidence_path, digest)
+                        snapshot_source = (replace(source, backends=[fetched.backend], recipe=[])
+                                           if captured_responses and fetched.backend == "http" else source)
+                        save_snapshot(store, snapshot_source, fetched, candidates, evidence_path, digest)
                         evidence_by_response[response_index] = (evidence_path, digest)
                     for task in tasks:
                         response_index = best_by_task.get(task["id"], fallback_index)
@@ -235,6 +323,8 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                         rows = [validate(c, product, source, run_id=run_id, task_id=task["id"], evidence_path=evidence_path,
                                          evidence_sha256=digest, collected_at=fetched.fetched_at,
                                          source_url=fetched.final_url or source.location).to_dict() for c in matches]
+                        for row in rows:
+                            row["evidence_artifacts"] = dict(fetched.evidence_artifacts)
                         _conflicts(rows)
                         if rows:
                             state = "verified" if all(r["status"] == "verified" for r in rows) else "price_unavailable" if all(r["status"] == "price_unavailable" for r in rows) else "review"

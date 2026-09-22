@@ -3,26 +3,8 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
-import os
-from pathlib import Path
 
-
-def _system_chrome() -> Path | None:
-    candidates = [shutil.which("chrome"), shutil.which("msedge")]
-    for root_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
-        root = os.environ.get(root_name)
-        if root:
-            candidates.extend(
-                [
-                    str(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"),
-                    str(Path(root) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
-                ]
-            )
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file():
-            return Path(candidate)
-    return None
-
+from .browser_runtime import select_browser_runtime
 
 def _playwright_browser_ready() -> tuple[bool, str]:
     if importlib.util.find_spec("playwright") is None:
@@ -31,12 +13,9 @@ def _playwright_browser_ready() -> tuple[bool, str]:
         from playwright.sync_api import sync_playwright
 
         with sync_playwright() as pw:
-            executable = Path(pw.chromium.executable_path)
-            if executable.is_file():
-                return True, f"Chromium executable found: {executable.name}"
-            system_browser = _system_chrome()
-            if system_browser:
-                return True, f"System browser executable found: {system_browser.name}"
+            runtime = select_browser_runtime(pw.chromium)
+            if runtime:
+                return True, f"{runtime.name} executable found: {runtime.executable.name}"
             return False, "Package is installed but no Chromium executable was found"
     except Exception as exc:
         return False, f"Package is installed but its runtime could not be checked: {exc}"
@@ -83,6 +62,6 @@ def doctor() -> list[dict]:
             "status": "unsupported",
             "installed": False,
             "connected": False,
-            "reason": "ego-lite depends on a macOS app path and is not supported in this Windows runtime",
+            "reason": "ego-lite is a design reference; no runtime adapter is integrated",
         },
     ]

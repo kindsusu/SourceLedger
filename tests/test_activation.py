@@ -168,7 +168,7 @@ def test_activation_rejects_changed_observation_with_recomputed_evidence_hash(tm
     with store.db:
         store.db.execute("UPDATE observations SET data=? WHERE id=?", (json.dumps(row), row["id"]))
     store.close()
-    with pytest.raises(ValueError, match="does not re-extract"):
+    with pytest.raises(ValueError, match="artifact hash mismatch"):
         activate_config(config_path, receipt_path=receipt_path, output_path=tmp_path / "active.json")
 
 
@@ -220,14 +220,14 @@ def test_assessment_caches_shared_evidence_only_within_one_assessment(tmp_path, 
     monkeypatch.setattr(extraction_module, "extract", tracked_extract)
     reasons, _ = _assess(config, run, tasks, observations, [], datetime.now(timezone.utc))
     assert reasons == []
-    assert (hash_calls, extract_calls) == (1, 1)
+    assert (hash_calls, extract_calls) == (2, 1)  # shared content + capture receipt
 
     # The next assessment creates a new cache and must read the file again.
     evidence = Path(observations[0]["evidence_path"])
     evidence.write_bytes(evidence.read_bytes() + b"tampered")
     reasons, _ = _assess(config, run, tasks, observations, [], datetime.now(timezone.utc))
     assert any("source evidence hash mismatch" in reason for reason in reasons)
-    assert (hash_calls, extract_calls) == (2, 1)
+    assert (hash_calls, extract_calls) == (3, 1)
 
 
 def test_activation_rejects_tampered_value_origin_and_derived_values(tmp_path):
@@ -272,7 +272,7 @@ def test_adapter_evidence_requires_matching_browser_fetch_receipt(tmp_path):
     receipt.write_text(json.dumps({"source_id": source.id, "url": url, "at": collected_at,
                                    "backend": "http", "hash": digest,
                                    "account_scope": source.account_scope, "recipe_version": source.recipe_version}), encoding="utf-8")
-    assert _evidence_problem(row, config) == "stored observation semantics do not match source evidence"
+    assert _evidence_problem(row, config) == "stored observation does not re-extract from source evidence"
 
     static_candidate = extract(FetchResult(source.id, "fetched", "http", evidence.read_bytes(), final_url=url), source)[0]
     assert static_candidate.source_visibility == "unconfirmed"
@@ -319,3 +319,31 @@ def test_verify_rejects_unassigned_product(tmp_path):
     result = verify_config(config_path, receipt_path=tmp_path / "receipt.json")
     assert result["eligible"] is False
     assert "product is not assigned to any source: orphan" in result["reasons"]
+
+
+def test_generic_rendered_evidence_revalidates_and_detects_screenshot_tampering(tmp_path):
+    from su_crawler.models import CollectionConfig
+    from su_crawler.pipeline import _save_evidence
+
+    fields = {"sku": "A", "price": "12", "currency": "USD", "unit": "each",
+              "pack_quantity": "1", "tax": "included", "price_type": "list", "price_basis": "each"}
+    content = ("<html><body>" + "".join(f'<span id="{key}">{value}</span>' for key, value in fields.items()) + "</body></html>").encode()
+    source = Source("s", "Synthetic", "web", "https://example.test/product", ["p"],
+                    selectors={key: f"#{key}" for key in fields})
+    product = Product("p", "Synthetic", identifiers={"sku": "A"})
+    config = CollectionConfig("test", [product], [source], str(tmp_path), str(tmp_path))
+    result = FetchResult("s", "fetched", "playwright", content, final_url=source.location,
+                         screenshot=b"synthetic-image-evidence")
+    evidence_path, digest = _save_evidence(tmp_path, result, source)
+    candidate = extract(result, source)[0]
+    row = validate(candidate, product, source, run_id="r", task_id="t", evidence_path=evidence_path,
+                   evidence_sha256=digest, collected_at=result.fetched_at, source_url=source.location).to_dict()
+    row["evidence_artifacts"] = result.evidence_artifacts
+    assert row["evidence_mode"] == "rendered_dom"
+    assert _evidence_problem(row, config) is None
+
+    screenshot = Path(result.evidence_artifacts["screenshot"]["path"])
+    screenshot.write_bytes(b"altered")
+    assert _evidence_problem(row, config) == "source screenshot artifact hash mismatch"
+    screenshot.unlink()
+    assert _evidence_problem(row, config) == "source screenshot artifact is missing"

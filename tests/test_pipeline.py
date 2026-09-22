@@ -4,8 +4,8 @@ import json
 import pytest
 
 from su_crawler.config import load_config
-from su_crawler.models import FetchResult
-from su_crawler.pipeline import _conflicts, execute, report_for_run
+from su_crawler.models import Candidate, FetchResult, Product
+from su_crawler.pipeline import _candidate_quality, _conflicts, _has_sufficient_evidence, execute, report_for_run
 from su_crawler.storage import Store, workspace_lock, RunBusyError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +32,11 @@ def test_end_to_end_and_resume_does_not_duplicate(tmp_path):
     rows = store.observations(result["id"])
     assert len(rows) == 4
     assert len({r["id"] for r in rows}) == 4
-    assert sum(r["status"] == "verified" for r in rows) == 2
+    assert sum(r["status"] == "verified" for r in rows) == 1
+    catalog = next(r for r in rows if r["source_id"] == "catalog" and r["product_id"] == "demo_a")
+    assert catalog["evidence_mode"] == "static_html"
+    assert catalog["source_visibility"] == "unconfirmed"
+    assert catalog["status"] == "review" and catalog["comparable"] is False
     assert all(r["amount"] is None for r in rows if r["product_id"] == "demo_b")
     assert all(Path(r["evidence_path"]).is_file() for r in rows)
     store.close()
@@ -179,8 +183,82 @@ def test_expired_at_reexport_is_excluded_without_rewriting_history(tmp_path):
         store.db.execute("UPDATE observations SET data=? WHERE id=?", (json.dumps(row), row["id"]))
     report_for_run(config, store, run["id"])
     wb = load_workbook(run["report_path"], read_only=True)
-    assert wb["Price Comparison"].max_row == 3  # banner + header + unexpired source only
+    assert wb["Price Comparison"].max_row == 2  # banner + header; the only comparable record is expired
     assert any("validity date at report time" in str(r) for r in wb["Review Required"].values)
     wb.close()
     assert next(r for r in store.observations(run["id"]) if r["id"] == row["id"])["comparable"] is True
     store.close()
+
+
+def test_prefetched_responses_choose_quality_per_product_and_keep_original_evidence(tmp_path):
+    config = demo(tmp_path)
+    source = replace(
+        config.sources[0], kind="web", location="https://example.com/items",
+        backends=["http", "playwright"], product_ids=["a", "b"], max_attempts=1,
+    )
+    config = replace(config, sources=[source], products=[
+        Product("a", "A", identifiers={"model": "A"}),
+        Product("b", "B", identifiers={"model": "B"}),
+    ])
+
+    def candidate(model, price, locator, visibility, mode):
+        fields = {"model": model, "price": price, "currency": "KRW"}
+        return Candidate(fields, {key: {"location": locator, "raw": value,
+                                        "display_state": visibility} for key, value in fields.items()},
+                         locator, mode, source_visibility=visibility, evidence_mode=mode)
+
+    http_candidates = [
+        candidate("A", "100", "http:a:monthly", "hidden", "static_html"),
+        candidate("A", "90", "http:a:prepay", "hidden", "static_html"),
+        candidate("B", "200", "http:b", "hidden", "static_html"),
+    ]
+    browser_candidates = [candidate("A", "110", "browser:a", "visible", "rendered_dom")]
+    http = FetchResult(source.id, "fetched", "http", content=b"static", final_url=source.location)
+    browser = FetchResult(source.id, "fetched", "playwright", content=b"rendered", final_url=source.location,
+                          screenshot=b"png bytes")
+
+    result = execute(config, prefetched={source.id: [(http, http_candidates), (browser, browser_candidates)]})
+    store = Store(tmp_path)
+    tasks = {task["product_id"]: task for task in store.tasks(result["id"])}
+    rows = store.observations(result["id"])
+    store.close()
+
+    assert tasks["a"]["backend"] == "playwright"
+    assert tasks["b"]["backend"] == "http"
+    assert [row["locator"] for row in rows if row["product_id"] == "a"] == ["browser:a"]
+    assert [row["locator"] for row in rows if row["product_id"] == "b"] == ["http:b"]
+    rendered = next(row for row in rows if row["product_id"] == "a")
+    artifacts = rendered["evidence_artifacts"]
+    assert set(artifacts) == {"content", "receipt", "screenshot"}
+    receipt = json.loads(Path(artifacts["receipt"]["path"]).read_text(encoding="utf-8"))
+    assert receipt["artifacts"] == {key: artifacts[key] for key in ("content", "screenshot")}
+
+
+@pytest.mark.parametrize(("price", "separator"), [
+    ("12,000", "."),
+    ("KRW 12000", "."),
+    ("12.000,50", ","),
+])
+def test_candidate_quality_uses_validation_price_parser(price, separator):
+    candidate = Candidate(
+        {"model": "A", "price": price},
+        {"model": {"location": "row", "raw": "A", "display_state": "visible"},
+         "price": {"location": "row", "raw": price, "display_state": "visible"}},
+        "row", "html_css", source_visibility="visible", evidence_mode="rendered_dom",
+    )
+    assert _candidate_quality(candidate, separator)[0] == 1
+    assert _has_sufficient_evidence([candidate], separator)
+
+
+@pytest.mark.parametrize("proof", [
+    {"location": "", "raw": "12000", "display_state": "visible"},
+    {"location": "row", "raw": "999", "display_state": "visible"},
+    {"location": "row", "raw": "12000", "display_state": "hidden"},
+])
+def test_candidate_quality_rejects_unproven_price(proof):
+    candidate = Candidate(
+        {"model": "A", "price": "12000"}, {"price": proof}, "row", "html_css",
+        source_visibility="visible", evidence_mode="rendered_dom",
+    )
+    assert _candidate_quality(candidate)[0] == 0
+    assert not _has_sufficient_evidence([candidate])

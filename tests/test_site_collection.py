@@ -134,9 +134,16 @@ def test_incremental_200_then_304_reuses_extraction_and_evidence(tmp_path, monke
     collector = ConditionalCollector()
     first = collect_sites(path, urls=[URLS["jetcar"]], output_dir=output, collector=collector)
     second = collect_sites(path, urls=[URLS["jetcar"]], output_dir=output, collector=collector)
-    assert collector.validators == [None, {"etag": '"v1"'}]
-    assert len(calls) == 1
-    assert any(trace.get("code") == "extraction_reused" for trace in second["coverage"][0]["trace"])
+    # Static HTTP is revalidated and retained even though rendered DOM is the
+    # preferred row evidence. Browser responses are deliberately not cached.
+    assert collector.validators == [None, None, {"etag": '"v1"'}, None]
+    assert len(calls) == 3
+    assert any(
+        trace.get("code") == "extraction_reused"
+        for attempt in next(event["attempts"] for event in second["coverage"][0]["trace"]
+                            if event.get("event") == "prefetched_attempts")
+        for trace in attempt["trace"]
+    )
     store = Store(output)
     first_rows = store.observations(first["id"])
     second_rows = store.observations(second["id"])
@@ -161,15 +168,23 @@ def test_earlier_fetched_candidates_survive_later_backend_failure(tmp_path):
     assert result["coverage"][0]["items"] == 1
     store = Store(output)
     tasks = store.tasks(result["id"])
+    attempts = [row[0] for row in store.db.execute(
+        "SELECT status FROM attempts WHERE run_id=? ORDER BY rowid", (result["id"],)
+    ).fetchall()]
     store.close()
     assert tasks[0]["backend"] == "http"
     assert tasks[0]["attempts"] == 2
+    assert attempts == ["fetched", "failed"]
 
 
 def test_prefetched_pipeline_never_calls_collector_or_extractor_again(tmp_path, monkeypatch):
     import su_crawler.extraction as extraction
     monkeypatch.setattr(extraction, 'extract', lambda *a: pytest.fail('pipeline re-extracted prefetched candidates'))
     collector = FixtureCollector()
-    result = collect_sites(workspace(tmp_path), urls=[URLS['jetcar']], output_dir=tmp_path / 'prices', collector=collector)
-    assert len(collector.calls) == 1
+    output = tmp_path / 'prices'
+    result = collect_sites(workspace(tmp_path), urls=[URLS['jetcar']], output_dir=output, collector=collector)
+    assert [backend for _, backend, _ in collector.calls] == ['http', 'playwright']
     assert result['coverage'][0]['items'] == 1
+    store = Store(output)
+    assert store.tasks(result['id'])[0]['backend'] == 'playwright'
+    store.close()

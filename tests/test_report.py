@@ -99,3 +99,33 @@ def test_rental_report_separates_estimates_unknowns_and_deposit_kinds(tmp_path):
     assert wb["Observation History"]["Z8"].value == 590000
     assert wb["Observation History"]["H8"].value is None
     assert ws.freeze_panes == "C2"
+
+
+def test_report_retains_capture_artifacts_and_excludes_unconfirmed_html(tmp_path):
+    cfg = _config(tmp_path)
+    base = {"task_id": "t", "product_id": "p1", "source_id": "s1", "status": "verified",
+            "value_origin": "observed", "amount": "12", "currency": "USD",
+            "comparable": True, "comparison_key": "same", "freshness": "observed",
+            "collected_at": "2026-09-22T00:00:00Z", "raw_fields": {"price": "12"}}
+    artifacts = {"receipt": {"path": str(tmp_path / "capture.json"), "sha256": "receipt-hash"},
+                 "screenshot": {"path": str(tmp_path / "capture.png"), "sha256": "image-hash"}}
+    rows = [dict(base, id="static", evidence_mode="static_html", source_visibility="unconfirmed"),
+            dict(base, id="rendered", evidence_mode="rendered_dom", source_visibility="visible",
+                 evidence_artifacts=artifacts),
+            dict(base, id="unconfirmed", evidence_mode="rendered_dom", source_visibility="unconfirmed")]
+    output = export_report(cfg, {"id": "r"}, [], rows, tmp_path / "artifacts.xlsx")
+    wb = load_workbook(output, read_only=True, data_only=True)
+    try:
+        evidence_sheet = wb["Source Evidence"]
+        headers = next(evidence_sheet.iter_rows(values_only=True))
+        evidence = [dict(zip(headers, values)) for values in evidence_sheet.iter_rows(min_row=2, values_only=True)]
+        assert evidence[0]["Screenshot File"] is None
+        assert evidence[1]["Evidence Mode"] == "rendered_dom"
+        assert evidence[1]["Capture Receipt"] == artifacts["receipt"]["path"]
+        assert evidence[1]["Receipt SHA-256"] == "receipt-hash"
+        assert evidence[1]["Screenshot File"] == artifacts["screenshot"]["path"]
+        assert evidence[1]["Screenshot SHA-256"] == "image-hash"
+        assert wb["Price Comparison"].max_row == 2
+
+    finally:
+        wb.close()

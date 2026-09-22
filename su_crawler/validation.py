@@ -10,7 +10,8 @@ from .models import Candidate, Observation, Product, Source, stable_id
 
 SUPPORTED_CURRENCIES = frozenset({"AUD", "BRL", "CAD", "CHF", "CNY", "DKK", "EUR", "GBP", "HKD", "INR", "JPY", "KRW", "MXN", "NOK", "NZD", "PLN", "SEK", "SGD", "THB", "TRY", "TWD", "USD", "ZAR"})
 VALUE_ORIGINS = frozenset({"observed", "calculator_estimate"})
-SOURCE_VISIBILITIES = frozenset({"visible", "hidden", "unconfirmed"})
+SOURCE_VISIBILITIES = frozenset({"visible", "hidden", "unconfirmed", "not_applicable"})
+EVIDENCE_MODES = frozenset({"rendered_dom", "static_html", "structured_record", "document_text", "unknown"})
 RENTAL_COMPARISON_FIELDS = (
     "currency", "price_basis", "term_months", "deposit_amount", "advance_amount",
     "annual_mileage_km", "trim", "options", "condition", "insurance", "tax", "availability",
@@ -35,6 +36,24 @@ def _evidence_matches(candidate: Candidate, name: str, value: object) -> bool:
     """Evidence must attest to the extracted value, rather than merely exist."""
     evidence = candidate.evidence.get(name)
     return _has_evidence(candidate, name) and str(evidence["raw"]).strip() == str(value).strip()
+
+
+def _field_display_proven(candidate: Candidate, name: str) -> bool:
+    """Require presentation proof only when the source is HTML-derived."""
+    proof = candidate.evidence.get(name) or {}
+    if proof.get("proof_kind") == "source_identity" and proof.get("display_state") == "not_applicable":
+        return True
+    if candidate.evidence_mode in {"structured_record", "document_text"}:
+        return proof.get("display_state") == "not_applicable"
+    if candidate.evidence_mode == "unknown":
+        # Compatibility for legacy/manual candidates. Real extraction always
+        # assigns an explicit mode.
+        return True
+    return proof.get("display_state") == "visible"
+
+
+def _comparison_evidence(candidate: Candidate, name: str, value: object) -> bool:
+    return _evidence_matches(candidate, name, value) and _field_display_proven(candidate, name)
 
 
 def _amount(value: object, separator: str) -> tuple[Decimal | None, str | None]:
@@ -119,11 +138,12 @@ def _rental_evidence_matches(candidate: Candidate, name: str) -> bool:
     nested = candidate.fields.get("rental_conditions")
     value = nested.get(name) if isinstance(nested, dict) and name in nested else candidate.fields.get(name)
     for evidence_name in (f"rental_conditions.{name}", name):
-        if _evidence_matches(candidate, evidence_name, value):
+        if _comparison_evidence(candidate, evidence_name, value):
             return True
     evidence = candidate.evidence.get("rental_conditions")
     raw = evidence.get("raw") if evidence else None
-    return bool(evidence and str(evidence.get("location", "")).strip() and isinstance(raw, dict) and raw.get(name) == value)
+    return bool(evidence and str(evidence.get("location", "")).strip() and isinstance(raw, dict)
+                and raw.get(name) == value and _field_display_proven(candidate, "rental_conditions"))
 
 
 def _rental_conditions(candidate: Candidate, separator: str) -> tuple[dict[str, object], list[str], list[str]]:
@@ -188,12 +208,16 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
     review_flags = list(candidate.review_flags)
     value_origin = candidate.value_origin
     source_visibility = candidate.source_visibility
+    evidence_mode = candidate.evidence_mode
     if value_origin not in VALUE_ORIGINS:
         status = "review"
         reasons.append("unsupported value_origin")
     if source_visibility not in SOURCE_VISIBILITIES:
         status = "review"
         reasons.append("unsupported source_visibility")
+    if evidence_mode not in EVIDENCE_MODES:
+        status = "review"
+        reasons.append("unsupported evidence_mode")
     if value_origin == "calculator_estimate":
         status = "review"
         reasons.append("calculated estimate is not an observed price")
@@ -210,7 +234,7 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
             break
         if actual is None:
             status, reasons = "review", [*reasons, f"identifier missing: {key}"]
-        elif not _has_evidence(candidate, key):
+        elif not _comparison_evidence(candidate, key, actual):
             status, reasons = "review", [*reasons, f"identifier evidence missing: {key}"]
 
     if "_selection" in candidate.evidence:
@@ -227,7 +251,7 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
     if status != "product_not_found":
         for key, expected in product.required_specs.items():
             actual = candidate.specs.get(key)
-            if actual is None or str(actual) != str(expected) or not _has_evidence(candidate, f"spec:{key}"):
+            if actual is None or str(actual) != str(expected) or not _comparison_evidence(candidate, f"spec:{key}", actual):
                 status = "review"
                 reasons.append(f"required spec missing, mismatch, or unproven: {key}")
         amount, amount_problem = _amount(candidate.fields.get("price"), source.decimal_separator)
@@ -299,6 +323,9 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
     comparable = status == "verified" and amount is not None
     if value_origin != "observed" or source_visibility == "hidden":
         comparable = False
+    if amount is not None and not _comparison_evidence(candidate, "price", candidate.fields.get("price")):
+        comparable = False
+        reasons.append("price display or record proof is missing")
     if product.price_profile == "rental":
         rental_key = {
             "product_id": product.id,
@@ -306,9 +333,9 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
             "price_profile": product.price_profile,
             "value_origin": value_origin,
         }
-        if source_visibility != "visible":
+        if evidence_mode not in {"structured_record", "document_text"} and source_visibility != "visible":
             comparable = False
-            reasons.append("rental source visibility must be visible")
+            reasons.append("rental HTML source visibility must be visible")
         for name in RENTAL_COMPARISON_FIELDS:
             value = rental_conditions.get(name)
             valid_basis = name != "price_basis" or value == "monthly"
@@ -321,7 +348,11 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
         # keeps installment and upfront variants in separate comparison groups.
         for name, value in sorted(rental_conditions.items()):
             if name not in rental_key and value is not None and value != "":
-                rental_key[name] = value
+                if _rental_evidence_matches(candidate, name):
+                    rental_key[name] = value
+                else:
+                    comparable = False
+                    reasons.append(f"optional rental comparison condition unproven: {name}")
         if _out_of_stock(rental_conditions.get("availability")):
             comparable = False
             reasons.append("expired or unavailable inventory")
@@ -336,16 +367,17 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
             value_origin=value_origin, source_visibility=source_visibility, derived_values=dict(candidate.derived_values),
             review_flags=list(dict.fromkeys(review_flags)), derived_amount=derived_amount, price_profile=product.price_profile,
             verification_level="evidence_validated" if status == "verified" else "review", rental_conditions=rental_conditions or None,
+            evidence_mode=evidence_mode,
         )
     price_basis = candidate.fields.get("price_basis")
-    price_basis_proven = price_basis in {"pack", "each"} and _evidence_matches(candidate, "price_basis", price_basis)
+    price_basis_proven = price_basis in {"pack", "each"} and _comparison_evidence(candidate, "price_basis", price_basis)
     quantity, quantity_problem = _positive_quantity(candidate.fields.get("pack_quantity"), source.decimal_separator)
     if quantity_problem:
         comparable = False
         reasons.append(quantity_problem)
     for name in product.comparison_fields:
         value = candidate.fields.get(name)
-        if value is None or not _has_evidence(candidate, name):
+        if value is None or not _comparison_evidence(candidate, name, value):
             comparable = False
             reasons.append(f"comparison condition missing: {name}")
         else:
@@ -356,16 +388,24 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
     elif "price_basis" not in product.comparison_fields:
         comparison_values.append(f"price_basis={price_basis}")
     for key, value in sorted(candidate.specs.items()):
-        if _has_evidence(candidate, f"spec:{key}"):
+        if _comparison_evidence(candidate, f"spec:{key}", value):
             comparison_values.append(f"spec:{key}={value}")
     option_fields = {"option", "options", "quantity_tier", "min_order", "member_condition", "membership", "shipping", "delivery", "tax", "price_type", "availability", "unit"}
     for name, value in sorted(candidate.fields.items()):
-        if name in option_fields and value is not None and _has_evidence(candidate, name):
-            comparison_values.append(f"{name}={value}")
+        if name in option_fields and value is not None:
+            if _comparison_evidence(candidate, name, value):
+                comparison_values.append(f"{name}={value}")
+            else:
+                comparable = False
+                reasons.append(f"optional comparison condition unproven: {name}")
     for name in ("model", "manufacturer"):
         value = candidate.fields.get(name)
-        if value is not None and _has_evidence(candidate, name):
-            comparison_values.append(f"{name}={value}")
+        if value is not None:
+            if _comparison_evidence(candidate, name, value):
+                comparison_values.append(f"{name}={value}")
+            else:
+                comparable = False
+                reasons.append(f"identity comparison condition unproven: {name}")
     if expired or _out_of_stock(candidate.fields.get("availability")):
         comparable = False
         reasons.append("expired or unavailable inventory")
@@ -389,4 +429,5 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
         value_origin=value_origin, source_visibility=source_visibility, derived_values=dict(candidate.derived_values),
         review_flags=list(dict.fromkeys(review_flags)), derived_amount=derived_amount, price_profile=product.price_profile,
         verification_level="evidence_validated" if status == "verified" else "review",
+        evidence_mode=evidence_mode,
     )

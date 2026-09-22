@@ -7,12 +7,12 @@ SourceLedger keeps observations tied to the content and conditions that produced
 Start with `source-ledger init`. The workspace asks for industry, product, and market before collection. After that, `collect-sites` accepts only explicit, authorized URLs for the supported Jetcar, Gongcar, and Funrent page formats.
 
 ```powershell
-source-ledger collect-sites --workspace .sourceledger/workspace.json `
+source-ledger collect-sites `
   --url "https://www.jetcar.kr/sub0201/<vehicle-id>" `
   --max-pages 5 --max-seconds 120
 ```
 
-Use `--no-incremental` to disable conditional retrieval for that command. The command gathers supplied supported detail or rendered-calculator pages, respects the page and collection time bounds, and does not submit quote forms. It does not discover every listing on a site, infer data from unselected pages, or claim whole-site inventory coverage. No paid MCP service is part of this flow.
+The command uses the default `.sourceledger/research.json` workspace created by `init`; use `--workspace PATH` only for a separate topic. Use `--no-incremental` to disable conditional retrieval. The command gathers supplied supported detail or rendered-calculator pages, respects the page and collection time bounds, and does not submit quote forms. It does not discover every listing on a site, infer data from unselected pages, or claim whole-site inventory coverage. No paid MCP service is part of this flow.
 
 ## Price profiles, origin, and conditions
 
@@ -24,7 +24,7 @@ Supported `Source.adapter` values are `jetcar`, `gongcar`, and `funrent`. They a
 - `calculator_estimate` is a displayed calculator output. It stays an estimate and does not become an observed price or a comparable unit quote.
 - `visible` is required for a rental quote to be comparable. Hidden content or missing, conflicting, or incomplete evidence is retained for review rather than used in comparison.
 
-The adapters mark static HTTP content `unconfirmed` because HTML alone does not establish computed CSS visibility. Playwright captures preserve computed hidden state before marking visible rows. A verified amount means that source fields passed validation; the quote can still be unsuitable for comparison when contract conditions are missing. Conflicting amounts remain in the ledger with review status. The history includes a separate unverified observed amount column, and Rental Quotes retains reviewed amounts alongside their status and review reason.
+The adapters mark raw or static HTML prices `unconfirmed` because HTML alone does not establish computed CSS visibility. They retain the price, but it is not comparable until display evidence is captured. Structured files and document records are unaffected. When HTML display proof is deficient, collection may retry the evidence capture; it does not retry indefinitely merely because commercial terms are missing. Playwright captures preserve computed hidden state before marking visible rows. A verified amount means that source fields passed validation; the quote can still be unsuitable for comparison when contract conditions are missing. Conflicting amounts remain in the ledger with review status. The history includes a separate unverified observed amount column, and Rental Quotes retains reviewed amounts alongside their status and review reason. Source Evidence records screenshot and receipt references when they are captured.
 
 ## Reported evidence and comparisons
 

@@ -7,12 +7,11 @@
   ],
   "sources": [
     {
-      "id": "catalog", "name": "Synthetic HTML catalogue", "kind": "file",
-      "location": "fixtures/catalog.html", "product_ids": ["demo_a"],
-      "row_selector": ".product",
-      "selectors": {
-        "model": ".model", "price": ".price", "currency": ".currency", "unit": ".unit",
-        "pack_quantity": ".pack", "tax": ".tax", "price_type": ".type", "price_basis": ".basis"
+      "id": "catalog", "name": "Synthetic structured catalogue", "kind": "file",
+      "location": "fixtures/catalog.csv", "product_ids": ["demo_a"],
+      "columns": {
+        "model": "model", "price": "price", "currency": "currency", "unit": "unit",
+        "pack_quantity": "pack_quantity", "tax": "tax", "price_type": "price_type", "price_basis": "price_basis"
       }
     },
     {

@@ -115,3 +115,49 @@ def test_evidence_mismatch_and_shipping_zero_do_not_verify_price():
     assert check(mismatch).status == "review"
     free = {**raw, "price_type": "free", "free_item": True}
     assert check(candidate(free)).status == "verified"
+
+
+def test_rendered_hidden_or_unconfirmed_price_is_retained_but_not_comparable():
+    raw = {"price": "12", "currency": "USD", "unit": "each", "pack_quantity": "1", "price_basis": "each", "tax": "included", "price_type": "sale"}
+    hidden = candidate(raw)
+    hidden.evidence_mode = "rendered_dom"
+    hidden.source_visibility = "hidden"
+    for proof in hidden.evidence.values():
+        proof["display_state"] = "visible"
+    hidden.evidence["price"]["display_state"] = "hidden"
+    observation = check(hidden)
+    assert observation.amount == "12" and not observation.comparable
+    assert observation.evidence_mode == "rendered_dom"
+
+    static = candidate(raw)
+    static.evidence_mode = "static_html"
+    static.source_visibility = "unconfirmed"
+    for proof in static.evidence.values():
+        proof["display_state"] = "unconfirmed"
+    assert check(static).amount == "12"
+    assert not check(static).comparable
+
+
+def test_structured_file_record_does_not_require_display_visibility():
+    raw = {"price": "12", "currency": "USD", "unit": "each", "pack_quantity": "1", "price_basis": "each", "tax": "included", "price_type": "sale"}
+    value = candidate(raw)
+    value.evidence_mode = "structured_record"
+    value.source_visibility = "not_applicable"
+    for proof in value.evidence.values():
+        proof.update(display_state="not_applicable", proof_kind="record_value")
+    observation = check(value)
+    assert observation.status == "verified" and observation.comparable
+    assert observation.source_visibility == "not_applicable"
+
+
+def test_unproven_present_optional_condition_blocks_comparison():
+    raw = {"price": "12", "currency": "USD", "unit": "each", "pack_quantity": "1", "price_basis": "each", "tax": "included", "price_type": "sale", "shipping": "included"}
+    value = candidate(raw)
+    value.evidence_mode = "rendered_dom"
+    value.source_visibility = "visible"
+    for proof in value.evidence.values():
+        proof["display_state"] = "visible"
+    value.evidence["shipping"]["display_state"] = "unconfirmed"
+    observation = check(value)
+    assert observation.status == "verified" and not observation.comparable
+    assert "optional comparison condition unproven: shipping" in observation.reason

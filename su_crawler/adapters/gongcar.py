@@ -6,7 +6,7 @@ import re
 from bs4 import NavigableString, Tag
 
 from ..models import Candidate, FetchResult, Source, stable_id
-from .common import decimal_string, evidence, html_soup, is_visible, text, won
+from .common import annotate_evidence, decimal_string, evidence, evidence_mode, html_soup, is_visible, text, won
 
 
 def _expanded_rows(table: Tag) -> list[list[tuple[Tag, str]]]:
@@ -31,7 +31,7 @@ def _expanded_rows(table: Tag) -> list[list[tuple[Tag, str]]]:
                 cell = next(cells)
             except StopIteration:
                 break
-            raw = text(cell) or ""
+            raw = _visible_text(cell)
             try:
                 span = int(cell.get("colspan", 1) or 1)
                 rowspan = int(cell.get("rowspan", 1) or 1)
@@ -62,7 +62,7 @@ def _public_headers(table: Tag) -> list[str] | None:
     if not isinstance(header, Tag) or not is_visible(header):
         return None
     columns = header.find_all("div", recursive=False)
-    values = [text(column.select_one("p")) or text(column) or "" for column in columns]
+    values = [_visible_text(column.select_one("p") or column) for column in columns]
     if len(values) != 7:
         return None
     if not (
@@ -83,7 +83,7 @@ def _won_integer(value: str) -> str | None:
     return raw.replace(",", "")
 
 
-def _public_candidates(table: Tag, table_index: int, visibility: str) -> list[Candidate]:
+def _public_candidates(table: Tag, table_index: int, visibility: str, mode: str) -> list[Candidate]:
     headers = _public_headers(table)
     if headers is None:
         return []
@@ -136,21 +136,24 @@ def _public_candidates(table: Tag, table_index: int, visibility: str) -> list[Ca
             proofs["trim"] = evidence(f"{location}/td:{model_col + 1}", trim, values[model_col], raw_row)
         if price_age_basis:
             proofs["price_age_basis"] = evidence(f"table:{table_index}/header:{price_col + 1}", price_age_basis, headers[price_col])
+        annotate_evidence(proofs, mode, source_identity={"item_id"}, displayed_fields=set(proofs) - {"item_id"})
         candidates.append(Candidate(
             fields=fields, evidence=proofs, locator=f"gongcar:public-table:{table_index}:row:{row_index}",
             extraction_method="gongcar_rendered_public_table", value_origin="observed", source_visibility=visibility,
+            evidence_mode=mode,
         ))
     return candidates
 
 
 def extract(result: FetchResult, source: Source) -> list[Candidate]:
     soup = html_soup(result.content)
-    visibility = "visible" if result.backend == "playwright" else "unconfirmed"
+    mode = evidence_mode(result)
+    visibility = "visible" if mode == "rendered_dom" else "unconfirmed"
     candidates: list[Candidate] = []
     for table_index, table in enumerate(soup.select("table"), start=1):
         if not is_visible(table):
             continue
-        public = _public_candidates(table, table_index, visibility)
+        public = _public_candidates(table, table_index, visibility, mode)
         if public:
             candidates.extend(public)
             continue
@@ -175,7 +178,9 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
             deposit = won(deposit_cell)
             percent_match = re.search(r"(\d+)\s*%", deposit_cell or "")
             model_node = soup.select_one("[data-car-id], [data-item-id], h1, h2")
-            model = text(model_node)
+            if not is_visible(model_node):
+                model_node = None
+            model = _visible_text(model_node) if model_node else None
             actual_id = model_node.get("data-car-id") or model_node.get("data-item-id") if model_node else None
             if not actual_id:
                 actual_id = table.get("data-car-id") or table.get("data-item-id")
@@ -193,5 +198,6 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
                 if value is not None:
                     fields[key] = value
                     proofs[key] = evidence(f"table:{table_index}/tr:{row_index}", value, raw, raw_row)
-            candidates.append(Candidate(fields=fields, evidence=proofs, locator=f"gongcar:table:{table_index}:row:{row_index}", extraction_method="gongcar_rendered_quote_table", value_origin="observed", source_visibility=visibility))
+            annotate_evidence(proofs, mode, source_identity={"item_id"}, displayed_fields=set(proofs) - {"item_id"})
+            candidates.append(Candidate(fields=fields, evidence=proofs, locator=f"gongcar:table:{table_index}:row:{row_index}", extraction_method="gongcar_rendered_quote_table", value_origin="observed", source_visibility=visibility, evidence_mode=mode))
     return candidates

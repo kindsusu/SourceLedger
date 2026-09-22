@@ -41,6 +41,25 @@ def test_first_run_korean_prompts_and_no_analysis_purpose(tmp_path, monkeypatch,
     assert "analysis_purpose" not in payload
 
 
+def test_cli_collect_sites_uses_default_workspace_created_by_init(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    assert main([
+        "init", "--industry", "Vehicle rental", "--product", "Passenger vehicle", "--market", "Korea",
+    ]) == 0
+    capsys.readouterr()
+    received = {}
+
+    def collect_without_network(workspace, **kwargs):
+        received["workspace"] = Path(workspace).resolve()
+        received.update(kwargs)
+        return {"status": "completed"}
+
+    monkeypatch.setattr("su_crawler.site_collection.collect_sites", collect_without_network)
+    assert main(["collect-sites", "--url", "https://www.jetcar.kr/sub0201/example"]) == 0
+    assert received["workspace"] == tmp_path / ".sourceledger" / "research.json"
+    assert received["urls"] == ["https://www.jetcar.kr/sub0201/example"]
+
+
 def test_invalid_noninteractive_setup_and_duplicate_identifiers(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     path = tmp_path / "research.json"

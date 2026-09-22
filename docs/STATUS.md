@@ -4,12 +4,18 @@
 
 SourceLedger 0.3 provides evidence-first collection and bounded research execution. It is not an unrestricted autonomous research agent.
 
-The subsequent collection-reliability update adds supported rental-page adapters,
+This correction update keeps raw/static HTML prices and their field-level evidence, but does not compare them until rendered display evidence is available. Structured files and document records remain eligible under their existing evidence rules. Fallback selects the strongest available evidence within finite attempts; missing commercial terms do not cause indefinite retries. Source Evidence records content, screenshot, and collection-receipt references when captured. Activation checks their hashes and reconstructs the original capture backend before re-extraction. `collect-sites` examples use the `.sourceledger/research.json` workspace created by `init` unless a separate `--workspace` is supplied.
+
+The Windows suite passed **212 tests** on 2026-09-22 (`SOURCELEDGER_HEADLESS=1`, `.venv/Scripts/python.exe -m pytest tests -q`). Tests used local fixtures, local HTTP servers, and mocked responses. The earlier correction-only baseline was 192 tests. This update did not recollect live sites, install or connect insane-search, or connect paid services.
+
+[Portable installation](INSTALLATION.md) now includes Windows and macOS/Linux setup and launch scripts, a repository-local virtual environment, UTF-8 input, optional managed Chromium, and a direct dependency constraints file. A fresh Windows folder containing Korean characters, spaces, and an exclamation mark passed installation and initialization from another working directory. A separately installed wheel passed local verification, activation, SQLite recording, and XLSX generation. The [CI workflow](../.github/workflows/tests.yml) is configured for Windows/macOS/Linux on Python 3.12, Ubuntu on Python 3.11 and 3.13, and isolated wheel installation; see [workflow results](https://github.com/kindsusu/SourceLedger/actions/workflows/tests.yml) for hosted outcomes. Existing evidence workspaces still need path-aware migration; copying them alone is not a supported migration procedure.
+
+The preceding collection-reliability update added supported rental-page adapters,
 the `collect-sites` entry point, separate calculator estimates, conditional HTTP
 revalidation, clearer access diagnostics, and a conditional Rental Quotes report
 sheet. See [collection reliability](COLLECTION_RELIABILITY.md) and
-[Milestone 04](MILESTONE_04.md) for current verification and limits. The final
-2026-09-22 Windows suite passed **172 tests**.
+[Milestone 04](MILESTONE_04.md) for its verification and limits. That
+2026-09-22 Windows baseline passed **172 tests**.
 
 ## Implemented
 
@@ -18,6 +24,7 @@ sheet. See [collection reliability](COLLECTION_RELIABILITY.md) and
 - **Draft and activation controls:** an explicit-identifier workspace can produce a draft configuration. `verify` checks the exact configuration and retained evidence; optional known samples add independent product/price checks. `activate` accepts only the exact verified configuration and evidence. It rejects changed configuration, missing or altered evidence, stale evidence, missing assigned products, and mismatched known samples. Receipts are local audit records, not signed attestations.
 - **Existing collection engine:** explicit product identifiers, source URLs/files, extraction rules, HTTP/file collection, optional Playwright browser actions, and optional Crawl4AI adapter.
 - **Evidence and validation:** retained source bytes, locators, timestamps, SHA-256 hashes, and strict product, price, currency, specification, and commercial-condition validation. Missing prices remain blank.
+- **Display proof and artifacts:** raw/static HTML field evidence is retained as unconfirmed until a rendered capture establishes display state. CSV/XLSX/JSON records and document text use record evidence instead. Source Evidence can link retained content, screenshots, and collection receipts; conflicting amounts remain distinct records for review.
 - **Storage and reporting:** SQLite run history, resumable tasks, evidence files, six standard XLSX sheets, and an additional Rental Quotes sheet when rental observations exist. The default workbook labels are English; Korean onboarding and documentation are available.
 - **Local MCP operation:** a local MCP server registers configured jobs for an independently started worker. Bounded discovery and research workspaces are separate from active `run` configuration; running a configured collection does not require activation.
 - **Keyword search:** opt-in SearXNG JSON API, one bounded request, explicit provider settings, URL filtering, and candidate provenance. No configured provider means zero search calls.

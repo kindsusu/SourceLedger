@@ -135,6 +135,15 @@ def _estimated_amount(obs: dict[str, Any]) -> Any:
     return None
 
 
+def _comparison_evidence_ok(obs: dict[str, Any]) -> bool:
+    mode = obs.get("evidence_mode", "unknown")
+    if mode == "static_html":
+        return False
+    if mode == "rendered_dom":
+        return obs.get("source_visibility") == "visible"
+    return mode in {"unknown", "structured_record", "document_text"}
+
+
 def _validate_xlsx(path: Path) -> None:
     with zipfile.ZipFile(path) as archive:
         if archive.testzip() is not None or "[Content_Types].xml" not in archive.namelist():
@@ -217,7 +226,7 @@ def export_report(
 
         # 3. Only verified, fresh, explicitly comparable observations.
         ws = wb.add_worksheet(SHEETS[2]); row = _setup_sheet(ws, ["Comparison Key", "Product ID", "Product", "Source", "Price", "Raw Price", "Normalized Amount", "Calculation", "Currency", "Unit", "Pack Quantity", "Collected at (UTC)", "Evidence URL", "Group Count", "Minimum", "Maximum", "Median"], fmts, demo)
-        comparable = [o for o in observations if o.get("comparable") is True and o.get("freshness") == "observed" and _decimal(_observed_amount(o)) is not None and o.get("comparison_key")]
+        comparable = [o for o in observations if o.get("comparable") is True and _comparison_evidence_ok(o) and o.get("freshness") == "observed" and _decimal(_observed_amount(o)) is not None and o.get("comparison_key")]
         # One latest verified observation per (comparison key, product, source).
         latest: dict[tuple[str, str, str], dict[str, Any]] = {}
         for obs in comparable:
@@ -245,10 +254,12 @@ def export_report(
 
         # 4. Full raw observation history, including unavailable/review rows.
         history_headers = ["Observation ID", "Task ID", "Product", "Source", "Status", "Reason", "Collected at (UTC)", "Amount", "Raw Amount", "Normalized Amount", "Calculation", "Currency", "Unit", "Comparable", "Freshness", "Extraction Method", "Raw Fields JSON", "Price Profile", "Value Origin", "Source Visibility", "Verification Level", "Estimated Amount (not observed)", "Derived Values JSON", "Review Flags", "Rental Conditions JSON", "Unverified Observed Amount"]
+        history_headers.append("Evidence Mode")
         ws = wb.add_worksheet(SHEETS[3]); row = _setup_sheet(ws, history_headers, fmts, demo)
         for obs in observations:
             values = [obs.get("id"), obs.get("task_id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), obs.get("reason"), obs.get("collected_at"), _observed_amount(obs), _raw_price(obs), obs.get("normalized_amount"), obs.get("calculation"), obs.get("currency"), obs.get("unit"), obs.get("comparable"), obs.get("freshness"), obs.get("extraction_method"), obs.get("raw_fields"), obs.get("price_profile", "unit"), obs.get("value_origin", "observed"), obs.get("source_visibility"), obs.get("verification_level"), _estimated_amount(obs), obs.get("derived_values"), obs.get("review_flags"), obs.get("rental_conditions")]
             values.append(_observed_amount(obs, include_review=True) if obs.get('status') == 'review' else None)
+            values.append(obs.get('evidence_mode', 'unknown'))
             for col, value in enumerate(values):
                 if col in (7, 21, 25): _write_decimal(ws, row, col, value, fmts["number"])
                 elif col == 9: _write_decimal(ws, row, col, value, fmts["number"])
@@ -260,15 +271,21 @@ def export_report(
         _finish_sheet(ws, 1 if demo else 0, row, len(history_headers) - 1)
 
         # 5. One row per observation with locator, raw evidence and hash/file reference.
-        ws = wb.add_worksheet(SHEETS[4]); row = _setup_sheet(ws, ["Observation ID", "Product", "Source", "Source URL", "Evidence File", "SHA-256", "Locator", "Extraction Method", "Field Evidence JSON", "Raw Fields JSON"], fmts, demo)
+        evidence_headers = ["Observation ID", "Product", "Source", "Source URL", "Evidence File", "SHA-256", "Locator", "Extraction Method", "Field Evidence JSON", "Raw Fields JSON", "Evidence Mode", "Capture Receipt", "Receipt SHA-256", "Screenshot File", "Screenshot SHA-256"]
+        ws = wb.add_worksheet(SHEETS[4]); row = _setup_sheet(ws, evidence_headers, fmts, demo)
         for obs in observations:
             values = [obs.get("id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("source_url"), obs.get("evidence_path"), obs.get("evidence_sha256"), obs.get("locator"), obs.get("extraction_method"), obs.get("evidence"), obs.get("raw_fields")]
+            artifacts = obs.get('evidence_artifacts') or {}
+            receipt = artifacts.get('receipt') or {}
+            screenshot = artifacts.get('screenshot') or {}
+            values.extend([obs.get('evidence_mode', 'unknown'), receipt.get('path'), receipt.get('sha256'), screenshot.get('path'), screenshot.get('sha256')])
             for col, value in enumerate(values):
                 if col == 3 and _safe_url(value): ws.write_url(row, col, _safe_url(value), fmts["link"], _text(value))
                 else: _write_value(ws, row, col, value, fmts["text"])
             row += 1
         ws.set_column(0, 2, 22); ws.set_column(3, 4, 44); ws.set_column(5, 7, 26); ws.set_column(8, 9, 54)
-        _finish_sheet(ws, 1 if demo else 0, row, 9)
+        ws.set_column(10, 10, 22); ws.set_column(11, 14, 44)
+        _finish_sheet(ws, 1 if demo else 0, row, len(evidence_headers) - 1)
 
         # 6. All non-final rows needing a human, with explicit task failures too.
         ws = wb.add_worksheet(SHEETS[5]); row = _setup_sheet(ws, ["Type", "ID", "Product", "Source", "Status", "Reason", "Raw Amount", "Evidence URL", "Updated at (UTC)"], fmts, demo)

@@ -8,6 +8,8 @@ SourceLedger is a local, evidence-first tool for researching sources, collecting
 
 Each collection records the source URL, UTC timestamp, raw fields, CSS/JSON/table location, evidence-file path, and SHA-256 hash. A row can be `verified` only when the product, price, and currency are supported by source evidence. A verified row is excluded from comparisons when its conditions are insufficient (`comparable=false`). For example, SourceLedger does not calculate a normalized unit price without source evidence of whether a price is for a pack or an individual item.
 
+Raw or static HTML prices remain preserved, but are not comparable until rendered display evidence is available. Structured files and document records use their record evidence instead. Source Evidence links retained content and, when captured, screenshots and collection receipts.
+
 ## How it works
 
 [![SourceLedger collection architecture](docs/architecture/sourceledger.png)](docs/ARCHITECTURE.md)
@@ -18,32 +20,27 @@ Read the [architecture and Archify guide](docs/ARCHITECTURE.md) ([한국어](doc
 
 ## Quick start
 
-Install with Python 3.11 or later.
+SourceLedger supports Python 3.11 or later; Python 3.12 is recommended. Clone this repository, or download and extract its GitHub ZIP. The default setup installs the local core only. See [installation](docs/INSTALLATION.md) for macOS/Linux, browser, MCP, developer-test, Linux dependency, headless browser mode, and moving-computer instructions.
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -e ".[test,mcp]"
+```bat
+setup.cmd --browser
+source-ledger.cmd init
+source-ledger.cmd research-status
 ```
 
-Browser collection requires the optional dependency and Chromium.
-
-```powershell
-pip install -e ".[browser]"
-python -m playwright install chromium
-```
+The launchers use the repository `.venv` by location, so Windows does not need PowerShell activation or an execution-policy change. The first block is for Command Prompt; PowerShell examples use `.\source-ledger.cmd`. Use `source-ledger.cmd init --lang ko` for Korean first-run prompts in Command Prompt.
 
 The demo reads synthetic HTML and CSV fixtures only. It does not contain market prices.
 
 ```powershell
-source-ledger run --config examples/demo.json
-source-ledger status --config examples/demo.json --run-id <RUN_ID>
-source-ledger observations --config examples/demo.json --run-id <RUN_ID>
-source-ledger export --config examples/demo.json --run-id <RUN_ID>
-source-ledger doctor
+.\source-ledger.cmd run --config examples/demo.json
+.\source-ledger.cmd status --config examples/demo.json --run-id <RUN_ID>
+.\source-ledger.cmd observations --config examples/demo.json --run-id <RUN_ID>
+.\source-ledger.cmd export --config examples/demo.json --run-id <RUN_ID>
+.\source-ledger.cmd doctor
 ```
 
-`su-crawler` remains a compatible command alias. Use `source-ledger` for new scripts and documentation.
+`su-crawler` remains a compatible command alias. Use `source-ledger` for new scripts and documentation. On macOS/Linux, use `bash source-ledger.sh` in place of `source-ledger.cmd`. In the command examples below, use the launcher prefix for a portable checkout, or invoke the installed `source-ledger` command only when it is available in your shell.
 
 Run a bounded batch with `run --max-tasks N`, then continue it with `run --resume <RUN_ID>`. Outputs are stored below the configured `output_dir`: a SQLite run history, source evidence, and an XLSX report.
 
@@ -52,8 +49,8 @@ Run a bounded batch with `run --max-tasks N`, then continue it with `run --resum
 Start a research workspace on first use. English is the default; `--lang ko` enables Korean setup prompts and next actions.
 
 ```powershell
-source-ledger init
-source-ledger research-status
+.\source-ledger.cmd init
+.\source-ledger.cmd research-status
 ```
 
 Setup asks for industry, product, and market. It does not ask for an analysis purpose. Then register authorized source URLs, optionally discover links, supply exact identifiers, and create a collection draft. See [the getting-started guide](docs/GETTING_STARTED.md) for the complete workflow and [the roadmap](docs/ROADMAP.md) for remaining automation work.
@@ -65,9 +62,9 @@ The research workspace supports one product lead; collection configurations supp
 Version 0.3 adds optional SearXNG keyword search, source-backed selector proposals, and a checkpointed controller. After setup, register authorized URLs and exact identifiers, then run:
 
 ```powershell
-source-ledger product-set --identifier model=YOUR_EXACT_MODEL
-source-ledger source-add --url "https://your-vendor.example/product"
-source-ledger agent --run-dir .sourceledger/runs/run-001 --max-sources 3 --max-seconds 120
+.\source-ledger.cmd product-set --identifier model=YOUR_EXACT_MODEL
+.\source-ledger.cmd source-add --url "https://your-vendor.example/product"
+.\source-ledger.cmd agent --run-dir .sourceledger/runs/run-001 --max-sources 3 --max-seconds 120
 ```
 
 The agent proposes rules for selected sources, then performs a fresh combined collection and verification into SQLite and XLSX. Incomplete sources remain visible. `--resume` preserves saved scope and budgets; `--max-steps` pauses at a source boundary. External operations use bounded timeouts; the overall time budget is cooperative, not a hard process kill.
@@ -112,7 +109,7 @@ Set `profile_dir` to reuse a dedicated, already authenticated browser profile. I
 `discover` reads one configured source and returns up to the requested number of URL candidates from HTML links or an XML sitemap. It tries each configured backend at most once, including Playwright after an HTTP failure or an empty link result. A policy denial stops fallback. Candidates are limited to HTTP(S) URLs in the same `allowed_domains`; fragments, duplicates, and URLs containing credentials are discarded.
 
 ```powershell
-source-ledger discover --config examples/demo.json --source-id catalog --limit 100
+.\source-ledger.cmd discover --config examples/demo.json --source-id catalog --limit 100
 ```
 
 `source-discover` saves these links as candidates in the research workspace. Review their relevance, trim the draft to intended sources, and supply selector/column mappings. Candidates never become verified price observations by discovery alone.
@@ -126,13 +123,13 @@ source-ledger discover --config examples/demo.json --source-id catalog --limit 1
 For a first supported-site collection, create a workspace so the industry, product, and market are explicit, then supply the exact authorized page URLs. Use a placeholder or your own authorized URL; this command does not discover or claim to complete a whole-site listing.
 
 ```powershell
-source-ledger init
-source-ledger collect-sites --workspace .sourceledger/workspace.json `
+.\source-ledger.cmd init
+.\source-ledger.cmd collect-sites `
   --url "https://www.jetcar.kr/sub0201/<vehicle-id>" `
   --max-pages 5 --max-seconds 120
 ```
 
-`collect-sites` accepts `--workspace`, one or more `--url` values, `--max-pages`, `--max-seconds`, and `--no-incremental`. It only accepts the currently supported Jetcar, Gongcar, and Funrent hosts, and collects supplied detail or rendered-calculator pages using reviewed read-only recipes. The collector blocks native form submission, but page JavaScript can still make other requests. It produces normal SQLite evidence history and an XLSX report. It does not perform whole-site listing discovery, infer unselected pages, or establish live inventory coverage.
+`collect-sites` uses the default `.sourceledger/research.json` workspace created by `init`; pass `--workspace PATH` only for a separate topic. It accepts one or more `--url` values, `--max-pages`, `--max-seconds`, and `--no-incremental`. It only accepts the currently supported Jetcar, Gongcar, and Funrent hosts, and collects supplied detail or rendered-calculator pages using reviewed read-only recipes. The collector blocks native form submission, but page JavaScript can still make other requests. It produces normal SQLite evidence history and an XLSX report. It does not perform whole-site listing discovery, infer unselected pages, or establish live inventory coverage.
 
 The XLSX report adds a **Rental Quotes** sheet only when a run contains rental observations. It keeps observed monthly prices and calculator estimates in separate columns, then lists deposits, advance payment, and installments separately. **Observation History** also separates observed amount, estimated amount, raw fields, evidence, value origin, visibility, verification level, and rental conditions. Comparison statistics exclude calculator estimates and hidden-source values.
 
@@ -143,9 +140,9 @@ Ordinary `Source.incremental` is off by default and requires `"incremental": tru
 This offline example checks two synthetic prices against known samples, writes a validation receipt, and creates an active configuration.
 
 ```powershell
-source-ledger verify --config examples/verification.json --samples examples/verification.samples.json --receipt .sourceledger/verification.receipt.json
-source-ledger activate --config examples/verification.json --receipt .sourceledger/verification.receipt.json --output .sourceledger/active.json
-source-ledger run --config .sourceledger/active.json
+.\source-ledger.cmd verify --config examples/verification.json --samples examples/verification.samples.json --receipt .sourceledger/verification.receipt.json
+.\source-ledger.cmd activate --config examples/verification.json --receipt .sourceledger/verification.receipt.json --output .sourceledger/active.json
+.\source-ledger.cmd run --config .sourceledger/active.json
 ```
 
 Every configured product must have a source; every source/product task must be verified and have a current comparable observation. Activation rechecks the exact config, original evidence bytes, extracted fields, price validity, and any supplied samples. Changed rules, missing evidence, or an expired receipt require new verification. Receipts and active configs refuse overwrite; use a new filename for another version.
@@ -158,10 +155,10 @@ The MCP server does not create the collection worker as its child process. On Wi
 
 ```powershell
 # Terminal 1: independent worker
-python -m su_crawler.worker --config examples/demo.json
+.\.venv\Scripts\python.exe -m su_crawler.worker --config examples/demo.json
 
 # Terminal 2: stdio MCP server
-source-ledger serve-mcp --config examples/demo.json
+.\source-ledger.cmd serve-mcp --config examples/demo.json
 ```
 
 MCP rejects a collection request when it cannot see a worker heartbeat. Its tools register tasks, retrieve status and observations, and regenerate XLSX reports within the fixed configuration scope. `streamable-http` supports only local `127.0.0.1`.

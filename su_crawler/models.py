@@ -82,6 +82,7 @@ class FetchResult:
     screenshot: bytes | None = None
     trace: list[dict[str, Any]] = field(default_factory=list)
     http_metadata: dict[str, str] = field(default_factory=dict)
+    evidence_artifacts: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -96,6 +97,7 @@ class Candidate:
     source_visibility: str = "unconfirmed"
     derived_values: dict[str, Any] = field(default_factory=dict)
     review_flags: list[str] = field(default_factory=list)
+    evidence_mode: str = "unknown"
 
 
 @dataclass
@@ -133,6 +135,8 @@ class Observation:
     price_profile: str = "unit"
     verification_level: str = "review"
     rental_conditions: dict[str, Any] | None = None
+    evidence_mode: str = "unknown"
+    evidence_artifacts: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

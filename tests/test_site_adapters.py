@@ -56,7 +56,9 @@ def test_jetcar_static_html_does_not_claim_computed_visibility():
     url = "https://www.jetcar.kr/sub0301/5874"
     source = Source("s", "jetcar", "web", url, ["p"], adapter="jetcar")
     result = FetchResult("s", "fetched", "http", (FIXTURES / "jetcar_detail.html").read_bytes(), final_url=url)
-    assert all(value.source_visibility == "unconfirmed" for value in extract(result, source))
+    values = extract(result, source)
+    assert all(value.source_visibility == "unconfirmed" and value.evidence_mode == "static_html" for value in values)
+    assert all(value.evidence["price"]["display_state"] == "unconfirmed" for value in values)
 
 
 def test_gongcar_expands_rowspan_and_excludes_hidden_or_script_quotes():
@@ -141,6 +143,11 @@ def test_render_dependent_adapters_do_not_claim_static_http_visibility(adapter, 
     assert static and rendered
     assert all(value.source_visibility == "unconfirmed" for value in static)
     assert all(value.source_visibility == "visible" for value in rendered)
+    assert all(value.evidence_mode == "static_html" for value in static)
+    assert all(value.evidence_mode == "rendered_dom" for value in rendered)
+    price_key = "derived_values.estimated_price" if adapter == "funrent" else "price"
+    assert all(value.evidence[price_key]["display_state"] == "unconfirmed" for value in static)
+    assert all(value.evidence[price_key]["display_state"] == "visible" for value in rendered)
 
 
 def test_funrent_rendered_selection_is_estimate_and_preserves_approximation():
@@ -171,6 +178,24 @@ def test_funrent_unrendered_or_ambiguous_selected_state_fails_closed():
     assert extract(FetchResult("s", "fetched", "playwright", html.encode()), source) == []
     no_month = (FIXTURES / "funrent_rendered.html").read_text(encoding="utf-8").replace("실시간 월 대여료", "실시간 견적")
     assert extract(FetchResult("s", "fetched", "playwright", no_month.encode()), source) == []
+
+
+def test_funrent_ignores_hidden_amount_descendants_and_requires_visible_month_basis():
+    original = (FIXTURES / "funrent_rendered.html").read_text(encoding="utf-8")
+    source = Source("s", "funrent", "web", "https://go.funrentcar.com/", ["p"], adapter="funrent")
+    mixed_amount = original.replace(
+        '<div id="estAmt">428,000원 ~</div>',
+        '<div id="estAmt"><span data-sourceledger-computed-hidden="true">999,999원</span>428,000원 ~</div>',
+    )
+    value = extract(FetchResult("s", "fetched", "playwright", mixed_amount.encode("utf-8")), source)[0]
+    assert value.derived_values["estimated_price"] == "428000"
+    assert "999,999" not in value.evidence["derived_values.estimated_price"]["source_text"]
+
+    hidden_cap = original.replace(
+        '<div class="cap">실시간 월 대여료</div>',
+        '<div class="cap" data-sourceledger-computed-hidden="true">실시간 월 대여료</div>',
+    )
+    assert extract(FetchResult("s", "fetched", "playwright", hidden_cap.encode("utf-8")), source) == []
 
 
 def test_unknown_adapter_is_rejected():

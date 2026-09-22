@@ -242,6 +242,9 @@ def propose_source(
     model_usage = None
     errors: list[dict[str, str]] = []
     allowed_fields = _allowed_fields(workspace)
+    previews: list[dict[str, Any]] = []
+    best_proposal = None
+    best_score = (-1,)
 
     for backend in ("http", "playwright"):
         remaining = timeout_seconds - (time.monotonic() - started)
@@ -256,6 +259,7 @@ def propose_source(
         })
         if result.status == "policy_denied":
             fetched = None
+            best_proposal = None
             break
         if result.status != "fetched":
             continue
@@ -264,38 +268,52 @@ def propose_source(
         evidence_path = output / evidence_name
         evidence_path.write_bytes(result.content)
         evidence_hash = hashlib.sha256(result.content).hexdigest()
-        structured = extract(result, Source(**{**asdict(source), "selectors": {}, "row_selector": None}))
+        try:
+            structured = extract(result, Source(**{**asdict(source), "selectors": {}, "row_selector": None}))
+        except Exception as exc:
+            errors.append({"type": "extraction_error", "message": type(exc).__name__})
+            structured = []
         exact_structured = [candidate for candidate in structured if _identifier_match(candidate, identifiers) and candidate.fields.get("price") is not None]
-        structured_choice = None
+        choices: list[tuple[str, dict[str, Any]]] = []
         if exact_structured:
-            structured_choice = {"row_selector": None, "selectors": {}}
-            _, structured_previews = _validate_rules(
-                result, source, product, structured_choice,
-                evidence_path=str(evidence_path.resolve()), evidence_sha256=evidence_hash,
-            )
-            if all(preview.get("comparable") is True for preview in structured_previews):
-                rules, method, previews = structured_choice, "structured", structured_previews
-                break
+            choices.append(("structured", {"row_selector": None, "selectors": {}}))
         semantic = _semantic_rules(result.content, allowed_fields, identifiers)
         if semantic:
+            choices.append(("semantic", semantic))
+        current_previews = []
+        for candidate_method, candidate_rules in choices:
             try:
-                _, previews = _validate_rules(
-                    result, source, product, semantic,
+                _, candidate_previews = _validate_rules(
+                    result, source, product, candidate_rules,
                     evidence_path=str(evidence_path.resolve()), evidence_sha256=evidence_hash,
                 )
-                rules, method = semantic, "semantic"
-                break
             except ValueError as exc:
                 errors.append({"type": "selector_validation", "message": str(exc)})
-        if structured_choice is not None:
-            rules, method, previews = structured_choice, "structured", structured_previews
+                continue
+            score = (
+                int(all(preview.get("comparable") is True for preview in candidate_previews)),
+                int(all(preview.get("source_visibility") in {"visible", "not_applicable"}
+                        for preview in candidate_previews)),
+                min(len(preview.get("raw_fields", {})) for preview in candidate_previews),
+            )
+            if score > best_score:
+                best_score = score
+                best_proposal = (result, candidate_rules, candidate_previews, candidate_method)
+            current_previews.extend(candidate_previews)
+        # Static HTML cannot establish display proof. Give the bounded browser
+        # fallback a chance, while keeping each preview with its own capture.
+        # Missing commercial terms in structured files/API records do not
+        # warrant another capture merely to retry the same validation.
+        if current_previews and not any(preview.get("evidence_mode") == "static_html"
+                                        for preview in current_previews):
             break
         if backend == "playwright":
             break
 
+    if best_proposal is not None:
+        fetched, rules, previews, method = best_proposal
     evidence_path_value = None
     evidence_hash_value = None
-    previews = locals().get("previews", [])
     if fetched is not None:
         evidence_path_value = str((output / f"evidence.{fetched.backend}.html").resolve())
         evidence_hash_value = hashlib.sha256(fetched.content).hexdigest()

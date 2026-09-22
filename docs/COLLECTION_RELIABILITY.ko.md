@@ -7,12 +7,12 @@ SourceLedger는 관측을 그 값을 만든 원문과 조건에 연결합니다.
 `source-ledger init`으로 시작합니다. 워크스페이스는 수집 전에 산업군·상품·대상 시장을 묻습니다. 이후 `collect-sites`는 지원되는 Jetcar, Gongcar, Funrent 형식의 명시적이고 권한 있는 URL만 받습니다.
 
 ```powershell
-source-ledger collect-sites --workspace .sourceledger/workspace.json `
+source-ledger collect-sites `
   --url "https://www.jetcar.kr/sub0201/<vehicle-id>" `
   --max-pages 5 --max-seconds 120
 ```
 
-이 명령에서 조건부 수집을 끄려면 `--no-incremental`을 사용합니다. 사용자가 넣은 지원 상세 페이지 또는 렌더링 계산기 페이지만 정해진 페이지·시간 한도 안에서 수집하며 견적 양식을 제출하지 않습니다. 사이트의 모든 목록을 탐색하지 않고, 선택하지 않은 페이지의 값을 추정하지 않으며, 사이트 전체 재고 범위를 보장하지 않습니다. 이 흐름은 유료 MCP 서비스를 사용하지 않습니다.
+이 명령은 `init`이 만드는 기본 워크스페이스 `.sourceledger/research.json`을 사용하며, 별도 주제일 때만 `--workspace PATH`를 지정합니다. 조건부 수집을 끄려면 `--no-incremental`을 사용합니다. 사용자가 넣은 지원 상세 페이지 또는 렌더링 계산기 페이지만 정해진 페이지·시간 한도 안에서 수집하며 견적 양식을 제출하지 않습니다. 사이트의 모든 목록을 탐색하지 않고, 선택하지 않은 페이지의 값을 추정하지 않으며, 사이트 전체 재고 범위를 보장하지 않습니다. 이 흐름은 유료 MCP 서비스를 사용하지 않습니다.
 
 ## 가격 프로필, 값의 출처, 조건
 
@@ -32,7 +32,7 @@ source-ledger collect-sites --workspace .sourceledger/workspace.json `
 
 ## 조건부 수집과 추출 재사용
 
-정적 HTTP HTML은 계산된 CSS 표시 상태를 증명하지 못하므로 어댑터가 `unconfirmed`로 기록합니다. Playwright 캡처는 계산된 숨김 상태를 보존합니다. `verified`는 원문 필드 검증을 뜻하며, 계약 조건이 부족하면 여전히 비교할 수 없습니다. 충돌한 관측 금액도 원장에 유지합니다. 이력에는 미검증 관측 금액 열을 별도로 두고, Rental Quotes에서는 검토 상태·사유와 함께 금액을 표시합니다.
+원시 또는 정적 HTTP HTML의 가격은 계산된 CSS 표시 상태를 증명하지 못하므로 어댑터가 `unconfirmed`로 기록합니다. 가격은 보존하지만 화면 표시 근거를 캡처할 때까지 비교에는 넣지 않습니다. 구조화 파일과 문서 기록에는 이 규칙이 적용되지 않습니다. HTML 표시 근거가 부족하면 수집기가 증거 캡처를 재시도할 수 있으나, 거래 조건이 없다는 이유만으로 무한 재시도하지 않습니다. Playwright 캡처는 계산된 숨김 상태를 보존합니다. `verified`는 원문 필드 검증을 뜻하며, 계약 조건이 부족하면 여전히 비교할 수 없습니다. 충돌한 관측 금액도 원장에 유지합니다. 이력에는 미검증 관측 금액 열을 별도로 두고, Rental Quotes에서는 검토 상태·사유와 함께 금액을 표시합니다. Source Evidence는 캡처된 스크린샷·receipt 참조를 기록합니다.
 
 일반 `Source.incremental`은 `"incremental": true`를 명시할 때만 켜집니다. `collect-sites`는 생성하는 공개 HTTP 출처에 기본으로 켜며, 이 명령에서 끄려면 `--no-incremental`을 사용합니다. 증분 수집은 적격 공개 HTTP 웹 출처에만 적용하며, 브라우저 레시피 또는 프로필이 있는 출처, 내부 출처, 공개가 아닌 계정 범위, 파일, 브라우저 수집에는 적용하지 않습니다.
 

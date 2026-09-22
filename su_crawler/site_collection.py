@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from .collectors import collect
 from .extraction import extract
 from .models import CollectionConfig, FetchResult, Product, Source, stable_id
-from .pipeline import execute
+from .pipeline import execute, _candidate_quality, _has_sufficient_evidence
 from .research import _canonical_url, _atomic_write, load_workspace
 from .storage import Store, workspace_lock
 from .incremental import load_snapshot, conditional_fetch, extract_current
@@ -73,8 +73,9 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                                 allowed_domains=[host], max_attempts=1, incremental=incremental)
                 candidates = []
                 result = FetchResult(sid, 'budget_exhausted', 'none', message='Collection time limit reached')
+                prefetched_responses: list[tuple[FetchResult, list]] = []
                 best: tuple[FetchResult, list] | None = None
-                best_score = (-1, -1, -1, -1)
+                best_score: tuple = (-1,)
                 attempts = []
                 for backend in source.backends:
                     remaining = deadline - time.monotonic()
@@ -95,6 +96,9 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                     attempt = {'backend': backend, 'status': current.status, 'at': current.fetched_at,
                                'message': current.message, 'trace': deepcopy(current.trace)}
                     attempts.append(attempt)
+                    # Preserve failed and successful backend attempts in the
+                    # prefetched contract so execute() records each one.
+                    prefetched_responses.append((result, []))
                     if result.status == 'fetched':
                         try:
                             current_candidates = extract_current(result, source, saved, extract)
@@ -102,15 +106,28 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                             current_candidates = []
                             result.message = 'Supported page format changed; extraction needs review'
                             result.trace.append({'code': 'extraction_error', 'type': type(exc).__name__})
-                        # A later fallback failure must not discard usable bytes
-                        # and candidates from an earlier backend.
+                        attempt['message'] = result.message
+                        attempt['trace'] = deepcopy(result.trace)
+                        # Retain every usable response: execute() chooses the
+                        # strongest response independently for each product.
+                        prefetched_responses[-1] = (result, current_candidates)
                         identified = [c for c in current_candidates if c.fields.get('item_id') is not None and str(c.fields['item_id']).strip()]
-                        score = (len({str(c.fields['item_id']) for c in identified}),
-                                 sum(c.fields.get('price') is not None or c.derived_values.get('estimated_price') is not None for c in identified),
-                                 sum(c.source_visibility == 'visible' for c in identified), len(identified))
+                        per_identity = {}
+                        for candidate in identified:
+                            identity = str(candidate.fields['item_id'])
+                            per_identity[identity] = max(
+                                per_identity.get(identity, (-1,)),
+                                _candidate_quality(candidate, source.decimal_separator),
+                            )
+                        # Proof quality leads; identity/row counts only break
+                        # ties and cannot let hidden stale rows beat rendered UI.
+                        score = (max(per_identity.values(), default=(-1,)), len(per_identity), len(identified))
                         if best is None or score > best_score:
                             best, best_score = (result, current_candidates), score
-                        if any(c.fields.get('price') is not None or c.derived_values.get('estimated_price') is not None for c in current_candidates):
+                        if identified and all(_has_sufficient_evidence(
+                                [candidate for candidate in identified
+                                 if str(candidate.fields['item_id']) == identity], source.decimal_separator)
+                                for identity in per_identity):
                             break
                     if result.status == 'policy_denied':
                         break
@@ -121,10 +138,13 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                                       if adapter == 'funrent' else 'No supported quote rows found; the rendered page format or selection needs review.')
                 result.trace.append({'event': 'prefetched_attempts', 'attempts': attempts})
                 identities = {}
-                for candidate in candidates:
-                    identity = candidate.fields.get('item_id')
-                    if identity is not None and str(identity).strip():
-                        identities[str(identity)] = candidate.fields.get('name') or candidate.fields.get('model') or str(identity)
+                for response, response_candidates in prefetched_responses:
+                    if response.status != 'fetched':
+                        continue
+                    for candidate in response_candidates:
+                        identity = candidate.fields.get('item_id')
+                        if identity is not None and str(identity).strip():
+                            identities[str(identity)] = candidate.fields.get('name') or candidate.fields.get('model') or str(identity)
                 for identity, name in identities.items():
                     pid = 'item_' + stable_id(sid, identity)
                     products.append(Product(pid, str(name), identifiers={'item_id': identity}, price_profile='rental'))
@@ -135,13 +155,10 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                     pid = 'unresolved_' + stable_id(sid)
                     products.append(Product(pid, workspace['product']['name'], identifiers={'item_id': '__unresolved__'}, price_profile='rental'))
                     source.product_ids.append(pid)
-                # execute() receives the already selected response. Restricting
-                # it to that backend keeps task attempts and receipts truthful.
-                source.backends = [result.backend] if result.backend != 'none' else [source.backends[0]]
-                if result.backend == 'playwright':
-                    source.recipe = _ready_recipe(adapter)
+                # execute() receives all usable responses so products missing
+                # from a rendered fallback keep their original HTTP evidence.
                 sources.append(source)
-                prefetched[sid] = (result, candidates)
+                prefetched[sid] = prefetched_responses or [(result, candidates)]
                 coverage.append({'source_id': sid, 'adapter': adapter, 'url': url,
                                  'status': result.status, 'items': len(identities),
                                  'coverage_gap': not bool(identities),

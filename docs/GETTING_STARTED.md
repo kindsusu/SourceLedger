@@ -4,18 +4,20 @@
 
 This guide covers manual onboarding and collection. An operator supplies the initial topic, authorized source URLs, exact product identifiers, and extraction rules. Saved rules support repeated collection. Version 0.3 additionally provides [bounded search, rule proposals, and agent execution](AUTOMATION.md).
 
+The Windows Command Prompt blocks below use `source-ledger.cmd`; the PowerShell blocks use `.\source-ledger.cmd`. On macOS/Linux, use `bash source-ledger.sh` with the same CLI arguments.
+
 ## 1. Enter the topic
 
-After installing the project as described in the [README](../README.md), run:
+After installing the project as described in the [README](../README.md), run on Windows:
 
-```powershell
-source-ledger init
+```bat
+source-ledger.cmd init
 ```
 
-The terminal asks for industry, product or product group, and target market. For Korean prompts, use `source-ledger init --lang ko`. To run without a terminal prompt:
+On macOS/Linux, use `bash source-ledger.sh init`. The terminal asks for industry, product or product group, and target market. For Korean prompts on Windows, use `source-ledger.cmd init --lang ko`. To run without a terminal prompt on Windows:
 
-```powershell
-source-ledger init --industry "Industrial components" --product "Process pump" --market "South Korea"
+```bat
+source-ledger.cmd init --industry "Industrial components" --product "Process pump" --market "South Korea"
 ```
 
 The default workspace is `.sourceledger/research.json`, excluded from Git. All research commands accept `--workspace PATH` for a separate topic. Initialization refuses to overwrite existing workspaces. The topic is a discovery lead, not an inferred SKU; missing identifiers remain empty. There is no analysis-purpose field.
@@ -25,9 +27,9 @@ The default workspace is `.sourceledger/research.json`, excluded from Git. All r
 Use an actual authorized URL in place of the example:
 
 ```powershell
-source-ledger source-add --url "https://example.com/catalog"
-source-ledger research-status
-source-ledger source-discover --source-id <SOURCE_ID> --limit 25
+.\source-ledger.cmd source-add --url "https://example.com/catalog"
+.\source-ledger.cmd research-status
+.\source-ledger.cmd source-discover --source-id <SOURCE_ID> --limit 25
 ```
 
 `source-add` performs no network access. Read the source ID from its JSON result or `research-status`. `source-discover` fetches the selected seed and stores same-host HTML links or sitemap URLs with discovery provenance. It tries HTTP and then the optional browser if needed; install Playwright as described in the README. There is no recursive domain crawl. A single call returns at most 1,000 candidates; a workspace holds at most 1,000 sources.
@@ -41,8 +43,8 @@ No search provider is configured by default. `research-status` reports `search_p
 Use source-confirmed identifiers in place of the synthetic example:
 
 ```powershell
-source-ledger product-set --identifier model=TEST-A
-source-ledger draft --output .sourceledger/collection.draft.json
+.\source-ledger.cmd product-set --identifier model=TEST-A
+.\source-ledger.cmd draft --output .sourceledger/collection.draft.json
 ```
 
 Repeat `--identifier KEY=VALUE` for additional exact identifiers. `product-set` replaces the identifier map. Optional repeated `--spec KEY=VALUE` replaces required specifications when supplied; otherwise previous specs are retained.
@@ -50,7 +52,7 @@ Repeat `--identifier KEY=VALUE` for additional exact identifiers. `product-set` 
 The draft includes saved candidates and empty extraction rules. Review it before collection:
 
 - Keep relevant, authorized source URLs and remove catalogue/navigation seeds that do not contain the selected product.
-- Specify the CSS row and field selectors, structured-data extraction, or file column mappings. See [verification.json](../examples/verification.json) for a synthetic HTML/CSV example.
+- Specify the CSS row and field selectors, structured-data extraction, or file column mappings. [verification.json](../examples/verification.json) uses synthetic structured CSV files; the retained HTML fixture is for tests and is not the verification demo source.
 - Map product identity, raw price, currency, and commercial conditions from the actual source. Preserve missing facts as missing.
 - For comparable results, provide source evidence for unit, pack quantity, tax, price type, and `price_basis` (`pack` or `each`). Missing conditions exclude comparison; they do not become defaults.
 - Browser `recipe` actions must be explicit. A dedicated authenticated `profile_dir` can be configured in the draft. Login renewal and unseen page layouts still need intervention.
@@ -62,9 +64,9 @@ The existing collector automatically parses supported JSON-LD, but discovery doe
 Prepare an optional known-price sample file using [verification.samples.json](../examples/verification.samples.json) as the schema example. Sample values should come from a separate human check, never from guessed prices or search snippets.
 
 ```powershell
-source-ledger verify --config .sourceledger/collection.draft.json --samples .sourceledger/samples.json --receipt .sourceledger/receipt-v1.json
-source-ledger activate --config .sourceledger/collection.draft.json --receipt .sourceledger/receipt-v1.json --output .sourceledger/active-v1.json
-source-ledger run --config .sourceledger/active-v1.json
+.\source-ledger.cmd verify --config .sourceledger/collection.draft.json --samples .sourceledger/samples.json --receipt .sourceledger/receipt-v1.json
+.\source-ledger.cmd activate --config .sourceledger/collection.draft.json --receipt .sourceledger/receipt-v1.json --output .sourceledger/active-v1.json
+.\source-ledger.cmd run --config .sourceledger/active-v1.json
 ```
 
 Omit `--samples` only when source-consistency validation is sufficient. That mode does not establish agreement with independent known prices. Sample matching checks exact source/product, decimal price, and currency; tax, shipping, and variant labels still require correct source mappings and manual sample review.

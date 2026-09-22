@@ -17,3 +17,5 @@ workspace/
 *.sqlite3-wal
 *.sqlite3-shm
 docs/architecture/*.visual-check.*
+build/
+dist/

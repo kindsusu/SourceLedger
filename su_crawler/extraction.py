@@ -8,12 +8,13 @@ import re
 from datetime import date, datetime
 from typing import Any
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
 
 from .models import Candidate, FetchResult, Source
+from .adapters.common import display_state
 
 
 def _text(value: Any) -> str | None:
@@ -23,8 +24,16 @@ def _text(value: Any) -> str | None:
     return value or None
 
 
-def _evidence(location: str, raw: Any) -> dict[str, Any]:
-    return {"location": location, "raw": raw}
+def _evidence(location: str, raw: Any, *, display: str | None = None,
+              proof_kind: str | None = None, hidden_by: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    proof: dict[str, Any] = {"location": location, "raw": raw}
+    if display is not None:
+        proof["display_state"] = display
+    if proof_kind is not None:
+        proof["proof_kind"] = proof_kind
+    if hidden_by:
+        proof["hidden_by"] = hidden_by
+    return proof
 
 
 def _json_value(value: Any) -> Any:
@@ -33,7 +42,8 @@ def _json_value(value: Any) -> Any:
 
 
 def _candidate_from_mapping(
-    values: dict[str, Any], *, locator: str, method: str, columns: dict[str, str] | None = None
+    values: dict[str, Any], *, locator: str, method: str, columns: dict[str, str] | None = None,
+    evidence_mode: str = "structured_record",
 ) -> Candidate:
     fields: dict[str, Any] = {}
     evidence: dict[str, dict[str, Any]] = {}
@@ -46,24 +56,46 @@ def _candidate_from_mapping(
         if field.startswith("spec:"):
             spec = field.removeprefix("spec:")
             specs[spec] = str(raw)
-            evidence[field] = _evidence(locator, raw)
+            evidence[field] = _evidence(locator, raw, display="not_applicable", proof_kind="record_value")
         else:
             fields[field] = raw
-            evidence[field] = _evidence(locator, raw)
-    return Candidate(fields=fields, evidence=evidence, locator=locator, extraction_method=method, specs=specs)
+            evidence[field] = _evidence(locator, raw, display="not_applicable", proof_kind="record_value")
+    return Candidate(fields=fields, evidence=evidence, locator=locator, extraction_method=method, specs=specs,
+                     source_visibility="not_applicable", evidence_mode=evidence_mode)
 
 
-def _selected_value(node: Any, selector: str) -> Any:
+def _displayed_text(node: Tag, mode: str) -> str:
+    parts = []
+    for value in node.descendants:
+        if not isinstance(value, NavigableString) or not str(value).strip():
+            continue
+        parent = value.parent if isinstance(value.parent, Tag) else None
+        if display_state(parent, mode)[0] == "hidden":
+            continue
+        parts.append(str(value).strip())
+    return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+
+def _selected_value(node: Any, selector: str, mode: str) -> tuple[Any, Any, bool]:
     attr = re.search(r"::attr\(([^)]+)\)$", selector)
     css = selector[: attr.start()] if attr else selector
     selected = node.select_one(css)
     if selected is None:
-        return None
-    return selected.get(attr.group(1)) if attr else selected.get_text(" ", strip=True)
+        return None, None, bool(attr)
+    if attr:
+        value = selected.get(attr.group(1))
+    elif display_state(selected, mode)[0] == "hidden":
+        # Preserve the observed raw value even when it must be excluded from
+        # verification/comparison. Visible wrappers still omit hidden children.
+        value = selected.get_text(" ", strip=True)
+    else:
+        value = _displayed_text(selected, mode)
+    return value, selected, bool(attr)
 
 
 def _extract_html(result: FetchResult, source: Source) -> list[Candidate]:
     soup = BeautifulSoup(result.content, "html.parser")
+    mode = "rendered_dom" if result.backend == "playwright" else "static_html"
     candidates: list[Candidate] = []
     if source.selectors:
         rows = soup.select(source.row_selector) if source.row_selector else [soup]
@@ -72,7 +104,7 @@ def _extract_html(result: FetchResult, source: Source) -> list[Candidate]:
             evidence: dict[str, dict[str, Any]] = {}
             specs: dict[str, str] = {}
             for field, selector in source.selectors.items():
-                raw = _selected_value(row, selector)
+                raw, selected, is_attribute = _selected_value(row, selector, mode)
                 if raw is None:
                     continue
                 location = f"css:{source.row_selector or ':document'}[{index}] {selector}"
@@ -80,9 +112,23 @@ def _extract_html(result: FetchResult, source: Source) -> list[Candidate]:
                     specs[field.removeprefix("spec:")] = str(raw)
                 else:
                     fields[field] = raw
-                evidence[field] = _evidence(location, raw)
+                state, hidden_by = display_state(selected, mode)
+                # Attribute values are DOM metadata rather than displayed text.
+                # They remain useful source proof, but do not establish display.
+                if is_attribute and state == "visible":
+                    state = "unconfirmed"
+                evidence[field] = _evidence(
+                    location, raw, display=state,
+                    proof_kind="dom_attribute" if is_attribute else "rendered_text",
+                    hidden_by=hidden_by,
+                )
             if fields or specs:
-                candidates.append(Candidate(fields, evidence, f"css-row:{index}", "html_css", specs))
+                price_state = (evidence.get("price") or {}).get("display_state")
+                visibility = price_state if price_state in {"visible", "hidden", "unconfirmed"} else (
+                    "visible" if mode == "rendered_dom" else "unconfirmed"
+                )
+                candidates.append(Candidate(fields, evidence, f"css-row:{index}", "html_css", specs,
+                                            source_visibility=visibility, evidence_mode=mode))
         return candidates
 
     # JSON-LD is only a fallback when no site-specific selectors were configured.
@@ -119,7 +165,11 @@ def _extract_html(result: FetchResult, source: Source) -> list[Candidate]:
                     "model": node.get("model"),
                     "manufacturer": (node.get("manufacturer") or {}).get("name") if isinstance(node.get("manufacturer"), dict) else node.get("manufacturer"),
                 }
-                candidate = _candidate_from_mapping(values, locator=locator, method="json_ld_product_offer")
+                candidate = _candidate_from_mapping(values, locator=locator, method="json_ld_product_offer",
+                                                    evidence_mode="static_html")
+                candidate.source_visibility = "unconfirmed"
+                for proof in candidate.evidence.values():
+                    proof.update(display_state="unconfirmed", proof_kind="embedded_metadata")
                 if offer.get("@type") == "AggregateOffer":
                     candidate.evidence["_extraction"] = _evidence(locator, "AggregateOffer range is not an exact price")
                 if ambiguous:
@@ -158,7 +208,7 @@ def _extract_xlsx(result: FetchResult, source: Source) -> list[Candidate]:
                 raw, formula = row[index], formula_row[index]
                 location = f"xlsx:{sheet_name}!{get_column_letter(index + 1)}{row_number}"
                 if isinstance(formula, str) and formula.startswith("=") and raw is None:
-                    evidence[field] = {**_evidence(location, formula), "formula_cache_missing": True}
+                    evidence[field] = {**_evidence(location, formula, display="not_applicable", proof_kind="record_value"), "formula_cache_missing": True}
                     continue
                 if raw is None:
                     continue
@@ -167,9 +217,10 @@ def _extract_xlsx(result: FetchResult, source: Source) -> list[Candidate]:
                     specs[field.removeprefix("spec:")] = str(raw)
                 else:
                     fields[field] = raw
-                evidence[field] = _evidence(location, raw)
+                evidence[field] = _evidence(location, raw, display="not_applicable", proof_kind="record_value")
             if fields or specs or evidence:
-                candidates.append(Candidate(fields, evidence, f"xlsx:{sheet_name}:row:{row_number}", "xlsx", specs))
+                candidates.append(Candidate(fields, evidence, f"xlsx:{sheet_name}:row:{row_number}", "xlsx", specs,
+                                            source_visibility="not_applicable", evidence_mode="structured_record"))
         return candidates
     finally:
         values_book.close()
@@ -197,9 +248,11 @@ def _extract_pdf(result: FetchResult, source: Source) -> list[Candidate]:
         any_text = any_text or bool(text.strip())
         for match_index, match in enumerate(pattern.finditer(text), start=1):
             values = {key: value for key, value in match.groupdict().items() if value is not None}
-            candidates.append(_candidate_from_mapping(values, locator=f"pdf:page:{page_number}:match:{match_index}", method="pdf_text_pattern"))
+            candidates.append(_candidate_from_mapping(values, locator=f"pdf:page:{page_number}:match:{match_index}", method="pdf_text_pattern", evidence_mode="document_text"))
     if not candidates and not any_text:
-        return [Candidate({}, {"_extraction": {"location": "pdf", "raw": "no embedded text; OCR not implemented"}}, "pdf", "pdf_ocr_not_implemented")]
+        return [Candidate({}, {"_extraction": {"location": "pdf", "raw": "no embedded text; OCR not implemented"}},
+                          "pdf", "pdf_ocr_not_implemented", source_visibility="not_applicable",
+                          evidence_mode="document_text")]
     return candidates
 
 

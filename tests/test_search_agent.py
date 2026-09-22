@@ -8,6 +8,7 @@ import httpx
 from openpyxl import load_workbook
 
 from su_crawler import agent, research, search
+from su_crawler.models import FetchResult
 from su_crawler.storage import Store
 
 
@@ -51,6 +52,19 @@ def test_agent_search_to_verified_shared_ledger_and_xlsx(tmp_path, monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, **kwargs: [
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 443)),
     ])
+
+    def fixture_collect(source, base_dir, backend, **kwargs):
+        assert source.location == "https://vendor.example/product"
+        return FetchResult(
+            source.id, "fetched", backend, content=_HTML, media_type="text/html; charset=utf-8",
+            final_url=source.location,
+        )
+
+    # Static HTML deliberately cannot establish display evidence. Supply a
+    # synthetic rendered capture for proposal and final collection so this
+    # test never starts a real browser or contacts vendor.example.
+    monkeypatch.setattr("su_crawler.proposals.collect", fixture_collect)
+    monkeypatch.setattr("su_crawler.collectors.collect", fixture_collect)
 
     state = agent.run_agent(workspace, run_dir=tmp_path / "run", search_config_path=provider,
                             max_sources=3, max_model_calls=0, max_seconds=30)

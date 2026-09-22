@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from su_crawler.collectors import _close_browser_resources, _evidence_html_snapshot, collect
+from su_crawler.browser_runtime import select_browser_runtime
 from su_crawler.doctor import doctor
 from su_crawler.models import Source
 
@@ -114,7 +115,9 @@ def test_browser_snapshot_preserves_choice_identity_and_marks_computed_hidden_wi
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(channel="chrome", headless=True)
+        runtime = select_browser_runtime(pw.chromium)
+        assert runtime is not None
+        browser = pw.chromium.launch(headless=True, **runtime.launch_options())
         page = browser.new_page()
         page.set_content("""
           <style>.css-hidden { display: none }</style>

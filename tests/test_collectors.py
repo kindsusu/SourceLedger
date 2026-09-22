@@ -158,5 +158,5 @@ def test_doctor_is_explicit_about_optional_and_unsupported_tools():
     assert report["http"]["status"] == "available"
     assert report["ego_lite"]["status"] == "unsupported"
     assert report["ego_lite"]["connected"] is False
-    assert "Windows" in report["ego_lite"]["reason"]
+    assert "no runtime adapter" in report["ego_lite"]["reason"]
     assert report["agent_reach"]["connected"] is False

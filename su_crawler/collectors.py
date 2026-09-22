@@ -21,6 +21,7 @@ from urllib.robotparser import RobotFileParser
 import httpx
 
 from .models import FetchResult, Source, resolve_path, utc_now
+from .browser_runtime import browser_headless, select_browser_runtime
 
 
 USER_AGENT = "source-ledger/0.3 (+authorized price research)"
@@ -455,23 +456,16 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             # Unroute and close while Playwright's driver is still running.
             # An outer finally executes too late: __exit__ already stops it.
             cleanup.callback(lambda: _close_browser_resources(context, browser))
-            launch_args: dict[str, Any] = {"headless": False}
+            runtime = select_browser_runtime(pw.chromium)
+            if runtime is None:
+                return _result(source, "playwright", "tool_unavailable", message="No supported Chromium browser executable was found", trace=trace)
+            launch_args: dict[str, Any] = {"headless": browser_headless(), **runtime.launch_options()}
             if source.profile_dir:
                 profile = resolve_path(base_dir, source.profile_dir)
                 profile.mkdir(parents=True, exist_ok=True)
-                try:
-                    context = pw.chromium.launch_persistent_context(str(profile), channel="chrome", timeout=remaining_ms(), **launch_args)
-                except PlaywrightTimeoutError:
-                    raise
-                except Exception:
-                    context = pw.chromium.launch_persistent_context(str(profile), timeout=remaining_ms(), **launch_args)
+                context = pw.chromium.launch_persistent_context(str(profile), timeout=remaining_ms(), **launch_args)
             else:
-                try:
-                    browser = pw.chromium.launch(channel="chrome", timeout=remaining_ms(), **launch_args)
-                except PlaywrightTimeoutError:
-                    raise
-                except Exception:
-                    browser = pw.chromium.launch(timeout=remaining_ms(), **launch_args)
+                browser = pw.chromium.launch(timeout=remaining_ms(), **launch_args)
                 context = browser.new_context()
 
             # Recipes may change filters but must never submit a form or create
