@@ -2,7 +2,11 @@
 
 [English](STATUS.md) | [한국어](IMPLEMENTATION_STATUS.md)
 
-SourceLedger 0.4 provides evidence-first collection, bounded research execution, and an optional local assistant connector. It is not an unrestricted autonomous research agent.
+SourceLedger 0.5 provides a local browser UI, evidence-first collection, bounded research execution, and an optional local assistant connector. It is not an unrestricted autonomous research agent.
+
+The [browser UI](WEB_UI.md) shares the workspace and independent worker with MCP. It covers first-run setup, exact product identity, source candidates, bounded jobs, observation review, XLSX downloads, and generated Codex/Claude connection snippets. Repository launchers open it without arguments; installed users can run `source-ledger ui`. All UI assets ship inside the Python package and work without Node or external fonts.
+
+The 0.5 Windows integration suite passed **272 tests, with 1 POSIX-specific skip** on 2026-09-23. The final browser/API suite passed **13 tests** after interaction refinements. Real local Chromium and installed-wheel checks covered synthetic file-based jobs, report downloads, and shared UI/MCP results; a separate core-only installation worked without MCP. See [Milestone 07](MILESTONE_07.md) for scope. This does not establish live client GUI connectivity or live-site collection accuracy.
 
 This correction update keeps raw/static HTML prices and their field-level evidence, but does not compare them until rendered display evidence is available. Structured files and document records remain eligible under their existing evidence rules. Fallback selects the strongest available evidence within finite attempts; missing commercial terms do not cause indefinite retries. Source Evidence records content, screenshot, and collection-receipt references when captured. Activation checks their hashes and reconstructs the original capture backend before re-extraction. `collect-sites` examples use the `.sourceledger/research.json` workspace created by `init` unless a separate `--workspace` is supplied.
 
@@ -31,6 +35,8 @@ sheet. See [collection reliability](COLLECTION_RELIABILITY.md) and
 2026-09-22 Windows baseline passed **172 tests**.
 
 ## Implemented
+
+- **Local browser workspace:** four views for Overview, Sources, Runs, and Connections. Bounded HTTP API calls reuse the existing validation and job engine. The server binds to loopback and checks same-origin requests and CSRF tokens; it is not a remote deployment service. Client configuration is generated for review, never rewritten through the browser. See [Milestone 07](MILESTONE_07.md).
 
 - **Research workspace:** `init` creates an English or Korean first-run workspace for one lead product: industry, product, and market. It stores explicit identifiers, authorized same-host source candidates, readiness, and next actions. It does not ask for an analysis-purpose field or secret values.
 - **Bounded candidate discovery:** a saved candidate seed can discover same-host links within a limit. HTTP is tried first and the configured browser fallback is used for a blocked or unavailable page. Results remain candidates and never become prices, active sources, or extraction rules automatically.

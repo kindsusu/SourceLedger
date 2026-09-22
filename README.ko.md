@@ -20,17 +20,47 @@ SourceLedger는 출처를 탐색하고 상품 가격과 원문·근거를 보존
 
 ## 빠른 시작
 
-Codex·Claude에서 대화로 사용하려면 명령 3개로 준비하는 [로컬 AI 도구 연결 안내](docs/ASSISTANT_CONNECTIONS.ko.md)를 따르세요. 연결 후 대화에서 산업군·상품·시장과 승인된 출처 URL을 입력합니다.
-
 SourceLedger는 Python 3.11 이상을 지원하며 Python 3.12를 권장합니다. 저장소를 clone하거나 GitHub ZIP을 내려받아 압축을 푼 뒤 설치하세요. 기본 setup는 로컬 core만 설치합니다. macOS/Linux, 브라우저·MCP·개발 테스트 옵션, Linux 의존성, headless 브라우저 모드, 다른 컴퓨터로 이동하는 방법은 [설치 안내](docs/INSTALLATION.ko.md)를 참고하세요.
 
 ```bat
-setup.cmd --browser
-source-ledger.cmd init
-source-ledger.cmd research-status
+setup.cmd
+source-ledger.cmd
 ```
 
-launcher는 위치 기준으로 프로젝트 `.venv`를 사용하므로 Windows에서 PowerShell 활성화나 실행 정책 변경이 필요 없습니다. 첫 블록은 명령 프롬프트용이고 PowerShell 예시는 `.\source-ledger.cmd`를 사용합니다. 명령 프롬프트에서 한국어 첫 설정은 `source-ledger.cmd init --lang ko`를 사용하세요.
+두 번째 명령은 로컬 브라우저 UI를 엽니다. 산업군·상품·시장을 입력한 뒤 정확한 식별자와 승인된 출처 URL을 추가하세요. 서버는 `127.0.0.1`에만 연결되며 기본 포트는 `8765`, 기본 워크스페이스는 `.sourceledger`입니다. 전체 흐름은 [브라우저 UI 안내](docs/WEB_UI.ko.md)를 참고하세요.
+
+launcher는 위치 기준으로 프로젝트 `.venv`를 사용하므로 Windows에서 PowerShell 활성화나 실행 정책 변경이 필요 없습니다. 위 블록은 명령 프롬프트용이며 PowerShell에서는 `.\setup.cmd`와 `.\source-ledger.cmd`를 사용합니다. macOS/Linux에서는 `bash setup.sh` 다음 `bash source-ledger.sh`를 실행하세요. 저장소 launcher를 인수 없이 실행하면 UI가 열립니다.
+
+기본 설치만으로 UI와 로컬 파일 작업을 사용할 수 있습니다. Playwright 수집과 로컬 AI 연결이 필요할 때만 선택 기능을 설치하세요.
+
+```powershell
+.\setup.cmd --browser --mcp
+```
+
+`--browser`는 Playwright 수집을, `--mcp`는 Codex·Claude MCP 연결을 추가합니다. UI를 여는 데는 둘 다 필요하지 않습니다. MCP 설치 후 대화형으로 사용하려면 [로컬 AI 도구 연결 안내](docs/ASSISTANT_CONNECTIONS.ko.md)를 따르세요.
+
+### 브라우저 UI
+
+0.5에서는 브라우저 UI를 기본 로컬 시작점으로 사용합니다. 화면은 네 영역으로 구성됩니다.
+
+- **Overview** — 최초 설정, 연구 준비 상태, 독립 worker 제어
+- **Sources** — 정확한 상품 식별자, 승인된 출처 등록, 제한된 링크 발견과 추출 규칙 제안
+- **Runs** — 대기 작업 상태, 근거 상태, 페이지 단위 관측 조회, 등록된 XLSX 보고서
+- **Connections** — Codex, Claude Code, Claude Desktop용 복사 가능한 설정. 클라이언트 설정 파일을 직접 변경하지 않습니다.
+
+안내형 실행은 등록된 출처 후보를 최대 3개 사용하며 120초 한도로 동작합니다. UI와 로컬 assistant MCP에서는 외부 검색·모델 호출을 하지 않습니다. 검색·모델 공급자 설정은 별도 CLI 작업으로 남아 있습니다.
+
+대기 작업을 실행할 때 UI에서 독립 worker를 시작·중지할 수 있습니다. 브라우저 탭이나 UI 웹 서버를 닫아도 worker가 맡은 작업은 취소되지 않습니다. UI와 Codex·Claude MCP 연결은 같은 워크스페이스와 작업 이력을 공유할 수 있습니다. 작업의 `succeeded`는 프로그램 실행 성공을 뜻하므로, 가격을 확인된 값으로 사용하기 전에 별도의 근거 상태를 확인해야 합니다.
+
+설치 명령 또는 저장소 launcher에서 고급 실행 옵션을 사용할 수 있습니다.
+
+```powershell
+.\source-ledger.cmd ui --workspace-root .sourceledger --port 8765 --no-browser
+```
+
+이 UI는 로컬 인터페이스입니다. 이번 범위에는 원격 웹 호스팅, 제3자 MCP 클라이언트, ChatGPT 웹 연결이 포함되지 않습니다.
+
+### CLI 빠른 확인
 
 데모는 합성 HTML/CSV만 읽으며 실제 시장 가격을 사용하지 않습니다.
 
@@ -42,7 +72,7 @@ launcher는 위치 기준으로 프로젝트 `.venv`를 사용하므로 Windows�
 .\source-ledger.cmd doctor
 ```
 
-`su-crawler`는 호환을 위해 유지되는 명령 별칭입니다. 새 스크립트와 문서에는 `source-ledger`를 사용하세요. macOS/Linux에서는 `source-ledger.cmd` 대신 `bash source-ledger.sh`를 사용합니다. 아래 명령 예시는 이식성 있는 checkout에서는 launcher 접두어를 붙이고, 셸에 설치된 `source-ledger` 명령이 있을 때만 직접 실행하세요.
+`su-crawler`는 호환을 위해 유지되는 명령 별칭입니다. 새 스크립트와 문서에는 `source-ledger`를 사용하세요. 아래 명령 예시는 이식성 있는 checkout에서는 launcher 접두어를 붙이고, 셸에 설치된 `source-ledger` 명령이 있을 때만 직접 실행하세요.
 
 `run --max-tasks N`으로 감독 가능한 배치만 실행할 수 있고, 반환된 실행 ID로 `run --resume <실행_ID>`를 재개합니다. 산출물은 설정의 `output_dir` 아래 SQLite 실행 이력, 원문 증거, XLSX 보고서로 저장됩니다.
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "source-ledger"
-version = "0.4.0"
+version = "0.5.0"
 description = "Evidence-first product price collection, provenance storage, and XLSX reporting"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -27,3 +27,6 @@ su-crawler = "su_crawler.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["su_crawler*"]
+
+[tool.setuptools.package-data]
+su_crawler = ["web/*.html", "web/*.css", "web/*.js", "web/*.svg"]

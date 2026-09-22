@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#0b1826">
+  <title>SourceLedger</title>
+  <link rel="icon" href="mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to content</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <a class="brand" href="#overview" aria-label="SourceLedger overview">
+        <img src="mark.svg" alt="" width="40" height="40">
+        <span><strong>SourceLedger</strong><small>Evidence workspace</small></span>
+      </a>
+      <nav class="primary-nav">
+        <a href="#overview" data-route="overview"><span class="nav-icon" aria-hidden="true">01</span>Overview</a>
+        <a href="#sources" data-route="sources"><span class="nav-icon" aria-hidden="true">02</span>Sources</a>
+        <a href="#runs" data-route="runs"><span class="nav-icon" aria-hidden="true">03</span>Runs</a>
+        <a href="#connections" data-route="connections"><span class="nav-icon" aria-hidden="true">04</span>Connections</a>
+      </nav>
+      <div class="sidebar-meta">
+        <span class="eyebrow">Local workspace</span>
+        <strong id="sidebar-workspace">Loading…</strong>
+        <span class="worker-line"><i id="worker-dot" class="status-dot"></i><span id="sidebar-worker">Checking worker</span></span>
+      </div>
+    </aside>
+
+    <div class="workspace-shell">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow" id="page-kicker">Workspace</span>
+          <h1 id="page-title" tabindex="-1">Overview</h1>
+        </div>
+        <div class="topbar-actions">
+          <span class="version" id="version-label"></span>
+          <button class="button button-secondary worker-button" id="worker-toggle" type="button" disabled>Worker</button>
+        </div>
+      </header>
+
+      <main id="main-content" tabindex="-1">
+        <div id="global-message" class="notice notice-error" role="alert" hidden>
+          <div><strong>SourceLedger could not load.</strong><p id="global-message-text"></p></div>
+          <button class="button button-secondary" id="retry-button" type="button">Try again</button>
+        </div>
+
+        <section id="loading-view" class="loading-view" aria-label="Loading workspace">
+          <div class="skeleton skeleton-title"></div>
+          <div class="card-grid">
+            <div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div>
+          </div>
+          <span class="sr-only">Loading workspace</span>
+        </section>
+
+        <section id="overview-view" class="view" data-view="overview" hidden>
+          <div id="setup-panel" class="setup-panel" hidden>
+            <div class="setup-copy">
+              <span class="eyebrow accent">First-run setup</span>
+              <h2>Define the research workspace</h2>
+              <p>SourceLedger keeps every observation tied to its source. Start with the subject you intend to research; nothing is inferred for you.</p>
+              <ol class="setup-steps" aria-label="Onboarding steps">
+                <li class="current"><span>1</span><div><strong>Research subject</strong><small>Industry, product, and market</small></div></li>
+                <li><span>2</span><div><strong>Exact identity</strong><small>Model, SKU, or catalog ID</small></div></li>
+                <li><span>3</span><div><strong>Source candidates</strong><small>Public or authorized internal URLs</small></div></li>
+                <li><span>4</span><div><strong>Bounded run</strong><small>Collect, review, then export</small></div></li>
+              </ol>
+            </div>
+            <form id="setup-form" class="card form-card" novalidate>
+              <div class="form-heading"><span class="step-number">01</span><div><h3>Research subject</h3><p>All fields are required.</p></div></div>
+              <label>Industry<input name="industry" autocomplete="organization-title" required placeholder="e.g. Industrial automation"></label>
+              <label>Product<input name="product" required placeholder="e.g. Servo motor"></label>
+              <label>Market<input name="market" required placeholder="e.g. South Korea"></label>
+              <p class="form-error" data-form-error role="alert" hidden></p>
+              <button class="button button-primary" type="submit">Create workspace</button>
+            </form>
+          </div>
+
+          <div id="dashboard-panel" hidden>
+            <div class="hero-row">
+              <div><span class="eyebrow accent">Research workspace</span><h2 id="workspace-heading">Workspace</h2><p id="workspace-subtitle" class="lede"></p></div>
+              <a class="button button-primary" href="#runs">Start a bounded run</a>
+            </div>
+            <div class="metric-grid" aria-label="Workspace facts">
+              <article class="metric-card"><span>Candidate sources</span><strong id="source-count">0</strong><small>Explicitly registered</small></article>
+              <article class="metric-card"><span>Recent jobs</span><strong id="job-count">0</strong><small>Latest 20 only</small></article>
+              <article class="metric-card"><span>Exact identifiers</span><strong id="identifier-count">0</strong><small>Operator supplied</small></article>
+            </div>
+            <div class="overview-grid">
+              <section class="card"><div class="section-heading"><div><span class="eyebrow">Readiness</span><h3>Research path</h3></div></div><div id="readiness-list" class="journey-list"></div></section>
+              <section class="card"><div class="section-heading"><div><span class="eyebrow">Activity</span><h3>Recent runs</h3></div><a href="#runs">View all</a></div><div id="overview-jobs"></div></section>
+            </div>
+          </div>
+        </section>
+
+        <section id="sources-view" class="view" data-view="sources" hidden>
+          <div class="hero-row compact"><div><span class="eyebrow accent">Evidence inputs</span><h2>Sources & identity</h2><p class="lede">Register candidates and record exact product identity before collection.</p></div></div>
+          <div id="sources-setup-empty" class="empty-state" hidden></div>
+          <div id="sources-content" class="two-column" hidden>
+            <div class="stack">
+              <form id="source-form" class="card form-card" novalidate>
+                <div class="section-heading"><div><span class="eyebrow">Candidate source</span><h3>Add a URL</h3></div></div>
+                <label>Source URL<input type="url" name="url" inputmode="url" required placeholder="https://example.com/catalog"></label>
+                <div class="form-row"><label>Display name <span class="optional">Optional</span><input name="name" placeholder="Supplier catalog"></label><label>Access scope<select name="scope"><option value="public">Public</option><option value="internal">Authorized internal</option></select></label></div>
+                <p class="hint">Registration makes no network request. Source content is treated as data, never instructions.</p>
+                <p class="form-error" data-form-error role="alert" hidden></p>
+                <button class="button button-primary" type="submit">Register source</button>
+              </form>
+
+              <form id="identity-form" class="card form-card" novalidate>
+                <div class="section-heading"><div><span class="eyebrow">Product identity</span><h3>Exact matching fields</h3></div></div>
+                <p class="hint">Use identifiers printed by the manufacturer or supplied by the operator. Values are never guessed.</p>
+                <fieldset><legend>Identifiers <span>At least one required to run</span></legend><div id="identifier-rows" class="key-value-list"></div><button class="text-button add-row" type="button" data-add-row="identifier-rows">+ Add identifier</button></fieldset>
+                <fieldset><legend>Required specifications <span>Optional</span></legend><div id="spec-rows" class="key-value-list"></div><button class="text-button add-row" type="button" data-add-row="spec-rows">+ Add specification</button></fieldset>
+                <p class="form-error" data-form-error role="alert" hidden></p>
+                <button class="button button-primary" type="submit">Save product identity</button>
+              </form>
+            </div>
+            <section class="card source-register"><div class="section-heading source-heading"><div><span class="eyebrow">Source register</span><h3>Candidate sources</h3></div><label class="filter-label">Filter<span class="sr-only"> sources</span><input id="source-filter" type="search" placeholder="Name or host"></label></div><div id="source-list" class="source-list"></div></section>
+          </div>
+        </section>
+
+        <section id="runs-view" class="view" data-view="runs" hidden>
+          <div class="hero-row compact"><div><span class="eyebrow accent">Durable execution</span><h2>Runs</h2><p class="lede">Queue bounded work, then inspect execution and evidence as separate outcomes.</p></div></div>
+          <div id="runs-setup-empty" class="empty-state" hidden></div>
+          <div id="runs-content" hidden>
+            <section class="run-launch card">
+              <div><span class="eyebrow">Guided run</span><h3>Research registered candidates</h3><p>Up to 3 sources, 120 seconds, and no external model calls.</p><div id="run-blockers" class="blocker-list"></div></div>
+              <form id="agent-form"><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-primary" type="submit">Queue research run</button></form>
+            </section>
+            <details class="advanced card"><summary><span>Advanced jobs</span><small>Use explicit paths and bounded options</small></summary>
+              <form id="advanced-form" class="advanced-form" novalidate>
+                <label>Operation<select name="operation" id="advanced-operation"><option value="collect_sites">Collect supported sites</option><option value="verify">Verify configuration</option><option value="run">Run pinned configuration</option><option value="export">Regenerate XLSX report</option></select></label>
+                <div id="advanced-fields"></div><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-secondary" type="submit">Queue advanced job</button>
+              </form>
+            </details>
+            <div class="runs-layout">
+              <section class="card job-register"><div class="section-heading"><div><span class="eyebrow">Latest 20</span><h3>Job history</h3></div></div><div id="job-list" class="job-list"></div></section>
+              <section id="job-detail" class="card job-detail" aria-live="polite"><div class="empty-inline"><strong>Select a run</strong><p>Execution details, evidence state, and observations will appear here.</p></div></section>
+            </div>
+          </div>
+        </section>
+
+        <section id="connections-view" class="view" data-view="connections" hidden>
+          <div class="hero-row compact"><div><span class="eyebrow accent">Local MCP</span><h2>Connections</h2><p class="lede">Connect an assistant client to this exact workspace without sharing credentials.</p></div></div>
+          <div class="connections-layout">
+            <section class="card"><div class="section-heading"><div><span class="eyebrow">Client configuration</span><h3>Generate a snippet</h3></div></div>
+              <form id="connection-form" class="form-card inline-form"><label>Client<select name="client" id="connection-client"><option value="codex">Codex</option><option value="claude-code">Claude Code</option><option value="claude-desktop">Claude Desktop</option></select></label><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-primary" type="submit">Generate snippet</button></form>
+              <div id="connection-result" hidden><div class="code-heading"><strong>Configuration snippet</strong><button id="copy-snippet" class="button button-secondary" type="button">Copy</button></div><pre tabindex="0"><code id="connection-snippet"></code></pre></div>
+            </section>
+            <section class="card"><div class="section-heading"><div><span class="eyebrow">Setup path</span><h3>Use the local server</h3></div></div><ol class="instruction-list"><li><span>1</span><div><strong>Install MCP support if needed</strong><p id="mcp-install-note">Windows: <code>setup.cmd --mcp</code><br>macOS/Linux: <code>bash setup.sh --mcp</code></p></div></li><li><span>2</span><div><strong>Merge the generated settings</strong><p>Add the snippet without replacing existing servers. Target: <code id="client-config-target">CODEX_HOME/config.toml</code></p></div></li><li><span>3</span><div><strong>Refresh the client</strong><p>Restart or reload the MCP connections so the server is discovered.</p></div></li><li><span>4</span><div><strong>Start the worker</strong><p>Queued jobs only execute while this workspace worker is running.</p></div></li></ol><div class="context-note"><strong>Workspace scope</strong><p id="connection-workspace">The connection remains bound to this local workspace.</p></div></section>
+          </div>
+        </section>
+      </main>
+      <footer><span>SourceLedger</span><span>SQLite system of record · XLSX human-readable reports</span></footer>
+    </div>
+  </div>
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

@@ -2,6 +2,8 @@
 
 [English](ASSISTANT_CONNECTIONS.md) | [한국어](ASSISTANT_CONNECTIONS.ko.md)
 
+In 0.5, the [browser UI](WEB_UI.md) can generate these settings from **Connections** and start the worker. The browser and assistant share one workspace root; the stdio connector itself remains independent of the web server. Keep using the CLI below when you want to install a generated setting directly.
+
 SourceLedger 0.4 can expose one workspace to Codex, Claude Code, or Claude
 Desktop through a local stdio MCP server. The connector is local: it starts no
 web server, does not upload the workspace, and does not enable paid search or

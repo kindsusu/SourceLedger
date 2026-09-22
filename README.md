@@ -20,17 +20,47 @@ Read the [architecture and Archify guide](docs/ARCHITECTURE.md) ([한국어](doc
 
 ## Quick start
 
-For conversation-based use from Codex or Claude, follow the three-command [local assistant setup](docs/ASSISTANT_CONNECTIONS.md). After connecting, provide your industry, product, market, and authorized source URLs in the conversation.
-
 SourceLedger supports Python 3.11 or later; Python 3.12 is recommended. Clone this repository, or download and extract its GitHub ZIP. The default setup installs the local core only. See [installation](docs/INSTALLATION.md) for macOS/Linux, browser, MCP, developer-test, Linux dependency, headless browser mode, and moving-computer instructions.
 
 ```bat
-setup.cmd --browser
-source-ledger.cmd init
-source-ledger.cmd research-status
+setup.cmd
+source-ledger.cmd
 ```
 
-The launchers use the repository `.venv` by location, so Windows does not need PowerShell activation or an execution-policy change. The first block is for Command Prompt; PowerShell examples use `.\source-ledger.cmd`. Use `source-ledger.cmd init --lang ko` for Korean first-run prompts in Command Prompt.
+The second command opens the local browser UI. Enter the industry, product, and market, then add exact identifiers and authorized source URLs. It binds only to `127.0.0.1`, with port `8765` and workspace `.sourceledger` as defaults. Read the [browser UI guide](docs/WEB_UI.md) for the complete workflow.
+
+The launchers use the repository `.venv` by location, so Windows does not need PowerShell activation or an execution-policy change. The block above is for Command Prompt; in PowerShell use `.\setup.cmd` and `.\source-ledger.cmd`. On macOS/Linux, run `bash setup.sh` followed by `bash source-ledger.sh`. A repository launcher with no arguments opens the UI.
+
+The core installation is enough for the UI and local-file workflows. Install optional Playwright collection and local AI connections when needed:
+
+```powershell
+.\setup.cmd --browser --mcp
+```
+
+`--browser` adds Playwright collection. `--mcp` adds Codex and Claude MCP connections. Neither is required just to open the UI. For conversation-based use after installing MCP, follow the [local assistant setup](docs/ASSISTANT_CONNECTIONS.md).
+
+### Browser UI
+
+The browser UI is the primary local starting point in 0.5. It provides four areas:
+
+- **Overview** — first-run setup, research readiness, and independent-worker controls.
+- **Sources** — exact product identity, authorized source registration, bounded discovery, and extraction proposals.
+- **Runs** — queued-job status, evidence status, paginated observations, and registered XLSX reports.
+- **Connections** — copyable Codex, Claude Code, and Claude Desktop settings. It does not rewrite client settings.
+
+The guided run uses up to three registered source candidates and a 120-second budget. The UI and local assistant MCP do not make external search or model calls. Search and model-provider configuration remains a separate CLI workflow.
+
+Start and stop the independent worker from the UI when queued work is needed. Closing the browser tab or the UI web server does not cancel jobs already owned by that worker. The UI and Codex/Claude MCP connector can share the same workspace and job history. A job marked `succeeded` completed its program execution; inspect its separate evidence status before treating a price as verified.
+
+Advanced launch options are available from the installed command or repository launcher:
+
+```powershell
+.\source-ledger.cmd ui --workspace-root .sourceledger --port 8765 --no-browser
+```
+
+The UI is a local interface. This milestone does not provide remote hosting, a third-party MCP client, or a ChatGPT web connection.
+
+### CLI quick check
 
 The demo reads synthetic HTML and CSV fixtures only. It does not contain market prices.
 
@@ -42,7 +72,7 @@ The demo reads synthetic HTML and CSV fixtures only. It does not contain market 
 .\source-ledger.cmd doctor
 ```
 
-`su-crawler` remains a compatible command alias. Use `source-ledger` for new scripts and documentation. On macOS/Linux, use `bash source-ledger.sh` in place of `source-ledger.cmd`. In the command examples below, use the launcher prefix for a portable checkout, or invoke the installed `source-ledger` command only when it is available in your shell.
+`su-crawler` remains a compatible command alias. Use `source-ledger` for new scripts and documentation. In the command examples below, use the launcher prefix for a portable checkout, or invoke the installed `source-ledger` command only when it is available in your shell.
 
 Run a bounded batch with `run --max-tasks N`, then continue it with `run --resume <RUN_ID>`. Outputs are stored below the configured `output_dir`: a SQLite run history, source evidence, and an XLSX report.
 

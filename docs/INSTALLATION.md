@@ -20,9 +20,8 @@ Run the following commands from the extracted or cloned project directory.
 Open Command Prompt and run:
 
 ```bat
-setup.cmd --browser
-source-ledger.cmd init
-source-ledger.cmd research-status
+setup.cmd
+source-ledger.cmd
 ```
 
 The default `setup.cmd` installation is core-only. Add options when needed:
@@ -39,7 +38,7 @@ setup.cmd --dev
 source-ledger.cmd init --lang ko
 ```
 
-With no arguments, `source-ledger.cmd` starts `init` when no default workspace exists and `research-status` after initialization.
+With no arguments, `source-ledger.cmd` opens the local browser UI. You can also double-click it after setup. Complete industry, product, and market in the browser. The UI requires only the core installation; `--browser` adds the separate browser used for collecting rendered pages. See the [browser guide](WEB_UI.md).
 
 For browser collection without a visible window, set `SOURCELEDGER_HEADLESS=1` in the current shell:
 
@@ -55,12 +54,11 @@ In PowerShell, use `$env:SOURCELEDGER_HEADLESS = "1"` before the launcher comman
 In a terminal, run:
 
 ```bash
-bash setup.sh --browser
-bash source-ledger.sh init
-bash source-ledger.sh research-status
+bash setup.sh
+bash source-ledger.sh
 ```
 
-With no arguments, `bash source-ledger.sh` starts `init` when no default workspace exists and `research-status` after initialization.
+With no arguments, `bash source-ledger.sh` opens the local browser UI. Use `bash source-ledger.sh ui --no-browser` to print the URL without opening a browser, or `--port 8766` when the default port is occupied. Existing explicit CLI commands remain available.
 
 The options have the same meaning as on Windows:
 

@@ -2,6 +2,8 @@
 
 [English](GETTING_STARTED.md) | [한국어](GETTING_STARTED.ko.md)
 
+브라우저 UI는 Windows에서 `source-ledger.cmd`, macOS/Linux에서 `bash source-ledger.sh`로 실행하고 [브라우저 사용 안내](WEB_UI.ko.md)를 따라가세요. 아래 명령은 스크립트와 고급 설정에 계속 사용할 수 있습니다.
+
 이 안내는 사용자가 주제·접근 가능한 출처·정확한 식별자·추출 규칙을 정하고 반복 수집하는 수동 설정 흐름입니다. 0.3의 [검색·규칙 제안·에이전트 실행](AUTOMATION.ko.md)을 이용하면 설정 작업을 줄일 수 있습니다.
 
 아래 Windows 명령 프롬프트 블록은 `source-ledger.cmd`를, PowerShell 블록은 `.\source-ledger.cmd`를 사용합니다. macOS/Linux에서는 같은 CLI 인자와 함께 `bash source-ledger.sh`를 사용하세요.

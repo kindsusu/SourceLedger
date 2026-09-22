@@ -2,6 +2,8 @@
 
 [English](ASSISTANT_CONNECTIONS.md) | [한국어](ASSISTANT_CONNECTIONS.ko.md)
 
+0.5의 [브라우저 UI](WEB_UI.ko.md)에서는 **Connections**에서 설정을 만들고 worker를 시작할 수 있습니다. UI와 AI 도구는 같은 워크스페이스를 공유하며 stdio MCP 자체는 웹 서버와 독립적입니다. 생성 설정을 직접 설치하려면 아래 CLI 흐름을 사용하세요.
+
 SourceLedger 0.4는 하나의 워크스페이스를 Codex, Claude Code, Claude Desktop에 로컬 stdio MCP 서버로 연결할 수 있습니다. 이 연결은 로컬에서만 동작합니다. 웹 서버를 열거나 워크스페이스를 업로드하지 않으며, 유료 검색·모델 공급자를 켜지 않습니다. 수집 worker는 MCP와 별도 프로세스이므로 AI 클라이언트를 닫아도 진행 중인 작업이 바로 종료되지 않습니다.
 
 이 문서는 생성되는 설정과 CLI 계약을 설명합니다. 모든 Codex·Claude GUI, 클라우드 세션, 웹·모바일 화면, 호스트 브라우저 인계를 이 프로젝트에서 실제로 검증했다는 뜻은 아닙니다.

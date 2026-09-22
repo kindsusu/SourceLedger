@@ -20,9 +20,8 @@ cd SourceLedger
 명령 프롬프트를 열고 실행합니다.
 
 ```bat
-setup.cmd --browser
-source-ledger.cmd init
-source-ledger.cmd research-status
+setup.cmd
+source-ledger.cmd
 ```
 
 기본 `setup.cmd`는 core만 설치합니다. 필요한 기능만 옵션으로 추가합니다.
@@ -39,7 +38,7 @@ setup.cmd --dev
 source-ledger.cmd init --lang ko
 ```
 
-인자 없이 `source-ledger.cmd`를 실행하면 기본 워크스페이스가 없을 때는 `init`을, 초기화 뒤에는 `research-status`를 실행합니다.
+인자 없이 `source-ledger.cmd`를 실행하면 로컬 브라우저 UI가 열립니다. 설치 후 파일을 더블클릭해도 됩니다. 브라우저에서 산업군·상품·시장을 입력하세요. UI 자체는 기본 설치만으로 작동하며, `--browser`는 렌더링된 페이지를 수집하는 별도의 브라우저를 추가합니다. [브라우저 사용 안내](WEB_UI.ko.md)를 참고하세요.
 
 브라우저 수집을 창 없이 실행하려면 현재 셸에서 `SOURCELEDGER_HEADLESS=1`을 설정합니다.
 
@@ -55,12 +54,11 @@ PowerShell에서는 launcher 명령 전 `$env:SOURCELEDGER_HEADLESS = "1"`을 �
 터미널에서 실행합니다.
 
 ```bash
-bash setup.sh --browser
-bash source-ledger.sh init
-bash source-ledger.sh research-status
+bash setup.sh
+bash source-ledger.sh
 ```
 
-인자 없이 `bash source-ledger.sh`를 실행하면 기본 워크스페이스가 없을 때는 `init`을, 초기화 뒤에는 `research-status`를 실행합니다.
+인자 없이 `bash source-ledger.sh`를 실행하면 로컬 브라우저 UI가 열립니다. 브라우저를 자동으로 열지 않으려면 `bash source-ledger.sh ui --no-browser`, 기본 포트가 사용 중이면 `--port 8766`을 사용하세요. 기존 CLI 명령도 그대로 사용할 수 있습니다.
 
 옵션의 의미는 Windows와 같습니다.
 

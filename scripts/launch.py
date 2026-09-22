@@ -15,8 +15,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     os.chdir(root)
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments:
-        workspace = root / ".sourceledger" / "research.json"
-        arguments = ["research-status" if workspace.is_file() else "init"]
+        arguments = ["ui"]
     return subprocess.call([sys.executable, "-m", "su_crawler.cli", *arguments], cwd=root)
 
 

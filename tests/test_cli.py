@@ -4,6 +4,15 @@ from pathlib import Path
 from su_crawler.cli import main
 
 
+def test_ui_cli_passes_workspace_and_browser_options(tmp_path, monkeypatch):
+    from su_crawler import web_server
+
+    calls = []
+    monkeypatch.setattr(web_server, "serve_web", lambda root, **kwargs: calls.append((root, kwargs)))
+    assert main(["ui", "--workspace-root", str(tmp_path), "--port", "0", "--no-browser"]) == 0
+    assert calls == [(str(tmp_path), {"port": 0, "open_browser": False})]
+
+
 def test_research_cli_workflow(tmp_path, capsys):
     path = tmp_path / "research.json"
     workspace = ["--workspace", str(path)]

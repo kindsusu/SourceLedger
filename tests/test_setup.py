@@ -124,9 +124,9 @@ def test_install_failure_propagates_and_browser_is_not_attempted(tmp_path):
 
 @pytest.mark.parametrize(
     ("initialized", "expected"),
-    [(False, "init"), (True, "research-status")],
+    [(False, "ui"), (True, "ui")],
 )
-def test_launcher_default_depends_on_workspace(tmp_path, monkeypatch, initialized, expected):
+def test_launcher_default_opens_browser_workspace(tmp_path, monkeypatch, initialized, expected):
     fake_script = tmp_path / "scripts" / "launch.py"
     fake_script.parent.mkdir()
     fake_script.touch()

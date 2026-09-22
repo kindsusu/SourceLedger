@@ -2,6 +2,8 @@
 
 [English](GETTING_STARTED.md) | [한국어](GETTING_STARTED.ko.md)
 
+For the browser interface, launch `source-ledger.cmd` (Windows) or `bash source-ledger.sh` (macOS/Linux) and follow the [browser guide](WEB_UI.md). The commands below remain available for scripts and advanced setup.
+
 This guide covers manual onboarding and collection. An operator supplies the initial topic, authorized source URLs, exact product identifiers, and extraction rules. Saved rules support repeated collection. Version 0.3 additionally provides [bounded search, rule proposals, and agent execution](AUTOMATION.md).
 
 The Windows Command Prompt blocks below use `source-ledger.cmd`; the PowerShell blocks use `.\source-ledger.cmd`. On macOS/Linux, use `bash source-ledger.sh` with the same CLI arguments.

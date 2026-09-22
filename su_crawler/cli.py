@@ -136,13 +136,21 @@ def main(argv: list[str] | None = None) -> int:
     assistant.add_argument("--limit", type=int, default=20, help="Maximum jobs to list (1-100).")
     assistant_mcp = sub.add_parser("serve-assistant", help="Serve workspace onboarding and queued research tools over local stdio MCP.")
     assistant_mcp.add_argument("--workspace-root", default=".sourceledger")
+    web_ui = sub.add_parser("ui", help="Open the local browser workspace and MCP connection settings.")
+    web_ui.add_argument("--workspace-root", default=".sourceledger")
+    web_ui.add_argument("--port", type=int, default=8765, help="Local HTTP port (0 selects an available port).")
+    web_ui.add_argument("--no-browser", action="store_true", help="Print the local URL without opening a browser.")
     mcp = sub.add_parser("serve-mcp")
     mcp.add_argument("--config", required=True)
     mcp.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     mcp.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)
     try:
-        if args.command == "connect":
+        if args.command == "ui":
+            from .web_server import serve_web
+            serve_web(args.workspace_root, port=args.port, open_browser=not args.no_browser)
+            return 0
+        elif args.command == "connect":
             from .connections import connect
             result = connect(args.client, workspace_root=args.workspace_root, output_dir=args.output,
                              name=args.name, install=args.install, config_file=args.config_file,
