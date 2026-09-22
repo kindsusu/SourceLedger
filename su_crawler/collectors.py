@@ -6,6 +6,7 @@ source bytes and observations about the fetch; they never invent fields.
 from __future__ import annotations
 
 import asyncio
+from contextlib import ExitStack
 import importlib.util
 import ipaddress
 import mimetypes
@@ -25,11 +26,30 @@ from .models import FetchResult, Source, resolve_path, utc_now
 USER_AGENT = "source-ledger/0.3 (+authorized price research)"
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_REDIRECTS = 10
+WELL_KNOWN_NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _PASSWORD_FIELD = re.compile(r"<input\b[^>]*(?:type\s*=\s*['\"]?password|name\s*=\s*['\"]password['\"]?)", re.I)
 
 
 class PolicyError(ValueError):
-    pass
+    """A policy denial with a stable, safe-to-record reason code."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _policy_error(code: str, message: str) -> PolicyError:
+    return PolicyError(code, message)
+
+
+def _policy_trace(error: PolicyError) -> list[dict[str, Any]]:
+    return [{"event": "policy_denied", "code": error.code, "at": utc_now()}]
+
+
+def _policy_result(source: Source, backend: str, error: PolicyError, *, trace: list[dict[str, Any]] | None = None) -> FetchResult:
+    entries = list(trace or [])
+    entries.extend(_policy_trace(error))
+    return _result(source, backend, "policy_denied", message=f"Request denied by policy ({error.code})", trace=entries)
 
 
 def _host_allowed(host: str, allowed_domains: list[str]) -> bool:
@@ -50,32 +70,58 @@ def _resolved_addresses(host: str, port: int) -> set[ipaddress.IPv4Address | ipa
             for record in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         }
     except (socket.gaierror, ValueError) as exc:
-        raise PolicyError(f"Unable to resolve host address: {host}") from exc
+        raise _policy_error("dns_resolution_failed", "Unable to resolve host address") from exc
+
+
+def _embedded_ipv4(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """Return IPv4 carried by standardized mapped or well-known NAT64 IPv6."""
+    if not isinstance(address, ipaddress.IPv6Address):
+        return None
+    if address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    if address in WELL_KNOWN_NAT64:
+        return ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+    return None
+
+
+def _is_public_ipv4(address: ipaddress.IPv4Address) -> bool:
+    return address.is_global and not (
+        address.is_unspecified or address.is_multicast or address.is_link_local or
+        address.is_loopback or address.is_private or address.is_reserved
+    )
 
 
 def _is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return address.is_global
+    embedded = _embedded_ipv4(address)
+    if embedded is not None:
+        return _is_public_ipv4(embedded)
+    return _is_public_ipv4(address) if isinstance(address, ipaddress.IPv4Address) else address.is_global
 
 
 def _is_forbidden_even_internal(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Reject non-routable special-use ranges that are never source endpoints."""
+    embedded = _embedded_ipv4(address)
+    if embedded is not None:
+        # An IPv6 wrapper must not turn private or special IPv4 into an allowed
+        # endpoint. Only globally routable embedded IPv4 is meaningful here.
+        return not _is_public_ipv4(embedded)
     return address.is_unspecified or address.is_multicast or address.is_link_local or (address.is_reserved and not address.is_loopback)
 
 
 def _check_url(source: Source, url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise PolicyError("Only HTTP(S) URLs can be collected")
+        raise _policy_error("invalid_url", "Only HTTP(S) URLs can be collected")
     if parsed.username or parsed.password:
-        raise PolicyError("URLs must not contain credentials")
+        raise _policy_error("credentials_in_url", "URLs must not contain credentials")
     if not _host_allowed(parsed.hostname, source.allowed_domains):
-        raise PolicyError(f"Domain is not allowed: {parsed.hostname}")
+        raise _policy_error("domain_not_allowed", "Domain is not allowed")
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     addresses = _resolved_addresses(parsed.hostname, port)
     if not addresses or any(_is_forbidden_even_internal(address) for address in addresses):
-        raise PolicyError("Special-use and link-local addresses are not allowed")
+        raise _policy_error("special_address_denied", "Special-use and link-local addresses are not allowed")
     if not source.internal and any(not _is_public(a) for a in addresses):
-        raise PolicyError("Public sources cannot access private or local addresses")
+        raise _policy_error("private_address_denied", "Public sources cannot access private or local addresses")
 
 
 def _safe_url(url: str) -> str:
@@ -135,6 +181,10 @@ def _read_limited(response: httpx.Response) -> bytes:
 
 
 def _result(source: Source, backend: str, status: str, **kwargs: Any) -> FetchResult:
+    # The field is supplied by the cache integration when available. Keeping this
+    # guard permits collectors to remain usable during rolling upgrades.
+    if "http_metadata" in kwargs and "http_metadata" not in FetchResult.__dataclass_fields__:
+        kwargs.pop("http_metadata")
     return FetchResult(source_id=source.id, backend=backend, status=status, **kwargs)
 
 
@@ -163,12 +213,17 @@ def _file_collect(source: Source, base_dir: str) -> FetchResult:
         return _result(source, "file", "failed", message=f"Unable to read file: {exc}")
 
 
-def _get_following_policy(client: httpx.Client, source: Source, url: str) -> tuple[httpx.Response, list[dict[str, Any]]]:
+def _get_following_policy(
+    client: httpx.Client, source: Source, url: str, *, headers: dict[str, str] | None = None,
+) -> tuple[httpx.Response, list[dict[str, Any]]]:
     trace: list[dict[str, Any]] = []
     current = url
     for _ in range(MAX_REDIRECTS + 1):
         _check_url(source, current)
-        response = client.send(client.build_request("GET", current), stream=True)
+        # Validators can identify a prior response, so never forward them to a
+        # redirect target (including another allowed domain).
+        request_headers = headers if current == url else None
+        response = client.send(client.build_request("GET", current, headers=request_headers), stream=True)
         trace.append({"event": "http", "url": _safe_url(str(response.url)), "status": response.status_code, "at": utc_now()})
         if response.status_code not in {301, 302, 303, 307, 308}:
             return response, trace
@@ -186,9 +241,15 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
     try:
         response, _ = _get_following_policy(client, source, robots_url)
-        if 400 <= response.status_code < 500:
+        if response.status_code in {404, 410}:
             response.close()
             return "allowed", "robots.txt not found"
+        if response.status_code in {401, 403}:
+            response.close()
+            return "unavailable", "robots.txt access is unavailable"
+        if 400 <= response.status_code < 500:
+            response.close()
+            return "unavailable", "robots.txt request failed"
         if response.status_code >= 500:
             response.close()
             return "unavailable", "robots.txt server error"
@@ -201,11 +262,36 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
         return "unavailable", "Unable to check robots.txt"
 
 
-def _http_collect(source: Source) -> FetchResult:
+def _safe_validator(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 512 or "\r" in value or "\n" in value:
+        return None
+    return value
+
+
+def _conditional_headers(validators: dict[str, str] | None) -> dict[str, str]:
+    if not validators:
+        return {}
+    headers: dict[str, str] = {}
+    if etag := _safe_validator(validators.get("etag")):
+        headers["If-None-Match"] = etag
+    if modified := _safe_validator(validators.get("last_modified")):
+        headers["If-Modified-Since"] = modified
+    return headers
+
+
+def _http_metadata(response: httpx.Response) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    for response_name, key in (("etag", "etag"), ("last-modified", "last_modified")):
+        if value := _safe_validator(response.headers.get(response_name)):
+            metadata[key] = value
+    return metadata
+
+
+def _http_collect(source: Source, validators: dict[str, str] | None = None) -> FetchResult:
     try:
         _check_url(source, source.location)
-    except PolicyError:
-        return _result(source, "http", "policy_denied", message="Request denied by URL policy")
+    except PolicyError as exc:
+        return _policy_result(source, "http", exc)
     timeout = httpx.Timeout(source.timeout_seconds)
     try:
         with httpx.Client(
@@ -220,15 +306,21 @@ def _http_collect(source: Source) -> FetchResult:
                     return _result(source, "http", "policy_denied", message="robots.txt does not allow collection")
                 if robots == "unavailable":
                     return _result(source, "http", "failed", message=reason)
-            response, trace = _get_following_policy(client, source, source.location)
+            response, trace = _get_following_policy(client, source, source.location, headers=_conditional_headers(validators))
             final_url = str(response.url)
+            metadata = _http_metadata(response)
+            if response.status_code == 304:
+                response.close()
+                return _result(source, "http", "not_modified", final_url=final_url, trace=trace, http_metadata=metadata)
             if response.status_code == 401:
                 response.close()
                 return _result(source, "http", "needs_auth", final_url=final_url, message="HTTP 401 authentication required", trace=trace)
             if response.status_code in {403, 429}:
                 status = response.status_code
                 response.close()
-                return _result(source, "http", "blocked", final_url=final_url, message=f"HTTP {status} access restricted", trace=trace)
+                code = "rate_limited" if status == 429 else "access_forbidden"
+                trace.append({"event": "access_blocked", "code": code, "at": utc_now()})
+                return _result(source, "http", "blocked", final_url=final_url, message=f"HTTP {status} {code}", trace=trace, http_metadata=metadata)
             if response.status_code >= 400:
                 status = response.status_code
                 response.close()
@@ -237,31 +329,110 @@ def _http_collect(source: Source) -> FetchResult:
             media = response.headers.get("content-type", "").split(";", 1)[0] or _media_type(final_url)
             if media in {"text/html", "application/xhtml+xml"}:
                 if _is_auth_page(content, response.encoding or "utf-8"):
-                    return _result(source, "http", "needs_auth", content=content, media_type=media, final_url=final_url, message="Login page detected", trace=trace)
-            return _result(source, "http", "fetched", content=content, media_type=media, final_url=final_url, trace=trace)
-    except PolicyError:
-        return _result(source, "http", "policy_denied", message="Request denied by URL policy")
+                    return _result(source, "http", "needs_auth", content=content, media_type=media, final_url=final_url, message="Login page detected", trace=trace, http_metadata=metadata)
+            return _result(source, "http", "fetched", content=content, media_type=media, final_url=final_url, trace=trace, http_metadata=metadata)
+    except PolicyError as exc:
+        return _policy_result(source, "http", exc)
     except httpx.TimeoutException:
         return _result(source, "http", "timeout", message="Request timed out")
     except (httpx.HTTPError, OSError, ValueError) as exc:
-        return _result(source, "http", "failed", message=f"Collection failed ({type(exc).__name__})")
+        return _result(source, "http", "failed", message=f"Collection failed ({type(exc).__name__})", trace=[{"event": "collection_failed", "code": "network_or_response_error", "at": utc_now()}])
 
 
 def _safe_step(step: dict[str, Any]) -> tuple[str, str]:
     action = str(step.get("action", ""))
     if action not in {"click", "select", "fill", "wait_for", "assert_text"}:
-        raise PolicyError(f"Browser action is not allowed: {action}")
+        raise _policy_error("browser_action_denied", "Browser action is not allowed")
     selector = step.get("selector")
     if not isinstance(selector, str) or not selector.strip():
-        raise PolicyError(f"The {action} action requires a selector")
+        raise _policy_error("invalid_recipe", "Browser action requires a selector")
     return action, selector
+
+
+def _selected_control_states(page: Any, timeout_ms: float) -> list[dict[str, Any]]:
+    """Capture only non-text control state after a recipe, never entered values."""
+    states = page.evaluate(
+        """() => Array.from(document.querySelectorAll('select, input[type=checkbox], input[type=radio]'))
+          .slice(0, 100).map((control, index) => {
+            const labels = control.labels ? Array.from(control.labels).map(label => (label.innerText || label.textContent || '').trim()).filter(label => label && !(/[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}/.test(label) || /(?:\\+?\\d[\\d .()-]{6,}\\d)/.test(label))) : [];
+            const base = { index, tag: control.tagName.toLowerCase(), type: control.type || 'select', labels: labels.slice(0, 3).map(label => label.slice(0, 160)) };
+            if (control.tagName.toLowerCase() === 'select') {
+              return { ...base, selected_index: control.selectedIndex, selected_label: control.selectedOptions[0] ? (control.selectedOptions[0].textContent || '').trim().slice(0, 160) : '' };
+            }
+            return { ...base, checked: Boolean(control.checked) };
+          })""",
+    )
+    return states if isinstance(states, list) else []
+
+
+def _evidence_html_snapshot(page: Any) -> bytes:
+    """Serialize live selection state without retaining free-form input values."""
+    html = page.evaluate(
+        """() => {
+          const clone = document.documentElement.cloneNode(true);
+          const originals = Array.from(document.querySelectorAll('select, input, textarea'));
+          const copies = Array.from(clone.querySelectorAll('select, input, textarea'));
+          originals.forEach((original, index) => {
+            const copy = copies[index];
+            if (!copy) return;
+            const tag = original.tagName.toLowerCase();
+            const type = (original.type || '').toLowerCase();
+            if (tag === 'select') {
+              Array.from(copy.options).forEach((option, optionIndex) => {
+                option.toggleAttribute('selected', Boolean(original.options[optionIndex] && original.options[optionIndex].selected));
+              });
+            } else if (type === 'checkbox' || type === 'radio') {
+              copy.toggleAttribute('checked', Boolean(original.checked));
+            } else {
+              copy.removeAttribute('value');
+              copy.value = '';
+            }
+            if (tag === 'textarea') copy.textContent = '';
+          });
+          const originalElements = Array.from(document.body ? document.body.querySelectorAll('*') : []);
+          const copiedElements = Array.from(clone.querySelectorAll('body *'));
+          originalElements.forEach((original, index) => {
+            const copy = copiedElements[index];
+            if (!copy) return;
+            const style = window.getComputedStyle(original);
+            const computedHidden = style.display === 'none' || style.visibility === 'hidden' ||
+              style.visibility === 'collapse' || style.opacity === '0';
+            if (computedHidden) {
+              copy.setAttribute('hidden', '');
+              copy.setAttribute('data-sourceledger-computed-hidden', 'true');
+            }
+          });
+          return '<!doctype html>\\n' + clone.outerHTML;
+        }"""
+    )
+    return str(html).encode("utf-8")
+
+
+def _close_browser_resources(context: Any, browser: Any) -> None:
+    """Drain route callbacks before closing their context and browser."""
+    if context is not None:
+        try:
+            context.unroute_all(behavior="ignoreErrors")
+        except Exception:
+            # Teardown can race an already closed target. Policy failures have
+            # already been returned or traced before this lifecycle cleanup.
+            pass
+        try:
+            context.close()
+        except Exception:
+            pass
+    if browser is not None:
+        try:
+            browser.close()
+        except Exception:
+            pass
 
 
 def _browser_collect(source: Source, base_dir: str) -> FetchResult:
     try:
         _check_url(source, source.location)
-    except PolicyError:
-        return _result(source, "playwright", "policy_denied", message="Request denied by URL policy")
+    except PolicyError as exc:
+        return _policy_result(source, "playwright", exc)
     try:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
@@ -280,7 +451,10 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
     context = None
     browser = None
     try:
-        with sync_playwright() as pw:
+        with sync_playwright() as pw, ExitStack() as cleanup:
+            # Unroute and close while Playwright's driver is still running.
+            # An outer finally executes too late: __exit__ already stops it.
+            cleanup.callback(lambda: _close_browser_resources(context, browser))
             launch_args: dict[str, Any] = {"headless": False}
             if source.profile_dir:
                 profile = resolve_path(base_dir, source.profile_dir)
@@ -299,6 +473,10 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 except Exception:
                     browser = pw.chromium.launch(timeout=remaining_ms(), **launch_args)
                 context = browser.new_context()
+
+            # Recipes may change filters but must never submit a form or create
+            # external side effects. This runs before any page JavaScript.
+            context.add_init_script("document.addEventListener('submit', event => event.preventDefault(), true)")
 
             def guard(route: Any, request: Any) -> None:
                 if request.is_navigation_request() and request.frame == request.frame.page.main_frame:
@@ -363,19 +541,19 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 elif action == "select":
                     value = step.get("value")
                     if not isinstance(value, str):
-                        raise PolicyError("The select action requires a string value")
+                        raise _policy_error("invalid_recipe", "The select action requires a string value")
                     locator.select_option(value, timeout=timeout_ms)
                 elif action == "fill":
                     value = step.get("value")
                     if not isinstance(value, str):
-                        raise PolicyError("The fill action requires a string value")
+                        raise _policy_error("invalid_recipe", "The fill action requires a string value")
                     locator.fill(value, timeout=timeout_ms)
                 elif action == "wait_for":
                     locator.wait_for(state=str(step.get("state", "visible")), timeout=timeout_ms)
                 elif action == "assert_text":
                     expected = step.get("text")
                     if not isinstance(expected, str):
-                        raise PolicyError("The assert_text action requires string text")
+                        raise _policy_error("invalid_recipe", "The assert_text action requires string text")
                     actual = locator.inner_text(timeout=timeout_ms)
                     if expected not in actual:
                         raise AssertionError("Browser text assertion failed")
@@ -390,17 +568,18 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 if latest_status >= 400:
                     return _result(source, "playwright", "failed", final_url=page.url, message=f"HTTP {latest_status}", trace=trace)
 
-            html = page.content().encode("utf-8")
+            html = _evidence_html_snapshot(page)
             if _is_auth_page(html):
                 return _result(source, "playwright", "needs_auth", content=html, media_type="text/html", final_url=page.url, message="Login page detected", trace=trace)
             screenshot = page.screenshot(full_page=True, timeout=remaining_ms())
             final_url = page.url
             _check_url(source, final_url)
+            trace.append({"event": "selected_control_states", "controls": _selected_control_states(page, remaining_ms()), "at": utc_now()})
             return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url, screenshot=screenshot, trace=trace)
     except PlaywrightTimeoutError:
         return _result(source, "playwright", "timeout", message="Browser action timed out", trace=trace)
-    except PolicyError:
-        return _result(source, "playwright", "policy_denied", message="Browser action denied by policy", trace=trace)
+    except PolicyError as exc:
+        return _policy_result(source, "playwright", exc, trace=trace)
     except AssertionError as exc:
         return _result(source, "playwright", "failed", message=str(exc), trace=trace)
     except Exception as exc:
@@ -408,17 +587,6 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
         if "Executable doesn't exist" in text or "browserType.launch" in text:
             return _result(source, "playwright", "tool_unavailable", message="Playwright browser executable is unavailable", trace=trace)
         return _result(source, "playwright", "failed", message=f"Browser collection failed ({type(exc).__name__})", trace=trace)
-    finally:
-        if context is not None:
-            try:
-                context.close()
-            except Exception:
-                pass
-        if browser is not None:
-            try:
-                browser.close()
-            except Exception:
-                pass
 
 
 async def _crawl4ai_run(url: str, timeout_seconds: float) -> tuple[str, str]:
@@ -455,7 +623,7 @@ def _crawl4ai_collect(source: Source) -> FetchResult:
         return _result(source, "crawl4ai", "failed", message=f"Crawl4AI collection failed ({type(exc).__name__})", trace=preflight.trace)
 
 
-def collect(source: Source, base_dir: str, backend: str) -> FetchResult:
+def collect(source: Source, base_dir: str, backend: str, *, validators: dict[str, str] | None = None) -> FetchResult:
     """Collect one source with an explicitly selected backend."""
     if backend == "file":
         if source.kind != "file":
@@ -464,7 +632,7 @@ def collect(source: Source, base_dir: str, backend: str) -> FetchResult:
     if source.kind == "file":
         return _result(source, backend, "policy_denied", message="File sources can only be read by the file backend")
     if backend == "http":
-        return _http_collect(source)
+        return _http_collect(source, validators=validators)
     if backend == "playwright":
         return _browser_collect(source, base_dir)
     if backend == "crawl4ai":

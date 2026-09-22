@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from su_crawler.collectors import collect
+from su_crawler.collectors import _close_browser_resources, _evidence_html_snapshot, collect
 from su_crawler.doctor import doctor
 from su_crawler.models import Source
 
@@ -105,3 +105,55 @@ def test_browser_classifies_http_block_and_obeys_robots(tmp_path):
         result = collect(blocked, str(tmp_path), "playwright")
         assert result.status == "policy_denied"
         assert "robots.txt" in result.message
+
+
+def test_browser_snapshot_preserves_choice_identity_and_marks_computed_hidden_without_input_secrets():
+    browser_status = next(item for item in doctor() if item["backend"] == "playwright")
+    if browser_status["status"] != "available":
+        pytest.skip(browser_status["reason"])
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(channel="chrome", headless=True)
+        page = browser.new_page()
+        page.set_content("""
+          <style>.css-hidden { display: none }</style>
+          <select id="term"><option value="36">36 months</option><option value="48">48 months</option></select>
+          <input id="deposit" type="radio" name="deposit" value="deposit-10" checked>
+          <input id="extra" type="checkbox" value="winter-pack" checked>
+          <input id="free" type="text" value="customer-entered secret">
+          <input id="password" type="password" value="password secret">
+          <input id="credential" type="hidden" value="hidden credential">
+          <div id="quote" class="css-hidden">999,999 won</div>
+        """)
+        page.select_option("#term", "48")
+        snapshot = _evidence_html_snapshot(page).decode("utf-8")
+        browser.close()
+
+    assert '<option value="48" selected="">48 months</option>' in snapshot
+    assert 'id="deposit" type="radio" name="deposit" value="deposit-10" checked=""' in snapshot
+    assert 'id="extra" type="checkbox" value="winter-pack" checked=""' in snapshot
+    assert "customer-entered secret" not in snapshot
+    assert "password secret" not in snapshot
+    assert "hidden credential" not in snapshot
+    assert 'id="quote" class="css-hidden" hidden="" data-sourceledger-computed-hidden="true"' in snapshot
+
+
+def test_browser_cleanup_unroutes_with_ignored_late_errors_before_closing():
+    events = []
+
+    class Context:
+        pages = []
+
+        def unroute_all(self, *, behavior):
+            events.append(("unroute_all", behavior))
+
+        def close(self):
+            events.append(("context.close", None))
+
+    class Browser:
+        def close(self):
+            events.append(("browser.close", None))
+
+    _close_browser_resources(Context(), Browser())
+    assert events == [("unroute_all", "ignoreErrors"), ("context.close", None), ("browser.close", None)]

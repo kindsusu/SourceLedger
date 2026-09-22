@@ -117,6 +117,27 @@ source-ledger discover --config examples/demo.json --source-id catalog --limit 1
 
 `source-discover`는 발견한 링크를 연구 워크스페이스에 후보로 저장합니다. 관련성을 검토하고 수집 초안에서 의도한 출처만 남긴 뒤 선택자/열 매핑을 작성합니다. 발견만으로 확인된 가격 관측을 만들지는 않습니다.
 
+### 지원 렌탈 페이지와 조건부 수집
+
+`Product.price_profile`의 기본값은 `unit`입니다. 계약 기간, 주행거리, 보증금, 선납금, 할부처럼 렌탈 조건을 보존해야 하면 `rental`로 설정합니다. 보증금·선납금·보증금 할부는 각각 별도의 원문 조건으로 기록하며 서로 합치거나 대신 넣지 않습니다.
+
+`Source.adapter`는 지원되는 렌더링 형식의 결정적 파서를 지정합니다. 현재 값은 `jetcar`, `gongcar`, `funrent`입니다. 어댑터는 원문 근거와 화면 표시 여부를 기록합니다. 계산기에 표시된 값은 `calculator_estimate`로 표기해 `observed` 가격과 구분하며, 비교 가능한 견적으로 자동 승격하지 않습니다. 숨겨진 내용, 불충분한 근거, 불완전한 렌탈 조건은 비교하지 않고 검토 대상으로 남습니다.
+
+처음 지원 사이트를 수집할 때는 산업군·상품·시장을 명시하는 워크스페이스를 만든 다음 권한 있는 정확한 페이지 URL을 넣습니다. 아래 URL은 자리표시자이므로 실제 사용 시 권한 있는 URL로 바꾸세요. 이 명령은 사이트 전체 목록을 탐색하거나 완전한 목록이라고 주장하지 않습니다.
+
+```powershell
+source-ledger init --lang ko
+source-ledger collect-sites --workspace .sourceledger/workspace.json `
+  --url "https://www.jetcar.kr/sub0201/<vehicle-id>" `
+  --max-pages 5 --max-seconds 120
+```
+
+`collect-sites`는 `--workspace`, 하나 이상의 `--url`, `--max-pages`, `--max-seconds`, `--no-incremental`을 받습니다. 현재 지원하는 Jetcar·Gongcar·Funrent 호스트의 사용자가 지정한 상세 또는 렌더링 계산기 페이지를 읽기 전용으로 검토한 레시피로 수집합니다. 수집기는 네이티브 견적 양식 제출을 막지만 페이지 JavaScript의 다른 요청까지 막는다고 보장하지는 않습니다. 일반 수집과 같은 SQLite 증거 이력과 XLSX 보고서를 만듭니다. 사이트 전체 목록 탐색, 선택하지 않은 페이지 추정, 실시간 재고 범위의 완전성 보장은 하지 않습니다.
+
+XLSX 보고서는 렌탈 관측이 있는 실행에만 **Rental Quotes** 시트를 추가합니다. 이 시트는 관측 월 납입금과 계산기 추정값을 다른 열에 두고, 보증금·선납금·할부 같은 렌탈 조건도 따로 표시합니다. **Observation History**도 관측 금액, 추정 금액, 원문 필드, 근거, 값의 출처, 표시 상태, 검증 수준, 렌탈 조건을 구분합니다. 가격 비교 통계에서는 계산기 추정값과 숨겨진 출처 값을 제외합니다.
+
+일반 `Source.incremental`의 기본값은 꺼짐이며 `"incremental": true`를 명시해야 합니다. 적격 공개 HTTP 출처에만 적용됩니다. `collect-sites`는 `--no-incremental`을 주지 않으면 생성하는 공개 HTTP 출처의 증분 수집을 켭니다. 다음 실행도 출처에 다시 요청하며, 일치하는 조건부 HTTP 응답이 확인된 뒤에만 보존 본문·추출 결과를 재사용할 수 있습니다. 브라우저 출처는 매번 새로 수집합니다. 보존한 증거가 없거나 변경됐으면 validator를 보내지 않고 새 응답을 받습니다. 자세한 내용은 [수집 신뢰성 안내](docs/COLLECTION_RELIABILITY.ko.md) ([English](docs/COLLECTION_RELIABILITY.md))와 [Milestone 04](docs/MILESTONE_04.md)를 참고하세요.
+
 ### 검증과 활성화
 
 아래 예시는 합성 가격 두 개를 정답 표본과 대조하고 검증 기록과 활성 설정을 만듭니다. 외부 사이트에 접근하지 않습니다.
@@ -153,6 +174,7 @@ worker의 heartbeat가 확인되지 않으면 MCP는 수집 시작 요청을 거
 - Claude/ChatGPT 실제 UI 연결은 검증하지 않았습니다. 원격 ChatGPT 연결에는 인증된 배포와 산출물 다운로드 경로가 필요합니다.
 - Crawl4AI는 선택 의존성이고 이 환경에서 설치·실사이트 동작을 검증하지 않았습니다.
 - UWS, Jina, Exa 등 비용 또는 외부 전송이 발생하는 서비스에는 연결하지 않습니다.
+- 지원 사이트 수집 흐름은 유료 MCP 서비스를 사용하지 않습니다.
 - Agent-Reach는 doctor/routing 설계 참고 범위이며 직접 실행 연동은 없습니다. ego-lite는 macOS 앱 의존 경로로, 현재 Windows에서 직접 연동하지 않았습니다.
 - 독립 worker를 Windows 서비스로 등록하거나 스케줄링해 상시 운영하는 기능은 구현하지 않았습니다.
 - CLI 도움말·오류·XLSX 표시는 영어 기본입니다. 한국어 문서·설정 질문·연구 다음 작업 안내를 제공하며 전체 UI와 보고서의 한국어 전환은 아직 지원하지 않습니다.

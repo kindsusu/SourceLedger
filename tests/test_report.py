@@ -50,3 +50,52 @@ def test_comparison_uses_latest_source_observation_and_group_statistics(tmp_path
     assert {r[14] for r in rows} == {20}
     assert {r[15] for r in rows} == {40}
     assert {r[16] for r in rows} == {30}
+
+
+def test_rental_report_separates_estimates_unknowns_and_deposit_kinds(tmp_path):
+    cfg = _config(tmp_path)
+    cfg.products[0].price_profile = "rental"
+    base = {"task_id": "t", "product_id": "p1", "source_id": "s1", "source_name": "Synthetic",
+            "source_url": "https://example.test/car", "status": "verified", "amount": "590000",
+            "currency": "KRW", "price_profile": "rental", "value_origin": "observed", "source_visibility": "visible",
+            "verification_level": "evidence_validated", "freshness": "observed", "comparable": True,
+            "comparison_key": "synthetic", "collected_at": "2026-01-01T00:00:00Z",
+            "raw_fields": {"price": "590000"}, "rental_conditions": {
+                "price_basis": "monthly", "term_months": 36, "deposit_amount": "0", "advance_amount": "2000000",
+                "upfront_deposit_amount": "1000000", "deposit_installment_amount": "3000000", "deposit_installment_months": 12}}
+    observations = [dict(base, id="observed"),
+        dict(base, id="estimate", value_origin="calculator_estimate", derived_amount="612345", status="review", amount=None,
+             raw_fields={"displayed_deposit": "approximately 10 million"}, comparable=False, reason="calculated estimate"),
+        # Even malformed flags cannot leak an estimate or hidden amount into comparison.
+        dict(base, id="hidden", source_visibility="hidden"),
+        dict(base, id="bad-estimate", value_origin="calculator_estimate", derived_amount="600000"),
+        dict(base, id="unknown", status="review", comparable=False, amount=None, rental_conditions={"price_basis": "monthly"}),
+        dict(base, id="daily", status="review", comparable=False, rental_conditions={"price_basis": "daily"}),
+        dict(base, id="review", status="review", comparable=False, reason="conflicting terms"),
+    ]
+    out = export_report(cfg, {"id": "r"}, [], observations, tmp_path / "rental.xlsx")
+    wb = load_workbook(out, data_only=False)
+    assert wb.sheetnames == [*SHEETS, "Rental Quotes"]
+    ws = wb["Rental Quotes"]
+    data = [dict(zip([c.value for c in ws[1]], row)) for row in ws.iter_rows(min_row=2, values_only=True)]
+    assert data[0]["Observed Monthly Price"] == 590000
+    assert data[0]["Estimated Monthly Price (not observed)"] is None
+    assert data[0]["Deposit Amount"] == 0
+    assert data[0]["Advance Amount"] == 2000000
+    assert data[0]["Upfront Deposit Amount"] == 1000000
+    assert data[0]["Deposit Installment Amount"] == 3000000
+    assert data[0]["Deposit Installment Months"] == 12
+    assert data[1]["Observed Monthly Price"] is None
+    assert data[1]["Estimated Monthly Price (not observed)"] == 612345
+    assert data[1]["Displayed Deposit (raw)"] == "approximately 10 million"
+    assert data[2]["Observed Monthly Price"] is None
+    assert data[3]["Observed Monthly Price"] is None
+    assert data[4]["Term (months)"] is None and data[4]["Deposit Amount"] is None
+    assert data[5]["Observed Monthly Price"] is None
+    assert data[6]["Observed Monthly Price"] == 590000
+    assert wb["Price Comparison"].max_row == 2
+    assert wb["Observation History"]["V3"].value == 612345
+    assert wb["Observation History"]["H3"].value is None
+    assert wb["Observation History"]["Z8"].value == 590000
+    assert wb["Observation History"]["H8"].value is None
+    assert ws.freeze_panes == "C2"

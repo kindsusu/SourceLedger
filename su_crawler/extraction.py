@@ -207,6 +207,10 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
     """Extract only source-supplied values; invalid/unavailable fetches produce no values."""
     if result.status != "fetched":
         return []
+    if source.adapter:
+        from .adapters import extract_adapter
+
+        return extract_adapter(result, source)
     media_type = result.media_type.lower()
     if "html" in media_type:
         return _extract_html(result, source)

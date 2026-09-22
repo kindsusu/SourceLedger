@@ -117,6 +117,27 @@ source-ledger discover --config examples/demo.json --source-id catalog --limit 1
 
 `source-discover` saves these links as candidates in the research workspace. Review their relevance, trim the draft to intended sources, and supply selector/column mappings. Candidates never become verified price observations by discovery alone.
 
+### Supported rental pages and conditional collection
+
+`Product.price_profile` is `unit` by default. Set it to `rental` when a quote must retain rental conditions such as the term, mileage, deposit, advance payment, and installments. A deposit, an advance payment, and a deposit installment are separate observed conditions; SourceLedger does not combine or substitute them.
+
+`Source.adapter` selects a deterministic parser for the supported rendered formats: `jetcar`, `gongcar`, or `funrent`. An adapter records source evidence and visibility. A price displayed in a calculator is marked `calculator_estimate`, remains distinct from an `observed` price, and is not silently promoted into a comparable quote. Hidden content, incomplete evidence, or incomplete rental conditions remains reviewable rather than comparable.
+
+For a first supported-site collection, create a workspace so the industry, product, and market are explicit, then supply the exact authorized page URLs. Use a placeholder or your own authorized URL; this command does not discover or claim to complete a whole-site listing.
+
+```powershell
+source-ledger init
+source-ledger collect-sites --workspace .sourceledger/workspace.json `
+  --url "https://www.jetcar.kr/sub0201/<vehicle-id>" `
+  --max-pages 5 --max-seconds 120
+```
+
+`collect-sites` accepts `--workspace`, one or more `--url` values, `--max-pages`, `--max-seconds`, and `--no-incremental`. It only accepts the currently supported Jetcar, Gongcar, and Funrent hosts, and collects supplied detail or rendered-calculator pages using reviewed read-only recipes. The collector blocks native form submission, but page JavaScript can still make other requests. It produces normal SQLite evidence history and an XLSX report. It does not perform whole-site listing discovery, infer unselected pages, or establish live inventory coverage.
+
+The XLSX report adds a **Rental Quotes** sheet only when a run contains rental observations. It keeps observed monthly prices and calculator estimates in separate columns, then lists deposits, advance payment, and installments separately. **Observation History** also separates observed amount, estimated amount, raw fields, evidence, value origin, visibility, verification level, and rental conditions. Comparison statistics exclude calculator estimates and hidden-source values.
+
+Ordinary `Source.incremental` is off by default and requires `"incremental": true`; it applies only to eligible public HTTP sources. `collect-sites` enables incremental retrieval for its generated public HTTP sources unless `--no-incremental` is supplied. A later run still contacts the source and may reuse retained bytes and extraction only after a matching conditional HTTP response. Browser sources are collected freshly. If retained evidence is missing or altered, SourceLedger does not send validators and obtains a fresh response. See the [collection reliability guide](docs/COLLECTION_RELIABILITY.md) ([한국어](docs/COLLECTION_RELIABILITY.ko.md)) and [Milestone 04](docs/MILESTONE_04.md).
+
 ### Verify and activate
 
 This offline example checks two synthetic prices against known samples, writes a validation receipt, and creates an active configuration.
@@ -153,6 +174,7 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 - Claude and ChatGPT UI connections have not been verified. Remote ChatGPT use requires an authenticated deployment and an artifact download path.
 - Crawl4AI is optional and has not been installed or validated against live sites in this environment.
 - Services that incur cost or external transfer, including UWS, Jina, and Exa, are not connected.
+- No paid MCP service is used by the supported-site collection flow.
 - Agent-Reach informed the doctor/routing design but has no direct runtime integration. ego-lite depends on a macOS app path and is not directly integrated on Windows.
 - Windows service installation and scheduling for continuous operation are not implemented.
 - English is the default for CLI help, errors, and XLSX labels. Korean documentation, setup prompts, and research next actions are available; full Korean interface/report localization is not implemented.

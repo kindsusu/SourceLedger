@@ -7,10 +7,13 @@ import json
 
 import pytest
 
-from su_crawler.activation import SAMPLES_SCHEMA, activate_config, verify_config
+from su_crawler.activation import SAMPLES_SCHEMA, _assess, _evidence_problem, activate_config, verify_config
 from su_crawler.config import load_config
+from su_crawler.extraction import extract
+from su_crawler.models import FetchResult, Product, Source, stable_id
 from su_crawler.pipeline import execute
 from su_crawler.storage import Store
+from su_crawler.validation import validate
 
 
 def _write_fixture(tmp_path: Path, *, products: tuple[str, ...] = ("A",)) -> Path:
@@ -183,6 +186,96 @@ def test_activation_rejects_changed_derived_semantics(tmp_path):
     store.close()
     with pytest.raises(ValueError, match="semantics do not match"):
         activate_config(config_path, receipt_path=receipt_path, output_path=tmp_path / "active.json")
+
+
+def test_assessment_caches_shared_evidence_only_within_one_assessment(tmp_path, monkeypatch):
+    config_path = _write_fixture(tmp_path, products=("A", "B"))
+    config = load_config(config_path)
+    run = execute(config)
+    store = Store(Path(config.output_dir))
+    tasks = store.tasks(run["id"])
+    observations = store.observations(run["id"])
+    store.close()
+    assert len(observations) == 2
+
+    import su_crawler.activation as activation_module
+    import su_crawler.extraction as extraction_module
+
+    hash_calls = 0
+    extract_calls = 0
+    original_hash = activation_module._file_hash
+    original_extract = extraction_module.extract
+
+    def tracked_hash(path):
+        nonlocal hash_calls
+        hash_calls += 1
+        return original_hash(path)
+
+    def tracked_extract(*args, **kwargs):
+        nonlocal extract_calls
+        extract_calls += 1
+        return original_extract(*args, **kwargs)
+
+    monkeypatch.setattr(activation_module, "_file_hash", tracked_hash)
+    monkeypatch.setattr(extraction_module, "extract", tracked_extract)
+    reasons, _ = _assess(config, run, tasks, observations, [], datetime.now(timezone.utc))
+    assert reasons == []
+    assert (hash_calls, extract_calls) == (1, 1)
+
+    # The next assessment creates a new cache and must read the file again.
+    evidence = Path(observations[0]["evidence_path"])
+    evidence.write_bytes(evidence.read_bytes() + b"tampered")
+    reasons, _ = _assess(config, run, tasks, observations, [], datetime.now(timezone.utc))
+    assert any("source evidence hash mismatch" in reason for reason in reasons)
+    assert (hash_calls, extract_calls) == (2, 1)
+
+
+def test_activation_rejects_tampered_value_origin_and_derived_values(tmp_path):
+    config_path = _write_fixture(tmp_path)
+    receipt_path = tmp_path / "receipt.json"
+    receipt = verify_config(config_path, receipt_path=receipt_path)
+    config = load_config(config_path)
+    store = Store(Path(config.output_dir))
+    row = store.observations(receipt["run_id"])[0]
+    row["value_origin"] = "calculator_estimate"
+    row["derived_values"] = {"estimated_price": "999"}
+    with store.db:
+        store.db.execute("UPDATE observations SET data=? WHERE id=?", (json.dumps(row), row["id"]))
+    store.close()
+    with pytest.raises(ValueError, match="semantics do not match"):
+        activate_config(config_path, receipt_path=receipt_path, output_path=tmp_path / "active.json")
+
+
+def test_adapter_evidence_requires_matching_browser_fetch_receipt(tmp_path):
+    fixture = Path(__file__).parent / "fixtures" / "adapters" / "jetcar_detail.html"
+    url = "https://www.jetcar.kr/sub0301/5874"
+    source = Source("jet", "Jetcar", "web", url, ["vehicle"], adapter="jetcar", account_scope="public")
+    product = Product("vehicle", "Vehicle", identifiers={"item_id": "5874"}, price_profile="rental")
+    from su_crawler.models import CollectionConfig
+
+    config = CollectionConfig("adapter", [product], [source], str(tmp_path), str(tmp_path))
+    evidence = tmp_path / "evidence.html"
+    evidence.write_bytes(fixture.read_bytes())
+    digest = hashlib.sha256(evidence.read_bytes()).hexdigest()
+    collected_at = "2026-09-22T00:00:00+00:00"
+    browser_candidate = extract(FetchResult(source.id, "fetched", "playwright", evidence.read_bytes(), final_url=url), source)[0]
+    row = validate(browser_candidate, product, source, run_id="r", task_id="t", evidence_path=str(evidence),
+                   evidence_sha256=digest, collected_at=collected_at, source_url=url).to_dict()
+    receipt = evidence.with_name(f"{digest}.{stable_id(collected_at, source.id)}.json")
+    receipt.write_text(json.dumps({"source_id": source.id, "url": url, "at": collected_at,
+                                   "backend": "playwright", "hash": digest,
+                                   "account_scope": source.account_scope, "recipe_version": source.recipe_version}), encoding="utf-8")
+    assert _evidence_problem(row, config) is None
+
+    receipt.unlink()
+    assert _evidence_problem(row, config) == "source fetch receipt is missing or invalid"
+    receipt.write_text(json.dumps({"source_id": source.id, "url": url, "at": collected_at,
+                                   "backend": "http", "hash": digest,
+                                   "account_scope": source.account_scope, "recipe_version": source.recipe_version}), encoding="utf-8")
+    assert _evidence_problem(row, config) == "stored observation semantics do not match source evidence"
+
+    static_candidate = extract(FetchResult(source.id, "fetched", "http", evidence.read_bytes(), final_url=url), source)[0]
+    assert static_candidate.source_visibility == "unconfirmed"
 
 
 def test_activation_rechecks_samples_and_commercial_expiry(tmp_path, monkeypatch):

@@ -24,6 +24,7 @@ class Product:
     identifiers: dict[str, str] = field(default_factory=dict)
     required_specs: dict[str, str] = field(default_factory=dict)
     comparison_fields: list[str] = field(default_factory=lambda: ["currency", "unit", "pack_quantity", "tax", "price_type", "price_basis"])
+    price_profile: str = "unit"
 
 
 @dataclass
@@ -53,6 +54,8 @@ class Source:
     account_scope: str = "public"
     recipe_version: str = "1"
     unavailable_markers: list[str] = field(default_factory=lambda: ["가격 문의", "견적 문의", "문의 요망", "Contact for price", "Request a quote"])
+    adapter: str | None = None
+    incremental: bool = False
 
 
 @dataclass
@@ -78,6 +81,7 @@ class FetchResult:
     message: str = ""
     screenshot: bytes | None = None
     trace: list[dict[str, Any]] = field(default_factory=list)
+    http_metadata: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -88,6 +92,10 @@ class Candidate:
     locator: str
     extraction_method: str
     specs: dict[str, str] = field(default_factory=dict)
+    value_origin: str = "observed"
+    source_visibility: str = "unconfirmed"
+    derived_values: dict[str, Any] = field(default_factory=dict)
+    review_flags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -117,6 +125,14 @@ class Observation:
     comparable: bool = False
     comparison_key: str | None = None
     freshness: str = "observed"
+    value_origin: str = "observed"
+    source_visibility: str = "unconfirmed"
+    derived_values: dict[str, Any] = field(default_factory=dict)
+    review_flags: list[str] = field(default_factory=list)
+    derived_amount: str | None = None
+    price_profile: str = "unit"
+    verification_level: str = "review"
+    rental_conditions: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

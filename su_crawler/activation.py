@@ -16,7 +16,7 @@ import os
 import tempfile
 
 from .config import config_fingerprint, load_config
-from .models import CollectionConfig, FetchResult, resolve_path
+from .models import CollectionConfig, FetchResult, resolve_path, stable_id
 from .pipeline import execute
 from .storage import Store
 
@@ -71,7 +71,8 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
         raise
 
 
-def _evidence_problem(row: dict[str, Any], config: CollectionConfig) -> str | None:
+def _evidence_problem(row: dict[str, Any], config: CollectionConfig,
+                      cache: dict | None = None) -> str | None:
     source = next((item for item in config.sources if item.id == row.get("source_id")), None)
     product = next((item for item in config.products if item.id == row.get("product_id")), None)
     if source is None or product is None:
@@ -83,7 +84,14 @@ def _evidence_problem(row: dict[str, Any], config: CollectionConfig) -> str | No
     path = Path(path_text)
     if not path.is_file():
         return "source evidence file is missing"
-    if _file_hash(path) != expected_hash:
+    # A cache lives only for this assessment; a later activation always reads
+    # evidence again. Thousands of quote rows can share one source file.
+    cache = cache if cache is not None else {}
+    resolved = str(path.resolve())
+    hash_key = ('hash', resolved)
+    if hash_key not in cache:
+        cache[hash_key] = _file_hash(path)
+    if cache[hash_key] != expected_hash:
         return "source evidence hash mismatch"
     # Bind the stored fields to the evidence bytes using the same deterministic
     # extractor.  A matching file hash alone cannot detect a modified database.
@@ -93,7 +101,32 @@ def _evidence_problem(row: dict[str, Any], config: CollectionConfig) -> str | No
         ".json": "application/json", ".pdf": "application/pdf", ".xlsx":
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }.get(path.suffix.lower(), "application/octet-stream")
-    candidates = extract(FetchResult(source.id, "fetched", "verification", content=path.read_bytes(), media_type=media_type), source)
+    # Adapter visibility depends on how these bytes were captured. Rebuild that
+    # context from the run-bound fetch receipt instead of inventing a browser
+    # capture or downgrading a retained rendered snapshot to a static response.
+    backend = 'verification'
+    final_url = row.get('source_url') or source.location
+    if source.adapter:
+        receipt_path = path.with_name(f"{expected_hash}.{stable_id(row.get('collected_at'), source.id)}.json")
+        receipt_key = ('receipt', str(receipt_path))
+        if receipt_key not in cache:
+            try:
+                cache[receipt_key] = json.loads(receipt_path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                return 'source fetch receipt is missing or invalid'
+        receipt = cache[receipt_key]
+        if (not isinstance(receipt, dict) or receipt.get('hash') != expected_hash
+                or receipt.get('source_id') != source.id or receipt.get('at') != row.get('collected_at')
+                or receipt.get('url') != final_url or receipt.get('account_scope') != source.account_scope
+                or receipt.get('recipe_version') != source.recipe_version
+                or receipt.get('backend') not in {'file', 'http', 'playwright', 'crawl4ai'}):
+            return 'source fetch receipt does not match the observation'
+        backend = receipt['backend']
+    extract_key = ('extract', resolved, expected_hash, _json_hash(asdict(source)), backend, final_url)
+    if extract_key not in cache:
+        cache[extract_key] = extract(FetchResult(source.id, "fetched", backend,
+            content=path.read_bytes(), media_type=media_type, final_url=final_url), source)
+    candidates = cache[extract_key]
     bound = []
     for candidate in candidates:
         candidate_raw = {
@@ -116,6 +149,10 @@ def _evidence_problem(row: dict[str, Any], config: CollectionConfig) -> str | No
         "amount", "currency", "unit", "pack_quantity", "normalized_amount", "calculation",
         "comparable", "comparison_key",
     }
+    semantics.update(key for key in (
+        'value_origin', 'source_visibility', 'derived_values', 'derived_amount',
+        'price_profile', 'verification_level', 'rental_conditions', 'review_flags'
+    ) if key in row)
     if any(recomputed.get(key) != row.get(key) for key in semantics):
         return "stored observation semantics do not match source evidence"
     raw_fields = row.get("raw_fields") or {}
@@ -193,9 +230,10 @@ def _assess(config: CollectionConfig, run: dict[str, Any], tasks: list[dict[str,
 
     eligible_rows: dict[tuple[str, str], list[dict[str, Any]]] = {}
     proofs: list[dict[str, Any]] = []
+    evidence_cache: dict = {}
     for row in observations:
         pair = (row.get("source_id"), row.get("product_id"))
-        problem = _evidence_problem(row, config) or _current_problem(row, config, now)
+        problem = _evidence_problem(row, config, evidence_cache) or _current_problem(row, config, now)
         if row.get("status") == "verified" and row.get("comparable") is True and problem is None:
             eligible_rows.setdefault(pair, []).append(row)
             proofs.append({

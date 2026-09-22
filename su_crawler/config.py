@@ -9,6 +9,9 @@ import re
 
 from .models import CollectionConfig, Product, Source, resolve_path, stable_id
 
+PRICE_PROFILES = frozenset({"unit", "rental"})
+SOURCE_ADAPTERS = frozenset({"jetcar", "gongcar", "funrent"})
+
 
 def load_config(path: str | Path) -> CollectionConfig:
     path = Path(path).resolve()
@@ -28,9 +31,15 @@ def load_config(path: str | Path) -> CollectionConfig:
     for product in products:
         if not product.identifiers or any(not str(v).strip() for v in product.identifiers.values()):
             raise ValueError(f"Product {product.id}: identifiers are required for source matching")
+        if not isinstance(product.price_profile, str) or product.price_profile not in PRICE_PROFILES:
+            raise ValueError(f"Product {product.id}: price_profile must be unit or rental")
     for source in sources:
         if source.kind not in {"web", "file"}:
             raise ValueError(f"Unsupported source type: {source.kind}")
+        if source.adapter is not None and (not isinstance(source.adapter, str) or source.adapter not in SOURCE_ADAPTERS):
+            raise ValueError(f"Source {source.id}: adapter must be jetcar, gongcar, funrent, or null")
+        if not isinstance(source.incremental, bool):
+            raise ValueError(f"Source {source.id}: incremental must be true or false")
         if not source.product_ids or set(source.product_ids) - product_ids:
             raise ValueError(f"Source {source.id}: configure at least one product ID")
         if len(source.product_ids) != len(set(source.product_ids)):

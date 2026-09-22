@@ -4,6 +4,13 @@
 
 SourceLedger 0.3 provides evidence-first collection and bounded research execution. It is not an unrestricted autonomous research agent.
 
+The subsequent collection-reliability update adds supported rental-page adapters,
+the `collect-sites` entry point, separate calculator estimates, conditional HTTP
+revalidation, clearer access diagnostics, and a conditional Rental Quotes report
+sheet. See [collection reliability](COLLECTION_RELIABILITY.md) and
+[Milestone 04](MILESTONE_04.md) for current verification and limits. The final
+2026-09-22 Windows suite passed **172 tests**.
+
 ## Implemented
 
 - **Research workspace:** `init` creates an English or Korean first-run workspace for one lead product: industry, product, and market. It stores explicit identifiers, authorized same-host source candidates, readiness, and next actions. It does not ask for an analysis-purpose field or secret values.
@@ -11,7 +18,7 @@ SourceLedger 0.3 provides evidence-first collection and bounded research executi
 - **Draft and activation controls:** an explicit-identifier workspace can produce a draft configuration. `verify` checks the exact configuration and retained evidence; optional known samples add independent product/price checks. `activate` accepts only the exact verified configuration and evidence. It rejects changed configuration, missing or altered evidence, stale evidence, missing assigned products, and mismatched known samples. Receipts are local audit records, not signed attestations.
 - **Existing collection engine:** explicit product identifiers, source URLs/files, extraction rules, HTTP/file collection, optional Playwright browser actions, and optional Crawl4AI adapter.
 - **Evidence and validation:** retained source bytes, locators, timestamps, SHA-256 hashes, and strict product, price, currency, specification, and commercial-condition validation. Missing prices remain blank.
-- **Storage and reporting:** SQLite run history, resumable tasks, evidence files, and six-sheet XLSX reports. The default workbook labels are English; Korean onboarding and documentation are available.
+- **Storage and reporting:** SQLite run history, resumable tasks, evidence files, six standard XLSX sheets, and an additional Rental Quotes sheet when rental observations exist. The default workbook labels are English; Korean onboarding and documentation are available.
 - **Local MCP operation:** a local MCP server registers configured jobs for an independently started worker. Bounded discovery and research workspaces are separate from active `run` configuration; running a configured collection does not require activation.
 - **Keyword search:** opt-in SearXNG JSON API, one bounded request, explicit provider settings, URL filtering, and candidate provenance. No configured provider means zero search calls.
 - **Rule proposals:** structured-data and semantic HTML extraction proposals, optional local Ollama selector-only output, DOM checks, exact identifiers, retained evidence and previews. Missing conditions remain unobserved.

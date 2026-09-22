@@ -52,6 +52,13 @@ def main(argv: list[str] | None = None) -> int:
         setup.add_argument("--" + field)
     research = sub.add_parser("research-status", help="Show candidates, readiness, and next actions.")
     research.add_argument("--workspace", default=DEFAULT_WORKSPACE)
+    sites = sub.add_parser('collect-sites', help='Collect supplied supported rental pages directly into SQLite and XLSX.')
+    sites.add_argument('--workspace', default=DEFAULT_WORKSPACE)
+    sites.add_argument('--url', action='append')
+    sites.add_argument('--output-dir')
+    sites.add_argument('--max-pages', type=int, default=5)
+    sites.add_argument('--max-seconds', type=float, default=120)
+    sites.add_argument('--no-incremental', action='store_true')
     source = sub.add_parser("source-add", help="Save an authorized URL candidate without fetching it.")
     source.add_argument("--workspace", default=DEFAULT_WORKSPACE)
     source.add_argument("--url", required=True)
@@ -122,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "init":
             result = _init(args)
+        elif args.command == 'collect-sites':
+            from .site_collection import collect_sites
+            result = collect_sites(args.workspace, urls=args.url, output_dir=args.output_dir,
+                max_pages=args.max_pages, max_seconds=args.max_seconds, incremental=not args.no_incremental)
         elif args.command in {"research-status", "source-add", "source-discover", "product-set", "draft"}:
             from . import research
             if args.command == "research-status":
@@ -190,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
                 finally:
                     store.close()
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
-        if args.command in {"search", "propose", "agent"}:
+        if args.command in {"search", "propose", "agent", "collect-sites"}:
             return 0 if result.get("status") in {"searched", "proposed", "completed", "paused"} else 1
         return 1 if args.command == "verify" and not result["eligible"] else 0
     except (ValueError, OSError, RuntimeError, EOFError) as exc:

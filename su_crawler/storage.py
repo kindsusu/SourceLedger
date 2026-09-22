@@ -67,10 +67,28 @@ class Store:
             source_id TEXT NOT NULL, backend TEXT NOT NULL,
             status TEXT NOT NULL, at TEXT NOT NULL, data TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS source_snapshots (
+            cache_key TEXT PRIMARY KEY, data TEXT NOT NULL
+        );
         """)
 
     def close(self):
         self.db.close()
+
+    def source_snapshot(self, cache_key: str) -> dict | None:
+        row = self.db.execute("SELECT data FROM source_snapshots WHERE cache_key=?", (cache_key,)).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(row[0])
+            return value if isinstance(value, dict) else None
+        except (ValueError, TypeError):
+            return None
+
+    def save_source_snapshot(self, cache_key: str, data: dict) -> None:
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO source_snapshots VALUES(?,?)",
+                            (cache_key, json.dumps(data, ensure_ascii=False)))
 
     def run(self, run_id: str) -> dict:
         row = self.db.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
