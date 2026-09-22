@@ -2,7 +2,7 @@
 
 [English](INSTALLATION.md) | [한국어](INSTALLATION.ko.md)
 
-SourceLedger supports Python 3.11 or later; Python 3.12 is recommended. CI is configured to check Python 3.11 through 3.13. Core local collection does not require a host AI tool, a paid MCP service, or a Claude/ChatGPT client integration.
+SourceLedger supports Python 3.11 or later; Python 3.12 is recommended. CI is configured to check Python 3.11 through 3.13. Core local collection does not require a host AI tool, a paid MCP service, or a client integration.
 
 ## Get the project
 
@@ -84,7 +84,30 @@ Run `init` on each new computer and enter the industry, product, and market befo
 
 Activation configurations and SQLite evidence history can contain absolute evidence paths. Copying an existing research workspace alone therefore does not guarantee a portable active configuration or report history. Create a new workspace on the new computer, then re-register authorized sources and rules as needed. Do not copy browser profiles, cookies, credentials, or other private profile data between computers.
 
-The local MCP server is optional. Direct Claude and ChatGPT client integrations have not been verified.
+## Local assistant connector
+
+The optional local connector supports generated MCP settings for Codex, Claude
+Code, and Claude Desktop. Install its dependency, generate or install the
+selected client setting, then start the independent worker from a normal
+terminal:
+
+```bat
+setup.cmd --mcp --browser
+source-ledger.cmd connect --client codex --install
+source-ledger.cmd assistant start --workspace-root .sourceledger
+```
+
+For Claude Code in another project, add `--project-dir "C:\work\my-project"`.
+On macOS/Linux, use `bash setup.sh --mcp --browser` and
+`bash source-ledger.sh ...`. The install step preserves unrelated client
+settings, creates a backup, and refuses conflicting same-name server entries.
+Read [local assistant connections](ASSISTANT_CONNECTIONS.md) before installing
+into a client configuration.
+
+The command contract and local MCP service are tested offline. Actual Codex,
+Claude Code, and Claude Desktop GUI connections are not verified by this
+project. The connector does not provide cloud/web/mobile access or a direct
+host-browser handoff.
 
 ## Run tests
 

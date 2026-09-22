@@ -19,7 +19,7 @@ After initial setup, SourceLedger should discover relevant sources, collect evid
 2. **Bounded source discovery and draft — implemented.** Persist explicit candidates, discover same-host links with HTTP/browser fallback, and optionally query a configured SearXNG server. Search results remain candidates with provenance. Generate drafts only from explicit identifiers and candidates.
 3. **Verification and activation — implemented.** Verify exact configuration and retained evidence, optionally check known samples, and activate only an unchanged passing configuration. Local receipts are audit records, not signatures.
 4. **Rule proposals and bounded execution — implemented in 0.3.** Structured-data and semantic-HTML proposals, optional local Ollama selectors, checkpointed source processing, fresh combined verification, and optional sample-gated activation. Browser action planning, rule-change repair, and live model evaluation remain pending.
-5. **Operations and client delivery — pending.** Add scheduling, restart recovery, bounded model/browser usage, exception notifications, client UI verification, and controlled deployment.
+5. **Operations and client delivery — partially implemented in 0.4.** Local Codex/Claude connection settings, workspace MCP tools, an independent worker, persisted jobs, explicit interruption recovery, and XLSX resources are available. Scheduling, exception notifications, client GUI verification, and authenticated remote deployment remain pending. See [local assistant connections](ASSISTANT_CONNECTIONS.md).
 
 ## Acceptance criteria for the next stage
 

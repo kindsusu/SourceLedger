@@ -20,6 +20,8 @@ Read the [architecture and Archify guide](docs/ARCHITECTURE.md) ([한국어](doc
 
 ## Quick start
 
+For conversation-based use from Codex or Claude, follow the three-command [local assistant setup](docs/ASSISTANT_CONNECTIONS.md). After connecting, provide your industry, product, market, and authorized source URLs in the conversation.
+
 SourceLedger supports Python 3.11 or later; Python 3.12 is recommended. Clone this repository, or download and extract its GitHub ZIP. The default setup installs the local core only. See [installation](docs/INSTALLATION.md) for macOS/Linux, browser, MCP, developer-test, Linux dependency, headless browser mode, and moving-computer instructions.
 
 ```bat
@@ -59,7 +61,7 @@ The research workspace supports one product lead; collection configurations supp
 
 ### Bounded research execution
 
-Version 0.3 adds optional SearXNG keyword search, source-backed selector proposals, and a checkpointed controller. After setup, register authorized URLs and exact identifiers, then run:
+Version 0.3 added optional SearXNG keyword search, source-backed selector proposals, and a checkpointed controller. After setup, register authorized URLs and exact identifiers, then run:
 
 ```powershell
 .\source-ledger.cmd product-set --identifier model=YOUR_EXACT_MODEL
@@ -149,7 +151,27 @@ Every configured product must have a source; every source/product task must be v
 
 Without `--samples`, verification checks source consistency only. A receipt is a local audit record, not a signed guarantee of real-world accuracy. Existing `run --config` remains available for manually maintained configs; activation is an explicit workflow, not a mandatory runtime security boundary.
 
-## MCP
+## Local assistant connections
+
+Version 0.4 adds a local stdio MCP connector for Codex, Claude Code, and
+Claude Desktop. It creates reviewable per-client settings, can safely merge an
+explicitly requested setting, and runs queued work through an independent
+worker. Start with:
+
+```powershell
+.\setup.cmd --mcp --browser
+.\source-ledger.cmd connect --client codex --install
+.\source-ledger.cmd assistant start --workspace-root .sourceledger
+```
+
+Use `claude-code` or `claude-desktop` as the client value as needed. For
+Claude Code outside this repository, add `--project-dir "C:\work\my-project"`.
+The connector has no paid service requirement and does not auto-start a
+worker. See [local assistant connections](docs/ASSISTANT_CONNECTIONS.md) for
+configuration targets, safe backups, queued-job commands, and the verification
+scope.
+
+## Fixed-configuration MCP
 
 The MCP server does not create the collection worker as its child process. On Windows, a client Job Object can terminate child processes when it exits. Start an independent worker in a normal terminal before starting MCP.
 
@@ -168,7 +190,7 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 - Keyword search requires your configured SearXNG instance. No shared/public search endpoint is silently chosen.
 - Selector proposals support structured data and semantic HTML, with optional local model assistance. New browser action plans, automated login, and unattended rule self-repair are not implemented.
 - SearXNG/Ollama request paths are tested with controlled responses; actual servers, models, and representative live sites remain to be validated. Loopback transport alone does not establish where a proxy executes a model; configure Ollama with cloud disabled.
-- Claude and ChatGPT UI connections have not been verified. Remote ChatGPT use requires an authenticated deployment and an artifact download path.
+- The local connector's CLI and SDK contract are covered by offline tests; live Codex, Claude Code, and Claude Desktop GUI connections have not been verified. ChatGPT web/mobile use would require an authenticated remote deployment and an artifact download path.
 - Crawl4AI is optional and has not been installed or validated against live sites in this environment.
 - Services that incur cost or external transfer, including UWS, Jina, and Exa, are not connected.
 - No paid MCP service is used by the supported-site collection flow.
@@ -183,7 +205,7 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 - Human-verified price samples, including currency, tax, shipping, and member-price conditions
 - De-identified internal CSV/PDF samples, or an authorized internal access path and account scope
 - Business definitions for `price_basis`, pack quantity, unit-price calculation, and price type
-- The intended connection target (Claude Desktop or ChatGPT) and its execution environment
+- The intended local connection target (Codex, Claude Code, or Claude Desktop) and its execution environment
 
 Scanned-document OCR, autonomous browser navigation, rule recovery, and scheduled operation require further design and validation. ERP integration and analysis/simulation features are outside this scope.
 

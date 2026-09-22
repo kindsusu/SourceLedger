@@ -20,6 +20,8 @@ SourceLedger는 출처를 탐색하고 상품 가격과 원문·근거를 보존
 
 ## 빠른 시작
 
+Codex·Claude에서 대화로 사용하려면 명령 3개로 준비하는 [로컬 AI 도구 연결 안내](docs/ASSISTANT_CONNECTIONS.ko.md)를 따르세요. 연결 후 대화에서 산업군·상품·시장과 승인된 출처 URL을 입력합니다.
+
 SourceLedger는 Python 3.11 이상을 지원하며 Python 3.12를 권장합니다. 저장소를 clone하거나 GitHub ZIP을 내려받아 압축을 푼 뒤 설치하세요. 기본 setup는 로컬 core만 설치합니다. macOS/Linux, 브라우저·MCP·개발 테스트 옵션, Linux 의존성, headless 브라우저 모드, 다른 컴퓨터로 이동하는 방법은 [설치 안내](docs/INSTALLATION.ko.md)를 참고하세요.
 
 ```bat
@@ -59,7 +61,7 @@ launcher는 위치 기준으로 프로젝트 `.venv`를 사용하므로 Windows�
 
 ### 범위가 정해진 연구 실행
 
-0.3에는 선택적 SearXNG 키워드 검색, 원문 기반 선택자 제안, 진행 저장·재개가 가능한 실행 제어기를 추가했습니다. 초기 설정 후 출처와 식별자를 등록하고 실행합니다.
+0.3에서 선택적 SearXNG 키워드 검색, 원문 기반 선택자 제안, 진행 저장·재개가 가능한 실행 제어기를 추가했습니다. 초기 설정 후 출처와 식별자를 등록하고 실행합니다.
 
 ```powershell
 .\source-ledger.cmd product-set --identifier model=YOUR_EXACT_MODEL
@@ -149,7 +151,19 @@ XLSX 보고서는 렌탈 관측이 있는 실행에만 **Rental Quotes** 시트�
 
 `--samples`를 생략하면 원문과의 일관성만 검사합니다. 검증 기록은 로컬 감사 기록이며 실제 시장 정확도를 보증하는 서명은 아닙니다. 기존 `run --config`는 수동 관리 설정에도 계속 사용할 수 있습니다. 활성화 절차를 거쳐야만 실행되도록 강제한 구조는 아닙니다.
 
-## MCP 사용
+## 로컬 AI 도구 연결
+
+0.4에서 Codex, Claude Code, Claude Desktop용 로컬 stdio MCP 연결을 추가했습니다. 클라이언트별 검토 가능한 설정을 만들고, 명시적으로 요청한 경우에만 안전하게 설정을 병합하며, 독립 worker가 대기 작업을 실행합니다. 시작 명령은 다음과 같습니다.
+
+```powershell
+.\setup.cmd --mcp --browser
+.\source-ledger.cmd connect --client codex --install
+.\source-ledger.cmd assistant start --workspace-root .sourceledger
+```
+
+다른 클라이언트는 `claude-code`, `claude-desktop`을 사용합니다. 이 저장소 밖 Claude Code 프로젝트에는 `--project-dir "C:\work\my-project"`를 추가하세요. 이 연결은 유료 서비스를 요구하지 않고 worker를 자동으로 시작하지 않습니다. 설정 대상, 안전한 백업, 대기 작업 명령, 검증 범위는 [로컬 AI 도구 연결 안내](docs/ASSISTANT_CONNECTIONS.ko.md)를 참고하세요.
+
+## 고정 설정 MCP
 
 MCP 서버가 수집 worker를 하위 프로세스로 만들지 않습니다. Windows에서 클라이언트의 Job Object가 하위 프로세스까지 종료할 수 있기 때문입니다. **정상 터미널에서 독립 worker를 먼저 실행**한 뒤 MCP를 실행하세요.
 
@@ -168,7 +182,7 @@ worker의 heartbeat가 확인되지 않으면 MCP는 수집 시작 요청을 거
 - 키워드 검색은 직접 설정한 SearXNG 서버를 사용합니다. 임의의 공용 검색 서버를 기본으로 호출하지 않습니다.
 - 구조화된 데이터·의미가 명시된 HTML의 선택자 제안과 선택적 로컬 모델 보조를 지원합니다. 새 브라우저 동작 계획, 자동 로그인, 무인 규칙 복구는 미구현입니다.
 - SearXNG/Ollama 요청 경로는 통제된 응답으로 검사했으며 실제 서버·모델·대표 실사이트 검증은 남아 있습니다. 루프백 주소만으로 모델 실행 위치를 보증하지 않으므로 Ollama 클라우드 기능을 꺼야 합니다.
-- Claude/ChatGPT 실제 UI 연결은 검증하지 않았습니다. 원격 ChatGPT 연결에는 인증된 배포와 산출물 다운로드 경로가 필요합니다.
+- 로컬 연결의 CLI·SDK 계약은 오프라인 테스트로 확인했지만 Codex·Claude Code·Claude Desktop GUI 실제 연결은 검증하지 않았습니다. ChatGPT 웹·모바일 연결에는 인증된 원격 배포와 산출물 다운로드 경로가 필요합니다.
 - Crawl4AI는 선택 의존성이고 이 환경에서 설치·실사이트 동작을 검증하지 않았습니다.
 - UWS, Jina, Exa 등 비용 또는 외부 전송이 발생하는 서비스에는 연결하지 않습니다.
 - 지원 사이트 수집 흐름은 유료 MCP 서비스를 사용하지 않습니다.
@@ -183,7 +197,7 @@ worker의 heartbeat가 확인되지 않으면 MCP는 수집 시작 요청을 거
 - 사람이 확인한 정답 가격 표본과 통화·세금·배송·회원가 포함 여부
 - 비식별 내부 CSV/PDF 샘플, 또는 승인된 내부 접근 경로와 계정 범위
 - `price_basis`(개별/묶음), 포장 수량, 단가 계산, 가격 유형의 업무 정의
-- 연결 대상이 Claude Desktop인지 ChatGPT인지와 해당 실행 환경
+- 로컬 연결 대상(Codex, Claude Code, Claude Desktop)과 해당 실행 환경
 
 스캔 문서 OCR, 자율 브라우저 탐색, 규칙 복구, 예약 운영은 추가 설계·검증이 필요합니다. ERP 연동과 분석·모의계산 기능은 이번 범위에서 제외했습니다.
 

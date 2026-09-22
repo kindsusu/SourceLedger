@@ -2,7 +2,7 @@
 
 [English](INSTALLATION.md) | [한국어](INSTALLATION.ko.md)
 
-SourceLedger는 Python 3.11 이상을 지원하며 Python 3.12를 권장합니다. CI는 Python 3.11부터 3.13을 검사하도록 구성되어 있습니다. 로컬 core 수집에는 호스트 AI 도구, 유료 MCP 서비스, Claude/ChatGPT 클라이언트 연동이 필요하지 않습니다.
+SourceLedger는 Python 3.11 이상을 지원하며 Python 3.12를 권장합니다. CI는 Python 3.11부터 3.13을 검사하도록 구성되어 있습니다. 로컬 core 수집에는 호스트 AI 도구, 유료 MCP 서비스, 클라이언트 연동이 필요하지 않습니다.
 
 ## 프로젝트 받기
 
@@ -84,7 +84,19 @@ sudo .venv/bin/python -m playwright install-deps chromium
 
 활성 설정과 SQLite 근거 이력에는 절대 evidence 경로가 들어갈 수 있습니다. 따라서 기존 연구 워크스페이스만 복사해도 활성 설정이나 보고서 이력이 이식된다고 보장하지 않습니다. 새 컴퓨터에서 새 워크스페이스를 만들고, 승인된 출처와 규칙을 다시 등록하세요. 브라우저 profile, 쿠키, 자격증명 등 개인 profile 데이터는 컴퓨터 간에 복사하지 마세요.
 
-로컬 MCP 서버는 선택 기능입니다. Claude와 ChatGPT 클라이언트 직접 연동은 검증되지 않았습니다.
+## 로컬 AI 도구 연결
+
+선택적 로컬 연결은 Codex, Claude Code, Claude Desktop용 MCP 설정을 생성합니다. 의존성을 설치하고 사용할 클라이언트의 설정을 생성 또는 설치한 다음, 일반 터미널에서 독립 worker를 시작합니다.
+
+```bat
+setup.cmd --mcp --browser
+source-ledger.cmd connect --client codex --install
+source-ledger.cmd assistant start --workspace-root .sourceledger
+```
+
+다른 프로젝트에서 Claude Code를 사용할 때는 `--project-dir "C:\work\my-project"`를 추가하세요. macOS/Linux에서는 `bash setup.sh --mcp --browser`, `bash source-ledger.sh ...`를 사용합니다. 설치는 다른 클라이언트 설정을 유지하고 백업을 만들며, 같은 이름의 다른 서버 설정은 덮어쓰지 않고 거절합니다. 클라이언트 설정을 설치하기 전에 [로컬 AI 도구 연결 안내](ASSISTANT_CONNECTIONS.ko.md)를 확인하세요.
+
+명령 계약과 로컬 MCP 서비스는 오프라인으로 테스트합니다. Codex·Claude Code·Claude Desktop GUI의 실제 연결은 이 프로젝트에서 검증하지 않았습니다. 이 연결은 클라우드·웹·모바일 접근이나 호스트 브라우저 직접 인계를 제공하지 않습니다.
 
 ## 테스트 실행
 

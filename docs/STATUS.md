@@ -2,11 +2,24 @@
 
 [English](STATUS.md) | [한국어](IMPLEMENTATION_STATUS.md)
 
-SourceLedger 0.3 provides evidence-first collection and bounded research execution. It is not an unrestricted autonomous research agent.
+SourceLedger 0.4 provides evidence-first collection, bounded research execution, and an optional local assistant connector. It is not an unrestricted autonomous research agent.
 
 This correction update keeps raw/static HTML prices and their field-level evidence, but does not compare them until rendered display evidence is available. Structured files and document records remain eligible under their existing evidence rules. Fallback selects the strongest available evidence within finite attempts; missing commercial terms do not cause indefinite retries. Source Evidence records content, screenshot, and collection-receipt references when captured. Activation checks their hashes and reconstructs the original capture backend before re-extraction. `collect-sites` examples use the `.sourceledger/research.json` workspace created by `init` unless a separate `--workspace` is supplied.
 
-The Windows suite passed **212 tests** on 2026-09-22 (`SOURCELEDGER_HEADLESS=1`, `.venv/Scripts/python.exe -m pytest tests -q`). Tests used local fixtures, local HTTP servers, and mocked responses. The earlier correction-only baseline was 192 tests. This update did not recollect live sites, install or connect insane-search, or connect paid services.
+The previous 0.3 stabilization suite passed **212 tests** on Windows on 2026-09-22. Tests used local fixtures, local HTTP servers, and mocked responses. The earlier correction-only baseline was 192 tests. This update did not recollect live sites, install or connect insane-search, or connect paid services.
+
+The 0.4 Windows suite passed **258 tests, with 1 skipped** on 2026-09-22
+(`PYTHONUTF8=1`, `SOURCELEDGER_HEADLESS=1`, `.venv/Scripts/python.exe -m pytest tests -q`,
+101.01 seconds). The skipped case is a POSIX virtual-environment symlink test.
+Coverage includes queue recovery, startup/status races, pinned inputs, path
+boundaries, and actual stdio disconnect during a local fixture collection.
+An isolated wheel installation passed both the existing collection smoke check
+and onboarding, disconnected queued execution, observation retrieval, and XLSX
+resource delivery through the MCP SDK. The
+installed Codex CLI parsed an isolated generated configuration with a
+Korean/space workspace path; the installed Claude Code CLI parsed a generated
+project setting, pending normal client approval. Claude Desktop was JSON
+round-tripped only. None of these checks is a live GUI connection test.
 
 [Portable installation](INSTALLATION.md) now includes Windows and macOS/Linux setup and launch scripts, a repository-local virtual environment, UTF-8 input, optional managed Chromium, and a direct dependency constraints file. A fresh Windows folder containing Korean characters, spaces, and an exclamation mark passed installation and initialization from another working directory. A separately installed wheel passed local verification, activation, SQLite recording, and XLSX generation. The [CI workflow](../.github/workflows/tests.yml) is configured for Windows/macOS/Linux on Python 3.12, Ubuntu on Python 3.11 and 3.13, and isolated wheel installation; see [workflow results](https://github.com/kindsusu/SourceLedger/actions/workflows/tests.yml) for hosted outcomes. Existing evidence workspaces still need path-aware migration; copying them alone is not a supported migration procedure.
 
@@ -27,6 +40,7 @@ sheet. See [collection reliability](COLLECTION_RELIABILITY.md) and
 - **Display proof and artifacts:** raw/static HTML field evidence is retained as unconfirmed until a rendered capture establishes display state. CSV/XLSX/JSON records and document text use record evidence instead. Source Evidence can link retained content, screenshots, and collection receipts; conflicting amounts remain distinct records for review.
 - **Storage and reporting:** SQLite run history, resumable tasks, evidence files, six standard XLSX sheets, and an additional Rental Quotes sheet when rental observations exist. The default workbook labels are English; Korean onboarding and documentation are available.
 - **Local MCP operation:** a local MCP server registers configured jobs for an independently started worker. Bounded discovery and research workspaces are separate from active `run` configuration; running a configured collection does not require activation.
+- **Local assistant connector:** `connect` generates a Codex, Claude Code, or Claude Desktop stdio MCP setting and can explicitly merge it without replacing unrelated settings. `assistant start|status|stop|jobs|job|resume` manages a single independent worker and persisted bounded jobs. The assistant server owns onboarding/source operations and queues discovery, proposals, bounded agent work, supported-site collection, verification, runs, and XLSX export. [Local assistant connections](ASSISTANT_CONNECTIONS.md) documents its settings and limits.
 - **Keyword search:** opt-in SearXNG JSON API, one bounded request, explicit provider settings, URL filtering, and candidate provenance. No configured provider means zero search calls.
 - **Rule proposals:** structured-data and semantic HTML extraction proposals, optional local Ollama selector-only output, DOM checks, exact identifiers, retained evidence and previews. Missing conditions remain unobserved.
 - **Bounded controller:** `agent` checkpoints source tasks, preserves scope and budgets across resume, proposes each source, and performs one fresh combined collection into the shared SQLite ledger and XLSX. Optional automatic activation requires known samples for every selected source/product. Partial sources remain visible.
@@ -48,10 +62,10 @@ Demo values are synthetic and are not market prices. Representative live-site ac
 - Live SearXNG/Ollama server and actual model validation; current provider tests use controlled HTTP responses
 - Arbitrary browser action planning, recipe repair, and unattended self-repair of existing rules
 - Scheduling, service deployment, alerts, and ongoing unattended operations
-- Claude or ChatGPT client UI connection verification and remote artifact delivery
+- Live Codex, Claude Code, or Claude Desktop GUI connection verification, and remote artifact delivery
 - Representative live-site collection evaluation
 - OCR for scanned PDFs, ERP integration, CSV export, and analysis/simulation features
 
 Crawl4AI is optional and unverified against live sites in this environment. Agent-Reach informed diagnostics and routing design, but is not a direct runtime dependency. ego-lite is not directly integrated on Windows. UCP, commerce-agents, insane-search, and paid Ultimate Web Scraper MCP remain design references or unconnected services.
 
-See the [automation guide](AUTOMATION.md) for 0.3 commands and provider prerequisites. The time budget is cooperative with bounded external request timeouts; it is not a process-kill guarantee. Ollama must run with cloud features disabled; a loopback endpoint alone does not attest to server behavior.
+See the [automation guide](AUTOMATION.md) for 0.3 research commands and provider prerequisites, and [local assistant connections](ASSISTANT_CONNECTIONS.md) for 0.4 connection commands. The time budget is cooperative with bounded external request timeouts; it is not a process-kill guarantee. Ollama must run with cloud features disabled; a loopback endpoint alone does not attest to server behavior.

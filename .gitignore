@@ -19,3 +19,6 @@ workspace/
 docs/architecture/*.visual-check.*
 build/
 dist/
+.mcp.json
+.mcp.json.lock
+.mcp.json.sourceledger-*.bak

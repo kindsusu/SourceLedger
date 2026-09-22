@@ -51,8 +51,9 @@ jobs:
       - name: Install wheel in an isolated environment
         run: |
           python -m venv .tmp/wheel-check
-          .tmp/wheel-check/bin/python -m pip install -c requirements/constraints.txt dist/*.whl
+          .tmp/wheel-check/bin/python -m pip install -c requirements/constraints.txt dist/*.whl 'mcp>=1.10,<2'
           .tmp/wheel-check/bin/python -I scripts/smoke_install.py
+          .tmp/wheel-check/bin/python -I scripts/smoke_assistant_install.py
       - uses: actions/upload-artifact@v4
         with:
           name: python-distributions

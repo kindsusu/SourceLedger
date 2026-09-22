@@ -121,13 +121,56 @@ def main(argv: list[str] | None = None) -> int:
     discovery.add_argument("--config", required=True)
     discovery.add_argument("--source-id", required=True)
     discovery.add_argument("--limit", type=int, default=100)
+    connection = sub.add_parser("connect", help="Generate or safely install local assistant MCP settings.")
+    connection.add_argument("--client", choices=["codex", "claude-code", "claude-desktop"], required=True)
+    connection.add_argument("--workspace-root", default=".sourceledger")
+    connection.add_argument("--output", help="Directory for generated connection snippets.")
+    connection.add_argument("--name", default="sourceledger")
+    connection.add_argument("--install", action="store_true", help="Merge the server into client settings; preserve a backup.")
+    connection.add_argument("--config-file", help="Override client settings file (requires --install).")
+    connection.add_argument("--project-dir", help="Project directory for Claude Code settings (default: current directory).")
+    assistant = sub.add_parser("assistant", help="Manage the independent local assistant worker.")
+    assistant.add_argument("action", choices=["start", "status", "stop", "jobs", "job", "resume"])
+    assistant.add_argument("--workspace-root", default=".sourceledger")
+    assistant.add_argument("--job-id", help="Job identifier for job or resume.")
+    assistant.add_argument("--limit", type=int, default=20, help="Maximum jobs to list (1-100).")
+    assistant_mcp = sub.add_parser("serve-assistant", help="Serve workspace onboarding and queued research tools over local stdio MCP.")
+    assistant_mcp.add_argument("--workspace-root", default=".sourceledger")
     mcp = sub.add_parser("serve-mcp")
     mcp.add_argument("--config", required=True)
     mcp.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     mcp.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)
     try:
-        if args.command == "init":
+        if args.command == "connect":
+            from .connections import connect
+            result = connect(args.client, workspace_root=args.workspace_root, output_dir=args.output,
+                             name=args.name, install=args.install, config_file=args.config_file,
+                             project_dir=args.project_dir)
+        elif args.command == "assistant":
+            from .assistant_runtime import start_worker, stop_worker, runtime_status, list_jobs, get_job, resume_job
+            root = Path(args.workspace_root)
+            if args.action in {"job", "resume"}:
+                if not args.job_id:
+                    raise ValueError("--job-id is required for assistant job or resume")
+                operation = get_job if args.action == "job" else resume_job
+                result = operation(root, args.job_id)
+            elif args.job_id:
+                raise ValueError("--job-id is only available for assistant job or resume")
+            elif args.action == "jobs":
+                result = {"jobs": list_jobs(root, limit=args.limit)}
+            else:
+                operation = {"start": start_worker, "stop": stop_worker, "status": runtime_status}[args.action]
+                result = operation(root)
+        elif args.command == "serve-assistant":
+            import importlib.util
+            if importlib.util.find_spec("mcp") is None:
+                raise ValueError("MCP is not installed. Run setup.cmd --mcp or bash setup.sh --mcp first")
+            from .assistant_server import build_assistant_server
+            server = build_assistant_server(Path(args.workspace_root).expanduser())
+            server.run(transport="stdio")
+            return 0
+        elif args.command == "init":
             result = _init(args)
         elif args.command == 'collect-sites':
             from .site_collection import collect_sites
