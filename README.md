@@ -51,10 +51,10 @@ Choose **English**, **한국어**, or **日本語** from the top-bar **Language*
 - **Runs** — queued-job status, evidence status, paginated observations, and registered XLSX reports.
 - **Connections** — copyable AI-app settings and optional Codex CLI or Claude Code CLI provider settings. It does not rewrite client settings.
 
-For a research-plan preview, choose one of these paths:
+The web UI runs the research-plan preview on this screen by default. Choose a Codex CLI or Claude Code CLI provider and model in **Connections**, then click **Preview research plan**. Opening the page does not call an AI provider.
 
-- **AI app:** Use the connected app's search/browser tools to inspect actual references, then submit the preview through MCP. Choose the model in that app.
-- **Web UI:** Explicitly choose Codex CLI or Claude Code CLI and a model for a bounded local preview. This provider path is opt-in.
+- **Web UI (default):** Click the preview button to run the configured AI provider and model from this screen.
+- **Connected AI app (optional):** Use the app's search/browser tools to inspect references, then submit the preview through MCP. Choose the model in that app.
 
 Web execution requires the CLI installed and signed in on the computer running SourceLedger; native CLI account usage applies. Choose the provider default, a suggested model, or a custom model ID. The timeout is 180 seconds by default and adjustable from 30 to 600 seconds. Web settings do not change the model in an open AI app. See [Browser UI](docs/WEB_UI.md) for setup and execution details.
 

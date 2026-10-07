@@ -110,14 +110,26 @@ def test_plan_preserves_detailed_request_and_confirms_before_start(tmp_path):
             page.locator('#job-list [data-job-id="preview-old"]').click()
             playwright.expect(page.locator("#job-detail")).to_contain_text("Provider unavailable")
             page.locator('[data-route="plan"]').click()
-            playwright.expect(page.locator("#plan-ai-path")).to_have_value("host")
-            page.locator("#plan-ai-path").select_option("local")
+            playwright.expect(page.locator("#plan-ai-path")).to_have_value("local")
+            playwright.expect(page.locator("#plan-local-info")).to_be_visible()
+            playwright.expect(page.locator("#plan-local-info a")).to_have_attribute("href", "#connections")
+            for language, label in (("ko", "이 화면에서 AI 실행"),
+                                    ("ja", "この画面でAIを実行"),
+                                    ("en", "Run AI on this screen")):
+                page.locator("#language-select").select_option(language)
+                playwright.expect(page.locator("#plan-ai-path")).to_have_value("local")
+                playwright.expect(page.locator("#plan-ai-path option:checked")).to_have_text(label)
+            page.evaluate("loadBootstrap({quiet: true})")
+            playwright.expect(page.locator("#plan-create")).to_be_enabled()
+            assert calls == []  # Loading, navigation, and language changes never run AI.
             detailed = "Research test instruments sold in Japan.\nInclude bench models with USB output.\nExclude used units and keep original price evidence."
             page.locator("#plan-request-text").fill(detailed)
             page.locator("#plan-create").click()
             playwright.expect(page.locator("#plan-candidates .plan-candidate")).to_have_count(1)
             playwright.expect(page.locator("#plan-candidates a.plan-url")).to_have_count(2)
             assert calls[0] == ("plans", {"request_text": detailed})
+            assert calls[1][0] == "plans/preview"
+            assert calls[1][1]["provider"] == "codex"
             page.locator("#plan-categories").fill("Bench instruments\nPortable instruments")
             page.locator("#plan-candidates [data-plan-select]").check()
             page.locator("#language-select").select_option("ko")

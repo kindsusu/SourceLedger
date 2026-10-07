@@ -45,7 +45,7 @@ Use the top-bar **Language** selector to choose **English**, **한국어**, or *
 ## First use
 
 1. Enter a short request or paste a detailed multiline request into **Research plan**. Keep product variants, exclusions, and commercial conditions in the request.
-2. Request a bounded AI preview through a connected AI app's search tools and MCP, or explicitly choose an installed Codex CLI/Claude Code CLI provider and model in the web UI. Preview references are candidates, not price observations.
+2. The default path runs the bounded AI preview on this screen: configure the installed Codex CLI/Claude Code CLI provider and model in **Connections**, then click **Preview research plan**. Opening the page does not start a provider call. A connected AI app can optionally search and submit the preview through MCP. Preview references are candidates, not price observations.
 3. Review the preview, add or remove URLs, select the intended pages, and confirm the industry, product, and market. Exact identifiers are optional advanced matching inputs. The plan is revised when you edit it.
 4. Explicitly confirm the displayed plan revision, then start bounded collection. The worker starts for this plan job. Only selected pages and limited same-host links are eligible; unchecked and excluded URLs are not collected.
 5. Use **Runs** to inspect page coverage, evidence status, missing values, observations, and the XLSX report.

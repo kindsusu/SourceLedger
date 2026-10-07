@@ -70,7 +70,7 @@
           <form id="plan-request-form" class="card plan-request" novalidate>
             <label for="plan-request-text" data-i18n="plan.requestLabel">Your research request</label>
             <textarea id="plan-request-text" name="request_text" rows="5" required data-i18n-placeholder="plan.requestPlaceholder" placeholder="Research a range of products in a market. Include any specifications, exclusions, or priorities."></textarea>
-            <label for="plan-ai-path"><span data-i18n="plan.aiPath">How to prepare the preview</span><select id="plan-ai-path"><option value="host" data-i18n="plan.hostChoice">Connected AI assistant (copy instructions)</option><option value="local" data-i18n="plan.localChoice">Run here with local AI</option></select></label>
+            <label for="plan-ai-path"><span data-i18n="plan.aiPath">How to prepare the preview</span><select id="plan-ai-path"><option value="local" data-i18n="plan.localChoice" selected>Run AI on this screen</option><option value="host" data-i18n="plan.hostChoice">Use connected AI app (copy instructions)</option></select></label>
             <p id="plan-local-info" class="hint" hidden></p>
             <div class="plan-request-footer"><span class="hint" data-i18n="plan.requestHint">A sentence or a detailed brief both work. No exact model number is needed.</span><div class="plan-request-actions"><button id="plan-new-request" class="button button-secondary" type="button" data-i18n="plan.newRequest" hidden disabled>New request</button><button id="plan-create" class="button button-primary" type="submit" data-i18n="plan.create" disabled>Preview research plan</button></div></div>
             <p id="plan-request-error" class="form-error" role="alert" hidden></p>
