@@ -12,6 +12,19 @@ REQUEST = {"query": "industrial pumps", "kind": "keyword", "topic": {
     "industry": "manufacturing", "market": "Korea", "product": {"id": "product", "name": "pump"}}}
 RESULT = {"candidates": [{"name": "Example", "url": "https://example.com/",
                           "reason": "Product page", "evidence_url": "https://example.com/pumps"}], "note": ""}
+PLAN = {"request_text": "Find Acme pumps in Korea.\nExclude used goods.",
+        "topic": {"industry": "manufacturing", "product": "pump", "market": "Korea"},
+        "summary": "User-edited Acme pump scope", "categories": ["Acme pumps"],
+        "include_terms": ["Acme"], "exclude_terms": ["used"],
+        "candidates": [{"name": "Manual Acme site", "url": "https://manual.example.com/pumps",
+                        "evidence_url": "https://manual.example.com/pumps", "reason": "User added",
+                        "kind": "site", "origin": "user", "selected": False}],
+        "excluded_urls": ["https://excluded.example.com/catalog"]}
+PREVIEW = {"summary": "Acme pump sources", "topic": PLAN["topic"], "categories": ["Acme catalog"],
+           "include_terms": ["Acme"], "exclude_terms": ["used"],
+           "candidates": [{"name": "Acme catalog", "url": "https://example.com/pumps",
+                           "evidence_url": "https://example.com/search", "reason": "Public catalog",
+                           "kind": "site"}], "note": "Review before collection"}
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows npm prefix resolution")
@@ -180,3 +193,55 @@ def test_claude_missing_visible_restriction_preflight(monkeypatch):
     with pytest.raises(ai.AIGenerationError) as unsupported:
         ai._check_help(["claude"], "claude")
     assert unsupported.value.code == "cli_unsupported"
+
+
+@pytest.mark.parametrize("provider", ["codex", "claude"])
+def test_plan_preview_uses_restricted_structured_cli(provider, monkeypatch, tmp_path):
+    monkeypatch.setattr(ai, "_codex_command" if provider == "codex" else "_claude_command",
+                        lambda: [sys.executable, "fake-cli"])
+    monkeypatch.setattr(ai, "_check_help", lambda command, selected: None)
+    captured = {}
+
+    def fake_run(command, prompt, *, cwd, timeout):
+        captured.update(command=command, prompt=prompt, timeout=timeout)
+        if provider == "codex":
+            (cwd / "last-message.json").write_text(json.dumps(PREVIEW), encoding="utf-8")
+            return 0, b""
+        return 0, json.dumps({"structured_output": PREVIEW,
+                              "modelUsage": {"claude-model-xyz": {"inputTokens": 1}}}).encode()
+
+    monkeypatch.setattr(ai, "_run_cli", fake_run)
+    result = ai.generate_plan_preview(PLAN, {"provider": provider, "model": "sample-model"})
+    assert result["summary"] == PREVIEW["summary"]
+    assert result["candidates"] == PREVIEW["candidates"]
+    assert result["actual_model"] == ("claude-model-xyz" if provider == "claude" else None)
+    prompt_data = json.loads(captured["prompt"].split("User request and current edits JSON follows:\n", 1)[1])
+    assert prompt_data == PLAN
+    assert "Do not turn natural-language conditions into literal terms" in captured["prompt"]
+    assert "no exclude term may match" in captured["prompt"]
+    assert "Do not collect prices" in captured["prompt"]
+    assert "--sandbox" in captured["command"] if provider == "codex" else "--safe-mode" in captured["command"]
+    from su_crawler.research_plans import create_plan, submit_plan_preview
+
+    draft = create_plan(tmp_path, PLAN["request_text"], PLAN["include_terms"], PLAN["exclude_terms"])["plan"]
+    preview = {key: value for key, value in result.items()
+               if key not in {"provider", "requested_model", "actual_model"}}
+    saved = submit_plan_preview(tmp_path, draft["id"], draft["revision"], preview)["plan"]
+    assert saved["state"] == "preview" and saved["candidates"][0]["origin"] == "ai"
+
+
+@pytest.mark.parametrize("bad", [
+    {**PREVIEW, "price": "100"},
+    {**PREVIEW, "candidates": [{**PREVIEW["candidates"][0], "currency": "KRW"}]},
+    {**PREVIEW, "candidates": [{**PREVIEW["candidates"][0], "evidence_url": "http://localhost/"}]},
+    {**PREVIEW, "topic": {"industry": "manufacturing"}},
+])
+def test_plan_preview_rejects_malformed_or_price_fields(bad, monkeypatch):
+    monkeypatch.setattr(ai, "_claude_command", lambda: [sys.executable])
+    monkeypatch.setattr(ai, "_check_help", lambda command, selected: None)
+    monkeypatch.setattr(ai, "_run_cli", lambda *args, **kwargs:
+                        (0, json.dumps({"structured_output": bad}).encode()))
+    with pytest.raises(ai.AIGenerationError) as error:
+        ai.generate_plan_preview(PLAN, {"provider": "claude"})
+    assert error.value.code == "invalid_response"
+    assert "localhost" not in str(error.value)

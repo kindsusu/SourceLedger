@@ -11,7 +11,9 @@
   <script src="i18n.js" defer></script>
   <script src="static-messages.js" defer></script>
   <script src="app-messages.js" defer></script>
+  <script src="plan-messages.js" defer></script>
   <script src="app.js" defer></script>
+  <script src="plan-ui.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content" data-i18n="ui.skipContent">Skip to content</a>
@@ -22,10 +24,11 @@
         <span><strong>SourceLedger</strong><small data-i18n="ui.evidenceWorkspace">Evidence workspace</small></span>
       </a>
       <nav class="primary-nav">
-        <a href="#overview" data-route="overview"><span class="nav-icon" aria-hidden="true">01</span><span data-i18n="ui.overview">Overview</span></a>
-        <a href="#sources" data-route="sources"><span class="nav-icon" aria-hidden="true">02</span><span data-i18n="ui.sources">Sources</span></a>
-        <a href="#runs" data-route="runs"><span class="nav-icon" aria-hidden="true">03</span><span data-i18n="ui.runs">Runs</span></a>
-        <a href="#connections" data-route="connections"><span class="nav-icon" aria-hidden="true">04</span><span data-i18n="ui.connections">Connections</span></a>
+        <a href="#plan" data-route="plan"><span class="nav-icon" aria-hidden="true">01</span><span data-i18n="plan.nav">Research plan</span></a>
+        <a href="#overview" data-route="overview"><span class="nav-icon" aria-hidden="true">02</span><span data-i18n="ui.overview">Overview</span></a>
+        <a href="#sources" data-route="sources"><span class="nav-icon" aria-hidden="true">03</span><span data-i18n="ui.sources">Sources</span></a>
+        <a href="#runs" data-route="runs"><span class="nav-icon" aria-hidden="true">04</span><span data-i18n="ui.runs">Runs</span></a>
+        <a href="#connections" data-route="connections"><span class="nav-icon" aria-hidden="true">05</span><span data-i18n="ui.connections">Connections</span></a>
       </nav>
       <div class="sidebar-meta">
         <span class="eyebrow" data-i18n="ui.localWorkspace">Local workspace</span>
@@ -59,6 +62,40 @@
             <div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div>
           </div>
           <span class="sr-only" data-i18n="ui.loadingWorkspace">Loading workspace</span>
+        </section>
+
+        <section id="plan-view" class="view" data-view="plan" hidden>
+          <div class="plan-intro"><span class="eyebrow accent" data-i18n="plan.kicker">Plan first</span><h2 data-i18n="plan.heading">What would you like to research?</h2><p class="lede" data-i18n="plan.intro">Describe a product range and market in your own words. Add detailed conditions if they matter. Review the suggested scope and real source links before starting collection.</p></div>
+          <label id="plan-history-label" class="plan-history" for="plan-history" hidden><span data-i18n="plan.savedPlans">Saved plans</span><select id="plan-history"></select></label>
+          <form id="plan-request-form" class="card plan-request" novalidate>
+            <label for="plan-request-text" data-i18n="plan.requestLabel">Your research request</label>
+            <textarea id="plan-request-text" name="request_text" rows="5" required data-i18n-placeholder="plan.requestPlaceholder" placeholder="Research a range of products in a market. Include any specifications, exclusions, or priorities."></textarea>
+            <label for="plan-ai-path"><span data-i18n="plan.aiPath">How to prepare the preview</span><select id="plan-ai-path"><option value="host" data-i18n="plan.hostChoice">Connected AI assistant (copy instructions)</option><option value="local" data-i18n="plan.localChoice">Run here with local AI</option></select></label>
+            <p id="plan-local-info" class="hint" hidden></p>
+            <div class="plan-request-footer"><span class="hint" data-i18n="plan.requestHint">A sentence or a detailed brief both work. No exact model number is needed.</span><div class="plan-request-actions"><button id="plan-new-request" class="button button-secondary" type="button" data-i18n="plan.newRequest" hidden>New request</button><button id="plan-create" class="button button-primary" type="submit" data-i18n="plan.create">Preview research plan</button></div></div>
+            <p id="plan-request-error" class="form-error" role="alert" hidden></p>
+          </form>
+          <div id="plan-workspace" class="plan-workspace" hidden>
+            <div class="plan-status-row"><div><span class="eyebrow" data-i18n="plan.review">Review the plan</span><h3 id="plan-status-title"></h3></div><span id="plan-state-badge" class="badge info"></span></div>
+            <p id="plan-status" class="hint" role="status" aria-live="polite"></p>
+            <p id="plan-error" class="form-error" role="alert" hidden></p>
+            <div class="plan-grid">
+              <section class="card plan-main" aria-labelledby="plan-interpretation-heading">
+                <div class="section-heading"><div><span class="eyebrow" data-i18n="plan.interpretation">Interpretation</span><h3 id="plan-interpretation-heading" data-i18n="plan.proposedScope">Proposed scope</h3></div></div>
+                <label><span data-i18n="plan.summary">Brief interpretation</span><textarea id="plan-summary" rows="3" data-plan-edit></textarea></label>
+                <div class="plan-topic"><label><span data-i18n="ui.industry">Industry</span><input id="plan-industry" data-plan-edit></label><label><span data-i18n="ui.product">Product</span><input id="plan-product" data-plan-edit></label><label><span data-i18n="ui.market">Market</span><input id="plan-market" data-plan-edit></label></div>
+                <p class="hint" data-i18n="plan.topicHint">Confirm these three fields before starting. AI suggestions are editable.</p>
+                <label><span data-i18n="plan.categories">Product categories or range</span><textarea id="plan-categories" rows="2" data-plan-edit data-i18n-placeholder="plan.categoriesHint" placeholder="One category per line"></textarea></label>
+                <details class="plan-details"><summary data-i18n="plan.conditions">Optional text filters</summary><p class="hint" data-i18n="plan.filterHint">Literal text matching: any include entry may match; any exclude entry removes a match. Detailed conditions stay in the original request and require your review.</p><div class="plan-topic plan-two"><label><span data-i18n="plan.include">Include text</span><textarea id="plan-include" rows="3" data-plan-edit data-i18n-placeholder="plan.onePerLine" placeholder="One word or phrase per line"></textarea></label><label><span data-i18n="plan.exclude">Exclude text</span><textarea id="plan-exclude" rows="3" data-plan-edit data-i18n-placeholder="plan.onePerLine" placeholder="One word or phrase per line"></textarea></label></div></details>
+                <div class="plan-actions"><button id="plan-save" class="button button-secondary" type="button" data-i18n="plan.save">Save edits</button><button id="plan-preview" class="button button-secondary" type="button" data-i18n="plan.regenerate">Refresh AI preview</button></div>
+              </section>
+              <section class="card plan-source-panel" aria-labelledby="plan-sources-heading"><div class="section-heading"><div><span class="eyebrow" data-i18n="plan.unverified">Suggested, unverified</span><h3 id="plan-sources-heading" data-i18n="plan.sources">Sample products and sources</h3></div></div><p class="hint" data-i18n="plan.sourcesHint">Select the useful links. A suggestion is not a verified observation or price.</p><div id="plan-candidates" class="plan-candidates"></div><form id="plan-add-form" class="plan-add" novalidate><h4 data-i18n="plan.addSource">Add a source or product URL</h4><label><span data-i18n="plan.name">Name</span><input name="name" required></label><label><span data-i18n="plan.url">URL</span><input name="url" type="url" required placeholder="https://"></label><label><span data-i18n="plan.reason">Why include it?</span><input name="reason"></label><button class="button button-secondary" type="submit" data-i18n="plan.add">Add URL</button><p class="form-error" data-form-error role="alert" hidden></p></form></section>
+            </div>
+            <section class="card plan-change"><label for="plan-change-text" data-i18n="plan.change">Change this plan</label><p class="hint" data-i18n="plan.changeHint">Add direction in your own words. Your original request stays in the plan.</p><textarea id="plan-change-text" rows="3" data-i18n-placeholder="plan.changePlaceholder" placeholder="For example, focus on the lower-capacity options and exclude used products."></textarea><button id="plan-change" class="button button-secondary" type="button" data-i18n="plan.applyChange">Apply and refresh preview</button></section>
+            <section class="card plan-handoff"><details><summary data-i18n="plan.hostAi">Use a connected AI assistant instead</summary><p class="hint" data-i18n="plan.hostHint">Copy the instructions into your connected assistant. It should search for real links, then submit the preview through SourceLedger tools.</p><button id="plan-copy" class="button button-secondary" type="button" data-i18n="plan.copy">Copy AI instructions</button><pre id="plan-copy-text"></pre></details></section>
+            <div class="plan-start"><div><p class="hint" data-i18n="plan.confirmHint">Starting confirms your topic and selected targets, then queues bounded collection. Review before continuing.</p><p id="plan-budget" class="hint" aria-live="polite"></p></div><button id="plan-start" class="button button-primary" type="button" data-i18n="plan.start">Start this research</button></div>
+          </div>
+          <details class="advanced card plan-legacy"><summary><span data-i18n="plan.advanced">Advanced: exact identity and pinned workflows</span></summary><p class="hint" data-i18n="plan.advancedHint">Existing manual source, identifier, and configuration controls remain available.</p><a class="button button-secondary" href="#sources" data-i18n="ui.sources">Sources</a><a class="button button-secondary" href="#runs" data-i18n="ui.runs">Runs</a><a class="button button-secondary" href="#overview" data-i18n="ui.overview">Overview</a></details>
         </section>
 
         <section id="overview-view" class="view" data-view="overview" hidden>
@@ -142,10 +179,12 @@
           <div class="hero-row compact"><div><span class="eyebrow accent" data-i18n="ui.durableExecution">Durable execution</span><h2 data-i18n="ui.runs">Runs</h2><p class="lede" data-i18n="ui.runsIntro">Queue bounded work, then inspect execution and evidence as separate outcomes.</p></div></div>
           <div id="runs-setup-empty" class="empty-state" hidden></div>
           <div id="runs-content" hidden>
-            <section class="run-launch card">
+            <details id="legacy-guided-run" class="advanced card plan-guided-details"><summary><span data-i18n="plan.legacyGuided">Advanced: exact-identity guided run</span></summary>
+            <section class="run-launch">
               <div><span class="eyebrow" data-i18n="ui.guidedRun">Guided run</span><h3 data-i18n="ui.researchSelectedSources">Research selected sources</h3><p id="run-source-summary">Select sources on the Sources page. Up to 50 sources, 120 seconds, and no external model calls.</p><div id="run-blockers" class="blocker-list"></div></div>
               <form id="agent-form"><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-primary" type="submit" data-i18n="ui.queueResearchRun">Queue research run</button></form>
             </section>
+            </details>
             <details class="advanced card"><summary><span data-i18n="ui.advancedJobs">Advanced jobs</span><small data-i18n="ui.advancedHint">Use explicit paths and bounded options</small></summary>
               <form id="advanced-form" class="advanced-form" novalidate>
                 <label><span data-i18n="ui.operation">Operation</span><select name="operation" id="advanced-operation"><option value="collect_sites" data-i18n="ui.collectSupportedSites">Collect supported sites</option><option value="verify" data-i18n="ui.verifyConfiguration">Verify configuration</option><option value="run" data-i18n="ui.runPinnedConfiguration">Run pinned configuration</option><option value="export" data-i18n="ui.regenerateXlsx">Regenerate XLSX report</option></select></label>

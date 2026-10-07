@@ -305,6 +305,9 @@ def execute_job(root: str | Path, operation: str, args: dict[str, Any], *, job_i
     if operation == "recommend":
         from .recommendation_jobs import execute_generation
         return execute_generation(root, args)
+    if operation in {"plan_preview", "research_plan"}:
+        from .plan_jobs import execute_plan_job
+        return execute_plan_job(root, operation, args)
     with workspace_guard(root) as base:
         clean = validate_job_args(base, operation, args)
         fingerprint = _require_current_workspace(base, clean.pop("workspace_fingerprint", None))

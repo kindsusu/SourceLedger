@@ -1,6 +1,6 @@
 "use strict";
 
-const ROUTES = new Set(["overview", "sources", "runs", "connections"]);
+const ROUTES = new Set(["plan", "overview", "sources", "runs", "connections"]);
 const i18n = window.SourceLedgerI18n;
 const recentMessages = new Map();
 function t(key, params = {}) {
@@ -106,7 +106,11 @@ function formatDate(value) {
 
 function jobs() {
   const value = state.bootstrap?.jobs;
-  return Array.isArray(value) ? value : Array.isArray(value?.jobs) ? value.jobs : [];
+  const ordinary = Array.isArray(value) ? value : Array.isArray(value?.jobs) ? value.jobs : [];
+  const plans = state.bootstrap?.plan_jobs;
+  const planJobs = Array.isArray(plans) ? plans : Array.isArray(plans?.jobs) ? plans.jobs : [];
+  const seen = new Set(ordinary.map(job => job.id));
+  return [...ordinary, ...planJobs.filter(job => !seen.has(job.id))].sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
 }
 
 function workspace() {
@@ -256,7 +260,7 @@ async function loadBootstrap({ quiet = false } = {}) {
 function currentRoute() {
   const hash = location.hash.slice(1).split("?")[0];
   if (hash === "main-content") return state.route;
-  return ROUTES.has(hash) ? hash : "overview";
+  return ROUTES.has(hash) ? hash : "plan";
 }
 
 function route({ moveFocus = false } = {}) {
@@ -282,6 +286,7 @@ function render({ polling = false } = {}) {
   renderSources({ preserveForm: polling });
   renderRuns();
   renderConnections();
+  window.SourceLedgerPlanUI?.render(state.bootstrap);
 }
 
 function renderChrome() {
@@ -558,9 +563,20 @@ function runBlockers() {
 function renderRuns() {
   const empty = byId("runs-setup-empty");
   const content = byId("runs-content");
-  empty.hidden = isConfigured();
-  content.hidden = !isConfigured();
-  if (!isConfigured()) { emptySetup(empty, t("durableRuns")); return; }
+  const configured = isConfigured();
+  const hasJobs = jobs().length > 0;
+  empty.hidden = configured || hasJobs;
+  content.hidden = !configured && !hasJobs;
+  byId("legacy-guided-run").hidden = !configured;
+  byId("advanced-form").closest("details").hidden = !configured;
+  if (!configured && !hasJobs) {
+    clear(empty);
+    empty.append(node("h3", { text: i18n.t("plan.noRunsTitle") }),
+      node("p", { text: i18n.t("plan.noRunsHint") }),
+      node("a", { className: "button button-primary", text: i18n.t("plan.goPlan"), attrs: { href: "#plan" } }));
+    return;
+  }
+  if (!configured) { renderJobList(); return; }
   const blockers = runBlockers();
   byId("run-source-summary").textContent = t("runSourceSummary", { selected: selectedSourceIds().length, total: sources().length });
   const blockerTarget = byId("run-blockers");
@@ -660,7 +676,7 @@ function renderJobDetail() {
   const result = job.result || {};
   const actions = node("div", { className: "detail-actions" });
   const evidence = result.evidence_status || result.result?.status;
-  const resumable = job.operation !== "recommend" && (job.status === "interrupted" || (job.operation === "agent" && evidence === "paused"));
+  const resumable = !["recommend", "plan_preview", "research_plan"].includes(job.operation) && (job.status === "interrupted" || (job.operation === "agent" && evidence === "paused"));
   if (resumable) actions.append(node("button", { className: "button button-secondary", type: "button", text: t("resume"), disabled: state.resumePending.has(String(job.id)), attrs: { "data-resume-job": job.id } }));
   if (result.report_path) actions.append(node("a", { className: "button button-primary", text: t("downloadXlsx"), attrs: { href: `/api/jobs/${encodeURIComponent(job.id)}/report` } }));
   const executionStatus = result.execution_status || job.status;
@@ -675,6 +691,41 @@ function renderJobDetail() {
     fact(t("requestedProvider"), job.arguments?.provider), fact(t("requestedModel"), aiModelLabel(job.arguments?.provider, job.arguments?.model)),
     fact(t("actualModel"), result.result?.actual_model || t("notReported")),
   ]));
+  if (job.operation === "research_plan") {
+    const coverage = Array.isArray(result.result?.coverage) ? result.result.coverage : Array.isArray(result.coverage) ? result.coverage : [];
+    const visited = coverage.filter(item => ["visited", "no_data"].includes(item.status));
+    const collected = coverage.filter(item => item.status === "visited" && Number(item.products || 0) > 0);
+    target.append(node("dl", { className: "detail-facts" }, [
+      fact(i18n.t("plan.coverage"), `${visited.length} / ${coverage.length}`),
+      fact(i18n.t("plan.collectedPages"), collected.length),
+      fact(i18n.t("plan.observationCount"), state.observations?.total ?? t("notAvailable")),
+    ]));
+    if (result.result?.scope_note) target.append(node("p", { className: "plan-scope-notice", text: i18n.t("plan.scopeNote") }));
+    if (result.result?.scope) target.append(node("p", { className: "hint", text: i18n.t("plan.scopeBound") }));
+    const scope = result.result?.plan_scope;
+    if (scope) {
+      const details = node("details", { className: "plan-scope" });
+      details.append(node("summary", { text: i18n.t("plan.scopeDetails") }));
+      details.append(node("p", { text: displayValue(scope.request_text) }));
+      details.append(node("dl", { className: "detail-facts" }, [
+        fact(i18n.t("ui.industry"), scope.topic?.industry), fact(i18n.t("ui.product"), scope.topic?.product),
+        fact(i18n.t("ui.market"), scope.topic?.market), fact(i18n.t("plan.categories"), (scope.categories || []).join(" · ")),
+        fact(i18n.t("plan.include"), (scope.include_terms || []).join(" · ")), fact(i18n.t("plan.exclude"), (scope.exclude_terms || []).join(" · ")),
+      ]));
+      target.append(details);
+    }
+    if (coverage.length) {
+      const list = node("div", { className: "plan-coverage" });
+      for (const item of coverage) {
+        const safe = safeWebUrl(item.url);
+        list.append(node("div", { className: "plan-coverage-row" }, [
+          safe ? node("a", { text: item.url, attrs: { href: safe, target: "_blank", rel: "noopener noreferrer" } }) : node("span", { text: displayValue(item.url) }),
+          badge(item.status),
+        ]));
+      }
+      target.append(node("h4", { text: i18n.t("plan.coverageDetails") }), list);
+    }
+  }
   if (job.error) target.append(node("div", { className: "detail-error", text: errorText(typeof job.error === "string" ? job.error : displayValue(job.error)) }));
   if (result.execution_status === "succeeded") target.append(node("p", { className: "hint", text: t("executionCaution") }));
   renderObservations(target);
@@ -695,7 +746,7 @@ function renderObservations(target) {
   }
   const table = node("table");
   const header = node("tr");
-  for (const label of [t("source"), t("observedAmount"), t("estimatedAmount"), t("currency"), t("valueOrigin"), t("evidenceStatus"), t("collected")]) header.append(node("th", { text: label, attrs: { scope: "col" } }));
+  for (const label of [i18n.t("plan.productName"), i18n.t("plan.optionsAttributes"), t("source"), t("observedAmount"), t("estimatedAmount"), t("currency"), t("valueOrigin"), t("evidenceStatus"), i18n.t("plan.evidenceLocation"), t("collected")]) header.append(node("th", { text: label, attrs: { scope: "col" } }));
   table.append(node("thead", {}, header));
   const body = node("tbody");
   for (const row of rows) {
@@ -706,7 +757,10 @@ function renderObservations(target) {
     const observed = row.value_origin === "observed" ? row.amount : null;
     const estimated = row.value_origin === "calculator_estimate" ? (row.derived_amount ?? row.derived_values?.estimated_price ?? null) : null;
     const evidenceStatus = row.verification_level || row.status || "unknown";
-    body.append(node("tr", {}, [sourceCell, node("td", { text: displayValue(observed) }), node("td", { text: displayValue(estimated) }), node("td", { text: displayValue(row.currency) }), node("td", { text: statusText(row.value_origin) }), node("td", {}, badge(evidenceStatus)), node("td", { text: formatDate(row.collected_at) })]));
+    const fields = row.raw_fields && typeof row.raw_fields === "object" ? row.raw_fields : {};
+    const productName = fields.name || row.product_name || row.product_id;
+    const attributes = Object.entries(fields).filter(([key, value]) => key !== "name" && key !== "price" && key !== "currency" && value !== null && value !== "").map(([key, value]) => `${key}: ${displayValue(value)}`).join(" · ");
+    body.append(node("tr", {}, [node("td", { text: displayValue(productName) }), node("td", { text: attributes || "—" }), sourceCell, node("td", { text: displayValue(observed) }), node("td", { text: displayValue(estimated) }), node("td", { text: displayValue(row.currency) }), node("td", { text: statusText(row.value_origin) }), node("td", {}, badge(evidenceStatus)), node("td", { text: displayValue(row.locator || row.evidence_path) }), node("td", { text: formatDate(row.collected_at) })]));
   }
   table.append(body);
   section.append(node("div", { className: "table-scroll" }, table));
@@ -908,6 +962,7 @@ function onLanguageChange() {
   if (!byId("global-message").hidden && global.dataset.rawError) showGlobalError(global.dataset.rawError, global.dataset.quietError === "true");
   refreshMessages();
   i18n.translateStatic(document);
+  window.SourceLedgerPlanUI?.languageChanged();
   restoreFocus(focus, originalFocus);
 }
 

@@ -27,7 +27,7 @@ setup.cmd
 source-ledger.cmd
 ```
 
-The second command opens the local browser UI. Enter the industry, product, and market. Add a company/site URL directly, or request source suggestions from your connected Codex or Claude assistant using a company name or keyword. Exact product identifiers are required for guided research, but not for requesting and selecting sources. It binds only to `127.0.0.1`, with port `8765` and workspace `.sourceledger` as defaults. Read the [browser UI guide](docs/WEB_UI.md) for the complete workflow.
+The second command opens the local browser UI. Write a short or detailed multiline research request, review a bounded AI preview of possible sources, then edit and select targets. Confirm the industry, product, market, and selected pages before starting bounded collection. Exact product identifiers are an advanced option for precise matching, not a prerequisite for this plan flow. The UI binds only to `127.0.0.1`, with port `8765` and workspace `.sourceledger` as defaults. Read the [browser UI guide](docs/WEB_UI.md) for the complete workflow.
 
 The launchers use the repository `.venv` by location, so Windows does not need PowerShell activation or an execution-policy change. The block above is for Command Prompt; in PowerShell use `.\setup.cmd` and `.\source-ledger.cmd`. On macOS/Linux, run `bash setup.sh` followed by `bash source-ledger.sh`. A repository launcher with no arguments opens the UI.
 
@@ -41,25 +41,26 @@ The core installation is enough for the UI and local-file workflows. Install opt
 
 ### Browser UI
 
-The browser UI is the primary local starting point in 0.5. It provides four areas:
+The browser UI is the primary local starting point in 0.5. It provides five areas:
 
 Choose **English**, **한국어**, or **日本語** from the top-bar **Language** selector (shown as **언어** in Korean and **言語** in Japanese). English is the default; your choice is saved in browser `localStorage` for this local UI origin. Switching language updates labels, status text, and date formatting without reloading or clearing form inputs and checkbox selections. It does not translate stored source content or evidence, prices, model IDs, MCP configuration, research-workspace locale, or report data, and it makes no AI translation or external calls.
 
+- **Research plan** — full request, source preview, user edits and selection, confirmation, and bounded collection.
 - **Overview** — first-run setup, research readiness, and independent-worker controls.
 - **Sources** — exact product identity, direct URL registration, company/keyword recommendation requests, candidate selection, bounded discovery, and extraction proposals.
 - **Runs** — queued-job status, evidence status, paginated observations, and registered XLSX reports.
 - **Connections** — copyable AI-app settings and optional Codex CLI or Claude Code CLI provider settings. It does not rewrite client settings.
 
-To run a recommendation, choose one of these paths:
+For a research-plan preview, choose one of these paths:
 
-- **AI app:** Copy the request into your connected AI app and submit candidates through MCP. Choose the model in that app.
-- **Web UI:** In **Connections**, choose Codex CLI or Claude Code CLI and a model, then save. In **Sources**, choose **Run in web UI**. The worker starts automatically for this action.
+- **AI app:** Use the connected app's search/browser tools to inspect actual references, then submit the preview through MCP. Choose the model in that app.
+- **Web UI:** Explicitly choose Codex CLI or Claude Code CLI and a model for a bounded local preview. This provider path is opt-in.
 
 Web execution requires the CLI installed and signed in on the computer running SourceLedger; native CLI account usage applies. Choose the provider default, a suggested model, or a custom model ID. The timeout is 180 seconds by default and adjustable from 30 to 600 seconds. Web settings do not change the model in an open AI app. See [Browser UI](docs/WEB_UI.md) for setup and execution details.
 
-Review returned candidates and tick only the sources you want to register. They remain unverified; selecting them does not create price observations or start price collection.
+Preview references are unverified and never become price observations. Add, remove, or select candidates and confirm the complete plan revision before starting collection. Collection visits selected pages and bounded same-host links, records coverage gaps, and produces SQLite evidence and XLSX. Generic JSON-LD Product/Offer extraction can preserve prices and attributes on other hosts, but embedded prices need review and are not comparable without display proof. Arbitrary page layouts and natural-language commercial-condition checks are not automated; missing prices, currencies, identifiers, and conditions remain missing.
 
-Guided research uses only the registered sources you select (up to 50) and has a 120-second budget. Existing collection model calls remain opt-in and default to zero; the CLI agent example below retains its separate default of three sources.
+The advanced guided-research path uses only registered sources you select (up to 50) and has a 120-second budget. Plan collection uses a separate page budget (10 by default). Existing collection model calls remain opt-in and default to zero; the CLI agent example below retains its separate default of three sources.
 
 Start and stop the independent worker from the UI when queued work is needed. Closing the browser tab or the UI web server does not cancel jobs already owned by that worker. The UI and Codex/Claude MCP connector can share the same workspace and job history. A job marked `succeeded` completed its program execution; inspect its separate evidence status before treating a price as verified.
 

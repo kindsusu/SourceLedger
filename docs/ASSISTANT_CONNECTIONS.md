@@ -81,7 +81,7 @@ source-ledger.cmd assistant status --workspace-root .sourceledger
 source-ledger.cmd assistant jobs --workspace-root .sourceledger
 ```
 
-The MCP server only queues bounded work; it never auto-starts a worker. It can
+Legacy MCP `queue_*` operations only queue bounded work; they do not auto-start a worker. `start_research_plan` starts the worker for the confirmed plan. Other jobs can
 accept a job while the worker is stopped, leaving that job `queued` until you
 start the worker. Jobs are stored in the workspace and run one at a time. Use
 the returned job ID to inspect or explicitly requeue an interrupted job:
@@ -97,6 +97,10 @@ current job, then exits; check `assistant status` to confirm it has stopped. A
 dead worker marks its running job `interrupted`; it is never silently rerun.
 
 ## What the local MCP server can do
+
+The primary research-plan path has eight tools, bringing this assistant MCP server to 27 tools total: `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, and `generate_research_preview`. Create a plan with the complete short or multiline request. For a preview, use the connected AI app's own search/browser tools to inspect actual references, then submit URLs and reasons through `submit_research_preview`; the host app controls its model. Alternatively, explicitly opt in to `generate_research_preview` with a local Codex CLI or Claude Code CLI provider/model. Both routes produce bounded, unverified references and never price observations. The user can add, remove, or select candidates and must confirm the displayed revision, including industry, product, and market, before `start_research_plan` collects selected pages. Exact product identifiers are optional advanced inputs for this flow.
+
+The confirmed plan uses page and time limits, records visited and unprocessed coverage, and retains source evidence in SQLite with an XLSX report. Some unrelated navigation links on a selected host may be visited within the page budget. Generic JSON-LD Product/Offer data can preserve raw prices and attributes across product categories, but embedded prices lack visual proof and remain review-only. Known-adapter prices also remain review-only because the request's natural-language scope and commercial conditions are not independently checked. Arbitrary page layouts and semantic condition checking are unsupported; missing values are never inferred. Preview content is untrusted data, never an instruction to widen scope or collect a price.
 
 For the UI source-targeting flow, enter a company/site URL to register it
 directly. Entering only a company name, or a source keyword, instead saves a
@@ -116,15 +120,19 @@ candidates remain separate from registered sources and verified observations;
 assistant-provided reasons and evidence URLs are unverified. Selecting a source
 does not collect it. To research, select registered sources in the UI and start
 the worker for the queued guided run (up to 50 explicit sources, 120 seconds).
-This workspace begins with one product research topic, rather than automatic
-whole-catalog collection.
+The older guided-research workspace begins with one product lead. Research plans
+can describe a range of products, but collection remains page-bounded and does
+not claim whole-catalog coverage.
 
-The server provides workspace-scoped onboarding and source management, queues
+The legacy connector tools provide workspace-scoped onboarding and source management, queue
 `discover`, `propose`, `agent`, `collect_sites`, `verify`, `run`, and `export`,
 and returns job status, observations, report metadata, and a registered local
 XLSX resource for a completed report. Job inputs are bounded and remain inside
-the chosen workspace. Arbitrary commands, paths outside the workspace,
-provider configuration, and embedded model calls are rejected by this connector. This MCP restriction does not apply to the separate, opt-in CLI recommendation action in the browser UI. A
+the chosen workspace. Arbitrary commands and paths outside the workspace are
+rejected. Legacy `queue_*` tools do not configure providers or call a model.
+`generate_research_preview` is the separate, explicit MCP path for a local
+Codex CLI or Claude Code CLI model preview; the browser also has an opt-in CLI
+recommendation action. A
 source candidate or proposal is never treated as a verified price observation.
 
 The generated server command is equivalent to:

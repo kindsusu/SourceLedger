@@ -27,7 +27,7 @@ def localized_ui(tmp_path):
 
 def test_language_setup_persistence_and_storage_fallback(localized_ui):
     page, url, expect, errors = localized_ui
-    page.goto(url)
+    page.goto(f"{url}/#overview")
     expect(page.get_by_label("Language", exact=True)).to_have_value("en")
     expect(page.get_by_role("button", name="Create workspace")).to_be_visible()
     page.locator('#setup-form input[name="industry"]').fill("Original Industry 산업")
@@ -185,7 +185,7 @@ def test_switch_preserves_forms_candidates_and_machine_values(localized_ui, tmp_
     page.locator('nav a[data-route="runs"]').click()
     page.locator('[data-job-id="job-1"]').click()
     expect(page.locator("#job-detail table tbody tr")).to_have_count(1)
-    page.locator("details.advanced > summary").click()
+    page.locator("#runs-view details.advanced:has(#advanced-form) > summary").click()
     page.locator("#advanced-operation").select_option("run")
     page.locator('#advanced-fields input[name="config_path"]').fill("configs/untouched.json")
     page.locator('#advanced-fields input[name="max_tasks"]').fill("7")
@@ -203,11 +203,11 @@ def test_switch_preserves_forms_candidates_and_machine_values(localized_ui, tmp_
                 expect(page.locator('#advanced-fields input[name="config_path"]')).to_have_value("configs/untouched.json")
                 expect(page.locator('#advanced-fields input[name="max_tasks"]')).to_have_value("7")
                 cells = page.locator("#job-detail table tbody tr").first.locator("td")
-                expect(cells.nth(0)).to_have_text("Observed")
-                expect(cells.nth(1)).to_have_text("1000.50")
-                expect(cells.nth(2)).to_have_text("—")
-                expect(cells.nth(3)).to_have_text("USD")
-                expect(cells.nth(5)).not_to_have_text("needs_review")
+                expect(cells.nth(2)).to_have_text("Observed")
+                expect(cells.nth(3)).to_have_text("1000.50")
+                expect(cells.nth(4)).to_have_text("—")
+                expect(cells.nth(5)).to_have_text("USD")
+                expect(cells.nth(7)).not_to_have_text("needs_review")
     assert errors == []
 
 
@@ -216,7 +216,7 @@ def test_catalogs_cover_all_languages_and_interpolation(localized_ui):
     web = Path(__file__).resolve().parents[1] / "su_crawler" / "web"
     # Inspect registration data in an isolated blank document, independent of app state.
     page.evaluate("window.catalogs = []; window.SourceLedgerI18n = {register: value => catalogs.push(value)}")
-    for name in ("static-messages.js", "app-messages.js"):
+    for name in ("static-messages.js", "app-messages.js", "plan-messages.js"):
         page.add_script_tag(path=str(web / name))
     catalogs = page.evaluate("catalogs")
     for catalog in catalogs:
@@ -302,7 +302,7 @@ def test_language_change_during_requests_and_errors(localized_ui, tmp_path):
     expect(page.locator("#toast-region")).to_contain_text("Internal server error")
 
     page.locator('nav a[data-route="runs"]').click()
-    page.locator("details.advanced > summary").click()
+    page.locator("#runs-view details.advanced:has(#advanced-form) > summary").click()
     page.locator("#advanced-operation").select_option("run")
     config = page.locator('#advanced-fields input[name="config_path"]')
     config.fill("configs/original.json")

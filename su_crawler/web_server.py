@@ -26,6 +26,8 @@ from .research import _canonical_url, add_source, init_workspace, load_workspace
 from .recommendations import create_recommendation_request, list_recommendations, select_recommendations
 from .ai_providers import get_ai_configuration, save_ai_settings
 from .recommendation_jobs import latest_recommendation_jobs, queue_generation
+from .research_plans import create_plan, list_plans, revise_plan
+from .plan_jobs import confirm_research, latest_plan_jobs, start_plan_job
 
 
 MAX_BODY_BYTES = 256 * 1024
@@ -34,6 +36,8 @@ STATIC_FILES = {
     "/i18n.js": "i18n.js",
     "/static-messages.js": "static-messages.js",
     "/app-messages.js": "app-messages.js",
+    "/plan-messages.js": "plan-messages.js",
+    "/plan-ui.js": "plan-ui.js",
     "/": "index.html",
     "/index.html": "index.html",
     "/app.js": "app.js",
@@ -238,6 +242,8 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             "mcp_available": importlib.util.find_spec("mcp") is not None,
             "ai": get_ai_configuration(self.server.workspace),
             "recommendation_jobs": latest_recommendation_jobs(self.server.workspace),
+            "research_plans": list_plans(self.server.workspace),
+            "plan_jobs": latest_plan_jobs(self.server.workspace),
         }
 
     def do_GET(self) -> None:
@@ -253,6 +259,11 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
                 return
             if path.startswith("/api/jobs/"):
                 self._get_job_route(path, query)
+                return
+            if path == "/api/plans":
+                if query:
+                    raise ValueError("This endpoint does not accept query parameters")
+                self._json(200, list_plans(self.server.workspace))
                 return
             if path.startswith("/api/"):
                 self._error(404, "API endpoint not found")
@@ -341,6 +352,18 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
 
     def _post_route(self, path: str, value: dict[str, Any]) -> dict[str, Any]:
         base = self.server.workspace
+        if path == "/api/plans":
+            self._fields(value, allowed={"request_text", "include_terms", "exclude_terms"}, required={"request_text"})
+            return create_plan(base, **value)
+        if path == "/api/plans/edit":
+            self._fields(value, allowed={"plan_id", "expected_revision", "changes"}, required={"plan_id", "expected_revision", "changes"})
+            return revise_plan(base, **value)
+        if path == "/api/plans/confirm":
+            self._fields(value, allowed={"plan_id", "expected_revision", "user_confirmed"}, required={"plan_id", "expected_revision", "user_confirmed"})
+            return confirm_research(base, **value)
+        if path in {"/api/plans/preview", "/api/plans/start"}:
+            operation = "plan_preview" if path.endswith("/preview") else "research_plan"
+            return start_plan_job(base, operation, value)
         if path == "/api/ai/settings":
             self._fields(value, allowed={"provider", "model", "timeout_seconds"}, required={"provider"})
             return save_ai_settings(base, value)

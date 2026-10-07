@@ -17,7 +17,7 @@ from .models import utc_now
 from .research import _atomic_write, _locked
 
 
-OPERATIONS = frozenset({"discover", "propose", "agent", "collect_sites", "verify", "run", "export", "recommend"})
+OPERATIONS = frozenset({"discover", "propose", "agent", "collect_sites", "verify", "run", "export", "recommend", "plan_preview", "research_plan"})
 JOB_STATES = frozenset({"queued", "running", "succeeded", "failed", "interrupted"})
 MAX_ARGUMENT_BYTES = 256 * 1024
 MAX_JOBS_LIMIT = 100
@@ -274,6 +274,8 @@ def resume_job(root: str | Path, job_id: str) -> dict[str, Any]:
             raise FileNotFoundError(f"Unknown job: {job_id}")
         if job.get("operation") == "recommend":
             raise ValueError("AI recommendation jobs have no checkpoint; run a new request from Sources")
+        if job.get("operation") in {"plan_preview", "research_plan"}:
+            raise ValueError("Plan jobs have no resumable checkpoint; review the plan and start a new run")
         result_path = path.with_name("result.json")
         result = _read_json(result_path)
         paused_agent = (job.get("status") == "succeeded" and job.get("operation") == "agent" and

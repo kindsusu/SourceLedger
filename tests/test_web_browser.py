@@ -46,10 +46,10 @@ def test_browser_onboarding_job_and_report(tmp_path):
             console_errors = []
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             page.on("console", lambda message: console_errors.append(message.text) if message.type == "error" else None)
-            page.goto(server.url)
-            page.get_by_label("Industry", exact=True).fill("Synthetic components")
-            page.get_by_label("Product", exact=True).fill("Test part")
-            page.get_by_label("Market", exact=True).fill("Offline fixture")
+            page.goto(f"{server.url}/#overview")
+            page.locator("#setup-form").get_by_label("Industry", exact=True).fill("Synthetic components")
+            page.locator("#setup-form").get_by_label("Product", exact=True).fill("Test part")
+            page.locator("#setup-form").get_by_label("Market", exact=True).fill("Offline fixture")
             page.get_by_role("button", name="Create workspace").click()
             page.locator('nav a[data-route="sources"]').click()
             page.get_by_label("Source URL").fill("https://example.invalid/catalog")
@@ -74,7 +74,7 @@ def test_browser_onboarding_job_and_report(tmp_path):
                 page.set_viewport_size({"width": width, "height": 1000})
                 assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), width
             page.locator('nav a[data-route="runs"]').click()
-            page.locator("details.advanced summary").click()
+            page.locator("#runs-view details.advanced:has(#advanced-form) summary").click()
             page.locator("#advanced-operation").select_option("run")
             page.locator('#advanced-fields input[name="config_path"]').fill("verification.json")
             page.get_by_role("button", name="Queue advanced job").click()

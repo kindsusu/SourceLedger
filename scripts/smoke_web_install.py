@@ -41,6 +41,7 @@ def main() -> int:
             with httpx.Client(base_url=server.url, trust_env=False, timeout=20) as client:
                 for asset, media_type in [("/", "text/html"), ("/i18n.js", "javascript"),
                                           ("/static-messages.js", "javascript"), ("/app-messages.js", "javascript"),
+                                          ("/plan-messages.js", "javascript"), ("/plan-ui.js", "javascript"),
                                           ("/app.js", "javascript"),
                                           ("/styles.css", "text/css"), ("/mark.svg", "image/svg+xml")]:
                     response = client.get(asset)
@@ -58,6 +59,12 @@ def main() -> int:
 
                 post("/api/workspace", {"industry": "Synthetic components", "product": "Test part",
                                         "market": "Offline fixture"})
+                request = "Find selected test parts.\nExclude unapproved hosts."
+                created = post("/api/plans", {"request_text": request})
+                assert created["plan"]["request_text"] == request
+                listed = client.get("/api/plans")
+                listed.raise_for_status()
+                assert listed.json()["plans"][0]["id"] == created["plan"]["id"]
                 post("/api/product", {"identifiers": {"model": "TEST-A"}})
                 job = post("/api/jobs", {"operation": "run", "arguments": {"config_path": "verification.json"}})
                 assert job["status"] == "queued"
@@ -104,7 +111,7 @@ def main() -> int:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
-    print("Installed wheel: browser assets, onboarding, durable job, observations and XLSX passed. "
+    print("Installed wheel: browser and plan assets, plan draft, durable job, observations and XLSX passed. "
           + ("Shared MCP and three client snippets passed." if mcp_checked else "Core-only UI passed without MCP installed."))
     return 0
 

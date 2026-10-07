@@ -142,6 +142,7 @@ def test_recommendation_selection_and_guided_run(tmp_path):
             page.locator("#source-filter").fill("")
             page.locator('[data-run-source-id="source-a"]').check()
             page.locator('nav a[data-route="runs"]').click()
+            page.locator("#legacy-guided-run > summary").click()
             page.get_by_role("button", name="Queue research run").click()
             assert ("jobs", {"operation": "agent", "arguments": {
                 "source_ids": ["source-a"], "max_sources": 1,
@@ -190,10 +191,10 @@ def test_real_browser_mcp_recommendation_handoff(tmp_path):
                 pytest.skip("No local Chromium runtime installed")
             browser = driver.chromium.launch(headless=True, **runtime.launch_options())
             page = browser.new_page(viewport={"width": 1024, "height": 900})
-            page.goto(server.url)
-            page.get_by_label("Industry", exact=True).fill("Fixture machinery")
-            page.get_by_label("Product", exact=True).fill("Fixture part")
-            page.get_by_label("Market", exact=True).fill("Offline market")
+            page.goto(f"{server.url}/#overview")
+            page.locator("#setup-form").get_by_label("Industry", exact=True).fill("Fixture machinery")
+            page.locator("#setup-form").get_by_label("Product", exact=True).fill("Fixture part")
+            page.locator("#setup-form").get_by_label("Market", exact=True).fill("Offline market")
             page.get_by_role("button", name="Create workspace").click()
             page.locator('nav a[data-route="sources"]').click()
             page.locator('#recommendation-form input[name="query"]').fill("Fixture suppliers")

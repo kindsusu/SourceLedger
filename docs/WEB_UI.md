@@ -44,16 +44,21 @@ Use the top-bar **Language** selector to choose **English**, **한국어**, or *
 
 ## First use
 
-1. Open **Overview** and enter the industry, product, and market. SourceLedger does not ask for an analysis purpose.
-2. Open **Sources** and register a company/site URL directly, or enter only a company name or a keyword to prepare an AI recommendation request. Registration does not contact a source.
-3. For a recommendation request, either copy its prompt into a connected AI app and submit candidates through MCP, or choose **Run in web UI** to queue it for the configured local Codex CLI or Claude Code CLI. Review candidates and tick only the sources you want to add.
-4. Before guided research, enter exact product identifiers such as a model, SKU, or catalog number. No identifier is inferred from the product name. Recommendation requests and source selection do not require these identifiers.
-5. Select registered sources, start the independent worker, and queue a guided research run from **Runs**.
-6. Use **Runs** to inspect execution status, evidence status, observations, missing values, and XLSX output.
+1. Enter a short request or paste a detailed multiline request into **Research plan**. Keep product variants, exclusions, and commercial conditions in the request.
+2. Request a bounded AI preview through a connected AI app's search tools and MCP, or explicitly choose an installed Codex CLI/Claude Code CLI provider and model in the web UI. Preview references are candidates, not price observations.
+3. Review the preview, add or remove URLs, select the intended pages, and confirm the industry, product, and market. Exact identifiers are optional advanced matching inputs. The plan is revised when you edit it.
+4. Explicitly confirm the displayed plan revision, then start bounded collection. The worker starts for this plan job. Only selected pages and limited same-host links are eligible; unchecked and excluded URLs are not collected.
+5. Use **Runs** to inspect page coverage, evidence status, missing values, observations, and the XLSX report.
 
-The first workspace represents one research product lead. Exact collection configurations may later contain multiple products.
+The older guided-research workspace represents one product lead; a research plan may describe a range of products. Exact collection configurations may later contain multiple products.
+
+The plan interface uses `GET/POST /api/plans` and `POST /api/plans/edit`, `/api/plans/preview`, `/api/plans/confirm`, and `/api/plans/start`. Its packaged assets are `plan-ui.js` and `plan-messages.js`; English is the default UI language, with Korean and Japanese available through the language selector. An AI preview does not crawl product prices. The confirmed revision is saved before collection starts, and later edits require a new confirmation. A plan collection writes source evidence to SQLite and an XLSX report. Known site adapters and generic JSON-LD Product/Offer records are supported; arbitrary DOM interpretation and semantic validation of natural-language commercial conditions are not. Embedded JSON-LD prices lack visual display proof and remain review-only and non-comparable. Even known-adapter prices remain review-only because plan-level conditions are not independently checked. Same-host navigation may include unrelated pages within the page budget; coverage lists visited and unprocessed URLs rather than claiming whole-site completeness. No missing price, currency, identifier, or condition is inferred.
 
 ## Screens
+
+### Research plan
+
+The plan keeps the full request and every revision. Preview candidates include URLs, reasons, and evidence links for review; they are not verified sources or prices. You can select, add, or remove targets and edit the topic before starting. The UI confirms the current revision when you press **Start this research**, then queues bounded collection. Inspect coverage gaps and review flags in the resulting run.
 
 ### Overview
 
@@ -61,11 +66,11 @@ Overview shows onboarding state, research blockers, source counts, recent jobs, 
 
 ### Sources
 
-Sources manages exact product identity and registered research targets. A supplied URL registers a company/site directly; a company name without a URL creates a request to find its real site. A keyword creates a request for related sources. Creating a request does not start an AI client or perform a search; choose **Run in web UI** to explicitly queue CLI execution. Copy the request text into a connected Codex or Claude assistant; it may use its own available search/browser tools and submit named URLs with reasons and evidence references. If search is unavailable or yields no results, the assistant can submit an empty list with a note.
+The advanced **Sources** area manages exact product identity and registered research targets. A supplied URL registers a company/site directly; a company name without a URL creates a request to find its real site. A keyword creates a request for related sources. Creating a request does not start an AI client or perform a search; choose **Run in web UI** to explicitly queue CLI execution. Copy the request text into a connected Codex or Claude assistant; it may use its own available search/browser tools and submit named URLs with reasons and evidence references. If search is unavailable or yields no results, the assistant can submit an empty list with a note.
 
 Recommendations remain separate from registered sources and price observations. Their reasons and reference URLs are unverified information. Review candidates and use their checkboxes to add only the intended sources. You can request and add more later. **Run in web UI** requires the official Codex CLI or Claude Code CLI installed and logged in on the computer running SourceLedger. Configure the provider, provider-default or explicit model ID, and timeout in **Connections** (30–600 seconds, default 180), then save. Availability reflects CLI installation; authentication is checked when the request runs. Native CLI authentication and account usage apply; SourceLedger does not store API keys, install or log in to a CLI, or silently fall back to another provider. These settings do not change the model in an open desktop conversation. Each request must be explicitly run; it queues a local worker job and does not start a price collection job. The provider CLI may access web pages while searching. From a registered source, the UI can queue bounded same-host link discovery or an extraction proposal; these too remain candidates or proposed rules, not verified prices.
 
-Select registered sources with their checkboxes before queuing guided research. The UI passes those explicit source IDs, with a limit of 50 sources and a 120-second budget. This queued research needs the worker; creating requests and selecting recommendations do not. Web UI recommendation execution is an explicit external model call through the selected CLI. Existing collection model calls remain opt-in and default to zero. No model call is made in the manual AI-app handoff path by SourceLedger; the host app's plan and tool limits apply. Missing prices, currencies, identifiers, and commercial conditions remain missing.
+For the older guided-research path, select registered sources with their checkboxes before queuing work. The UI passes those explicit source IDs, with a limit of 50 sources and a 120-second budget. This queued research needs the worker; creating requests and selecting recommendations do not. Web UI recommendation execution is an explicit external model call through the selected CLI. Existing collection model calls remain opt-in and default to zero. No model call is made in the manual AI-app handoff path by SourceLedger; the host app's plan and tool limits apply. Missing prices, currencies, identifiers, and commercial conditions remain missing.
 
 ### Runs
 

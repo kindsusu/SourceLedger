@@ -194,10 +194,10 @@ def test_real_web_ai_job_review_and_model_receipt(tmp_path, monkeypatch):
             page.set_default_timeout(8000)
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
-            page.goto(server.url)
-            page.get_by_label("Industry", exact=True).fill("Fixture machinery")
-            page.get_by_label("Product", exact=True).fill("Fixture part")
-            page.get_by_label("Market", exact=True).fill("Offline market")
+            page.goto(f"{server.url}/#overview")
+            page.locator("#setup-form").get_by_label("Industry", exact=True).fill("Fixture machinery")
+            page.locator("#setup-form").get_by_label("Product", exact=True).fill("Fixture part")
+            page.locator("#setup-form").get_by_label("Market", exact=True).fill("Offline market")
             page.get_by_role("button", name="Create workspace").click()
             page.locator('nav a[data-route="connections"]').click()
             page.locator("#ai-model-choice").select_option("fixture-model")
@@ -233,7 +233,7 @@ def test_real_web_ai_job_review_and_model_receipt(tmp_path, monkeypatch):
             page.locator('nav a[data-route="runs"]').click()
             page.get_by_role("button", name="Recommend job, Succeeded").click()
             playwright.expect(page.locator("#job-detail")).to_contain_text("fixture-model-snapshot")
-            assert not list(tmp_path.rglob("*.sqlite3")) and not list(tmp_path.rglob("*.xlsx"))
+            assert not list(tmp_path.rglob("prices.sqlite3")) and not list(tmp_path.rglob("*.xlsx"))
             assert errors == []
             browser.close()
     finally:

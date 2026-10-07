@@ -68,10 +68,20 @@ def main() -> int:
 
         async def enqueue():
             async with session() as client:
+                available = {tool.name for tool in (await client.list_tools()).tools}
+                plan_tools = {"list_research_plans", "get_research_plan", "create_research_plan",
+                              "submit_research_preview", "update_research_plan", "confirm_research_plan",
+                              "start_research_plan", "generate_research_preview"}
+                assert len(available) == 27 and plan_tools <= available
                 status = await call(client, "get_workspace_status")
                 assert status["status"] == "needs_setup"
                 await call(client, "initialize_workspace", {
                     "industry": "Synthetic components", "product": "Test part", "market": "Offline fixture"})
+                request = "Find selected test parts.\nExclude unapproved hosts."
+                created = await call(client, "create_research_plan", {"request_text": request})
+                assert created["plan"]["request_text"] == request
+                listed = await call(client, "list_research_plans")
+                assert listed["plans"][0]["id"] == created["plan"]["id"]
                 await call(client, "set_product_identity", {"identifiers": {"model": "TEST-A"}})
                 queued = await call(client, "queue_collection", {"config_path": "verification.json"})
                 assert queued["status"] == "queued"
@@ -121,7 +131,7 @@ def main() -> int:
                 if time.monotonic() >= deadline:
                     raise RuntimeError("Installed assistant worker did not stop")
                 time.sleep(0.1)
-    print("Installed wheel: stdio MCP onboarding, disconnected execution, observations and XLSX resource passed.")
+    print("Installed wheel: 27 MCP tools, research-plan draft, disconnected execution, observations and XLSX resource passed.")
     return 0
 
 
