@@ -49,7 +49,7 @@ def test_browser_onboarding_job_and_report(tmp_path):
             page.goto(f"{server.url}/#overview")
             page.locator("#setup-form").get_by_label("Industry", exact=True).fill("Synthetic components")
             page.locator("#setup-form").get_by_label("Product", exact=True).fill("Test part")
-            page.locator("#setup-form").get_by_label("Market", exact=True).fill("Offline fixture")
+            page.locator("#setup-form").get_by_label("Research region", exact=True).fill("Offline fixture")
             page.get_by_role("button", name="Create workspace").click()
             page.locator('nav a[data-route="sources"]').click()
             page.get_by_label("Source URL").fill("https://example.invalid/catalog")

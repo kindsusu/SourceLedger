@@ -700,6 +700,15 @@ function renderJobDetail() {
       fact(i18n.t("plan.collectedPages"), collected.length),
       fact(i18n.t("plan.observationCount"), state.observations?.total ?? t("notAvailable")),
     ]));
+    const scopeLabels = { matched: "scopeMatched", unknown: "scopeUnknown", excluded: "scopeExcluded", not_checked: "scopeNotChecked" };
+    const scopeCount = (item, key) => Number.isSafeInteger(item.scope_counts?.[key]) && item.scope_counts[key] >= 0 ? item.scope_counts[key] : 0;
+    const conditionText = condition => condition && typeof condition === "object"
+      ? `${i18n.t(`plan.field.${condition.field}`)} ${i18n.t(`plan.operator.${condition.operator}`)} ${displayValue(condition.value)}` : "";
+    if (coverage.some(item => item.scope_counts)) {
+      target.append(node("h4", { text: i18n.t("plan.conditionChecks") }));
+      target.append(node("dl", { className: "detail-facts" }, Object.entries(scopeLabels).map(([key, label]) =>
+        fact(i18n.t(`plan.${label}`), coverage.reduce((sum, item) => sum + scopeCount(item, key), 0)))));
+    }
     if (result.result?.scope_note) target.append(node("p", { className: "plan-scope-notice", text: i18n.t("plan.scopeNote") }));
     if (result.result?.scope) target.append(node("p", { className: "hint", text: i18n.t("plan.scopeBound") }));
     const scope = result.result?.plan_scope;
@@ -712,6 +721,9 @@ function renderJobDetail() {
         fact(i18n.t("ui.market"), scope.topic?.market), fact(i18n.t("plan.categories"), (scope.categories || []).join(" · ")),
         fact(i18n.t("plan.include"), (scope.include_terms || []).join(" · ")), fact(i18n.t("plan.exclude"), (scope.exclude_terms || []).join(" · ")),
       ]));
+      if (Array.isArray(scope.conditions) && scope.conditions.length) {
+        details.append(node("p", { text: scope.conditions.map(conditionText).join("; ") }));
+      }
       target.append(details);
     }
     if (coverage.length) {
@@ -722,6 +734,26 @@ function renderJobDetail() {
           safe ? node("a", { text: item.url, attrs: { href: safe, target: "_blank", rel: "noopener noreferrer" } }) : node("span", { text: displayValue(item.url) }),
           badge(item.status),
         ]));
+        if (Array.isArray(item.scope_assessments) && item.scope_assessments.length) {
+          const checks = node("details", { className: "plan-scope" });
+          checks.append(node("summary", { text: i18n.t("plan.conditionChecks") }));
+          for (const assessment of item.scope_assessments) {
+            const label = scopeLabels[assessment.status] || "scopeUnknown";
+            checks.append(node("p", { text: `${displayValue(assessment.name)} · ${i18n.t(`plan.${label}`)}` }));
+            for (const check of Array.isArray(assessment.checks) ? assessment.checks : []) {
+              const checkLabel = scopeLabels[check.status] || "scopeUnknown";
+              checks.append(node("p", { text: `${conditionText(check.condition)} · ${i18n.t(`plan.${checkLabel}`)}${check.reason ? ` — ${check.reason}` : ""}` }));
+              for (const proof of Array.isArray(check.evidence) ? check.evidence : []) {
+                checks.append(node("p", { text: `${displayValue(proof.raw).slice(0, 500)} (${displayValue(proof.location).slice(0, 300)})` }));
+              }
+            }
+            if (assessment.reason) checks.append(node("p", { text: assessment.reason }));
+          }
+          if (item.scope_assessments_truncated > 0) checks.append(node("p", { text: i18n.t("plan.checksTruncated", { count: item.scope_assessments_truncated }) }));
+          list.append(checks);
+        } else if (["visited", "no_data"].includes(item.status)) {
+          list.append(node("p", { className: "hint", text: i18n.t("plan.sourceOnly") }));
+        }
       }
       target.append(node("h4", { text: i18n.t("plan.coverageDetails") }), list);
     }
@@ -740,6 +772,17 @@ function renderObservations(target) {
     section.append(node("div", { className: "detail-error", text: errorText(payload.error) })); target.append(section); return;
   }
   const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  if (payload.result_count !== undefined) {
+    section.append(node("p", { text: i18n.t("plan.resultCounts", { results: payload.result_count, linked: payload.linked_evidence_count, unlinked: payload.unlinked_evidence_count }) }));
+  }
+  if (Array.isArray(payload.evidence_submissions) && payload.evidence_submissions.length) {
+    const pending = node("details");
+    pending.append(node("summary", { text: i18n.t("plan.unlinkedEvidence") }));
+    for (const evidence of payload.evidence_submissions) {
+      pending.append(node("p", { text: `${displayValue(evidence.raw_fields?.name)} · ${displayValue(evidence.raw_fields)} · ${displayValue(evidence.locator)}` }));
+    }
+    section.append(pending);
+  }
   if (!rows.length) {
     section.append(node("div", { className: "empty-inline" }, [node("strong", { text: t("noObservations") }), node("p", { text: t("noLedger") })]));
     target.append(section); return;
@@ -756,11 +799,41 @@ function renderObservations(target) {
     else sourceCell.textContent = displayValue(row.source_name || row.source_id);
     const observed = row.value_origin === "observed" ? row.amount : null;
     const estimated = row.value_origin === "calculator_estimate" ? (row.derived_amount ?? row.derived_values?.estimated_price ?? null) : null;
-    const evidenceStatus = row.verification_level || row.status || "unknown";
+    const evidenceStatus = row.result_status === "conflict" ? i18n.t("plan.resultConflict") : row.verification_level || row.status || "unknown";
     const fields = row.raw_fields && typeof row.raw_fields === "object" ? row.raw_fields : {};
     const productName = fields.name || row.product_name || row.product_id;
     const attributes = Object.entries(fields).filter(([key, value]) => key !== "name" && key !== "price" && key !== "currency" && value !== null && value !== "").map(([key, value]) => `${key}: ${displayValue(value)}`).join(" · ");
-    body.append(node("tr", {}, [node("td", { text: displayValue(productName) }), node("td", { text: attributes || "—" }), sourceCell, node("td", { text: displayValue(observed) }), node("td", { text: displayValue(estimated) }), node("td", { text: displayValue(row.currency) }), node("td", { text: statusText(row.value_origin) }), node("td", {}, badge(evidenceStatus)), node("td", { text: displayValue(row.locator || row.evidence_path) }), node("td", { text: formatDate(row.collected_at) })]));
+    const attributeCell = node("td");
+    const keyFields = row.price_profile === "rental" ? ["term_months", "deposit_amount", "annual_mileage_km"] : ["unit", "pack_quantity", "price_basis"];
+    for (const key of keyFields) {
+      if (fields[key] != null) attributeCell.append(node("p", { text: `${i18n.t(`plan.field.${key}`)}: ${displayValue(fields[key])}` }));
+    }
+    const allFields = node("details");
+    allFields.append(node("summary", { text: i18n.t("plan.optionsAttributes") }), node("p", { text: attributes || "—" }));
+    attributeCell.append(allFields);
+    const detailCell = node("td");
+    detailCell.append(node("p", { text: displayValue(row.locator || row.evidence_path) }));
+    if (row.missing_conditions?.length) detailCell.append(node("p", { text: `${i18n.t("plan.resultMissing")}: ${row.missing_conditions.map(key => i18n.t(`plan.field.${key}`)).join(", ")}` }));
+    if (row.field_status) {
+      const details = node("details");
+      details.append(node("summary", { text: i18n.t("plan.resultFields") }));
+      for (const [key, field] of Object.entries(row.field_status)) {
+        const label = field.status === "missing" ? "resultMissing" : field.status === "conflict" ? "resultConflict" : "resultRecorded";
+        details.append(node("p", { text: `${i18n.t(`plan.field.${key}`)}: ${field.value == null ? "—" : displayValue(field.value)} · ${i18n.t(`plan.${label}`)}` }));
+      }
+      detailCell.append(details);
+    }
+    if (row.supporting_evidence?.length) {
+      const proof = node("details");
+      proof.append(node("summary", { text: i18n.t("plan.resultEvidence", { count: row.supporting_evidence.length }) }), node("p", { text: i18n.t("plan.evidencePending") }));
+      for (const evidence of row.supporting_evidence) {
+        proof.append(node("p", { text: `${displayValue(evidence.raw_fields)} · ${displayValue(evidence.locator)} · ${formatDate(evidence.collected_at)}` }));
+        for (const conflict of evidence.conflicts || []) proof.append(node("p", { text: `${i18n.t("plan.resultConflict")}: ${conflict.field} · ${conflict.observed} / ${conflict.submitted}` }));
+      }
+      detailCell.append(proof);
+    }
+    const displayPrice = observed == null ? "—" : String(observed).replace(/^(-?\d+)(\.\d+)?$/, (_, integer, fraction = "") => integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + fraction);
+    body.append(node("tr", {}, [node("td", { text: displayValue(productName) }), attributeCell, sourceCell, node("td", { text: displayPrice }), node("td", { text: displayValue(estimated) }), node("td", { text: displayValue(row.currency) }), node("td", { text: statusText(row.value_origin) }), node("td", {}, badge(evidenceStatus)), detailCell, node("td", { text: formatDate(row.collected_at) })]));
   }
   table.append(body);
   section.append(node("div", { className: "table-scroll" }, table));

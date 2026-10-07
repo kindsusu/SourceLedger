@@ -15,7 +15,7 @@ from .research import _locked, init_workspace
 
 def _validate(args: dict, operation: str, *, prepared: bool = False) -> dict:
     allowed = {"plan_id", "expected_revision"}
-    allowed |= {"provider", "model", "timeout_seconds"} if operation == "plan_preview" else {"max_pages", "max_seconds"}
+    allowed |= {"provider", "model", "timeout_seconds"} if operation == "plan_preview" else {"max_pages", "max_seconds", "retry_of", "retry_urls"}
     if prepared:
         allowed |= {"plan_fingerprint", "_resume", "_attempt"}
     if not isinstance(args, dict) or set(args) - allowed:
@@ -37,6 +37,13 @@ def _validate(args: dict, operation: str, *, prepared: bool = False) -> dict:
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or not 1 <= seconds <= 600:
             raise ValueError("max_seconds must be between 1 and 600")
         clean.update(max_pages=pages, max_seconds=seconds)
+        if "retry_of" in args or "retry_urls" in args:
+            parent, urls = args.get("retry_of"), args.get("retry_urls")
+            if not isinstance(parent, str) or not re.fullmatch(r"[0-9a-f]{32}", parent):
+                raise ValueError("retry_of must be a job ID")
+            if not isinstance(urls, list) or not 1 <= len(urls) <= pages:
+                raise ValueError("Select retry URLs within max_pages")
+            clean.update(retry_of=parent, retry_urls=list(dict.fromkeys(plans.canonical_url(url) for url in urls)))
     if prepared:
         digest = args.get("plan_fingerprint")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -93,15 +100,20 @@ def queue_plan_job(root: str | Path, operation: str, args: dict) -> dict:
             raise ValueError("Research plan changed; review the latest revision before continuing")
         if operation == "research_plan" and plan["state"] != "confirmed":
             raise ValueError("Review and confirm the research plan before starting")
-        if operation == "research_plan" and sum(item["selected"] for item in plan["candidates"]) > clean["max_pages"]:
+        if operation == "research_plan" and "retry_of" not in clean and sum(item["selected"] for item in plan["candidates"]) > clean["max_pages"]:
             raise ValueError("Selected targets exceed max_pages; increase the page budget or select fewer targets")
         clean["plan_fingerprint"] = plans.fingerprint(plan)
+        if "retry_of" in clean:
+            from .research_followup import validate_retry
+            validate_retry(base, clean)
         runtime.runtime_status(base)
         for path in runtime._job_files(base):
             job = runtime._read_json(path)
             if (job and job.get("operation") == operation and job.get("status") in {"queued", "running"}
                     and job.get("arguments", {}).get("plan_id") == clean["plan_id"]
                     and job["arguments"].get("expected_revision") == clean["expected_revision"]):
+                if job["arguments"] != clean:
+                    raise ValueError("Another job for this plan is active; wait for it before retrying")
                 return job
         return runtime.submit_job(base, operation, clean)
 
@@ -111,7 +123,7 @@ def start_plan_job(root: str | Path, operation: str, args: dict) -> dict:
     return {"job": job, "worker": runtime.start_worker(root)}
 
 
-def execute_plan_job(root: str | Path, operation: str, args: dict) -> dict:
+def execute_plan_job(root: str | Path, operation: str, args: dict, *, job_id: str | None = None) -> dict:
     clean = _validate(args, operation, prepared=True)
     if operation == "plan_preview":
         from .ai_providers import generate_plan_preview
@@ -120,6 +132,7 @@ def execute_plan_job(root: str | Path, operation: str, args: dict) -> dict:
             raise AIGenerationError("request_changed", "The research plan changed. Generate a new preview.")
         generated = generate_plan_preview(plan, {k: clean[k] for k in ("provider", "model", "timeout_seconds")})
         preview = {k: generated[k] for k in ("summary", "topic", "categories", "include_terms", "exclude_terms", "candidates", "note")}
+        preview["conditions"] = generated.get("conditions", [])
         try:
             result = plans.submit_plan_preview(root, clean["plan_id"], clean["expected_revision"], preview)
         except ValueError as exc:
@@ -134,7 +147,12 @@ def execute_plan_job(root: str | Path, operation: str, args: dict) -> dict:
         raise ValueError("Confirmed research plan fingerprint does not match")
     base = workspace_root(root)
     output = _managed_output(base, base / "catalog-prices" / clean["plan_id"], "research plan output")
-    result = collect_plan(base, snapshot, output_dir=output, max_pages=clean["max_pages"], max_seconds=clean["max_seconds"])
+    if "retry_of" in clean:
+        from .research_followup import validate_retry
+        validate_retry(base, clean)
+    result = collect_plan(base, snapshot, output_dir=output, max_pages=clean["max_pages"], max_seconds=clean["max_seconds"],
+                          checkpoint_id=job_id, retry_urls=clean.get("retry_urls"), parent_checkpoint_id=clean.get("retry_of"))
+    result["retry_of"] = clean.get("retry_of")
     return {"operation": operation, "execution_status": "succeeded", "evidence_status": result.get("status", "needs_review"),
             "plan_id": clean["plan_id"], "plan_revision": clean["expected_revision"],
             "plan_fingerprint": clean["plan_fingerprint"], "run_id": result["run_id"],

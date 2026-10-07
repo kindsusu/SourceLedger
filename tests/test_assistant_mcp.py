@@ -53,6 +53,7 @@ def test_server_tool_contract_and_registered_report_resource(tmp_path):
         "list_source_recommendation_requests", "request_source_recommendations", "submit_source_recommendations",
         "list_research_plans", "get_research_plan", "create_research_plan", "submit_research_preview",
         "update_research_plan", "confirm_research_plan", "start_research_plan", "generate_research_preview",
+        "get_research_gaps", "retry_research_pages", "submit_browser_evidence",
     } == tools
     resources = asyncio.run(server.list_resource_templates())
     assert any(str(item.uriTemplate) == "sourceledger://reports/{job_id}" for item in resources)

@@ -146,6 +146,16 @@ input:focus, select:focus, textarea:focus { border-color: var(--teal); outline: 
 .plan-topic { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .plan-topic.plan-two { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
 .plan-main .hint { margin: -8px 0 0; }
+.required-mark { color: var(--red); font-size: 11px; font-weight: 750; }
+.plan-field-help { display: block; margin-top: 5px; color: var(--ink-soft); font-size: 11px; line-height: 1.4; }
+.plan-field-help[hidden] { display: none; }
+.plan-topic input[aria-invalid="true"] { border-color: var(--red); }
+.plan-condition-rows { display: grid; gap: 10px; margin: 12px 0; }
+.plan-condition-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 7px; }
+.plan-condition-row > * { min-width: 0; }
+.plan-condition-row button { justify-self: start; }
+.plan-candidate-unverified { margin: 8px 0; color: var(--ink-soft); font-size: 11px; }
+.plan-readiness { max-width: 650px; margin: 8px 0 0; color: var(--ink-soft); font-size: 12px; }
 .plan-details { border-top: 1px solid var(--line); padding-top: 9px; }
 .plan-details summary, .plan-handoff summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--teal-dark); font-weight: 750; font-size: 13px; }
 .plan-actions { display: flex; flex-wrap: wrap; gap: 9px; }
@@ -406,6 +416,8 @@ pre { max-height: 360px; overflow: auto; margin: 10px 0 0; padding: 17px; color:
   .run-launch { align-items: stretch; flex-direction: column; padding: 21px; }
   .plan-main, .plan-source-panel, .plan-change, .plan-handoff { padding: 20px; }
   .plan-topic, .plan-topic.plan-two { grid-template-columns: 1fr; }
+  .plan-condition-row { grid-template-columns: 1fr 1fr; }
+  .plan-condition-row input { grid-column: 1 / -1; }
   .plan-start { align-items: stretch; flex-direction: column; }
   .plan-start .button { width: 100%; }
   .run-launch .button { width: 100%; }

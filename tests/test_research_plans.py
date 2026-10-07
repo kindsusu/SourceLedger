@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import sqlite3
 
 import pytest
 
@@ -22,6 +24,7 @@ def test_terms_merge_after_deduplication_and_windows_multiline(tmp_path):
     result = submit_plan_preview(tmp_path, plan["id"], 1, {**_proposal(), "include_terms": terms})["plan"]
     assert result["include_terms"] == terms
     assert result["request_text"] == "Detailed request\r\nPreserve all conditions"
+    assert result["conditions"] == []
     with pytest.raises(ValueError, match="public host"):
         submit_plan_preview(tmp_path, plan["id"], 2, _proposal("https://foo.localhost./"))
 
@@ -93,8 +96,8 @@ def test_regeneration_preserves_selection_exclusions_and_manual_target(tmp_path)
         "exclude_terms": ["AI excluded"]})["plan"]
     assert next(item for item in regenerated["candidates"] if item["id"] == target["id"])["selected"] is False
     assert len(regenerated["candidates"]) == 2
-    assert regenerated["include_terms"] == ["explicit", "AI term"]
-    assert regenerated["exclude_terms"] == ["do not include", "AI excluded"]
+    assert regenerated["include_terms"] == ["explicit"]
+    assert regenerated["exclude_terms"] == ["do not include"]
     removed = revise_plan(tmp_path, pid, 4, {"removed_candidate_ids": [target["id"]]})["plan"]
     after = submit_plan_preview(tmp_path, pid, 5, _proposal())["plan"]
     assert [item["origin"] for item in after["candidates"]] == ["user"]
@@ -136,3 +139,55 @@ def test_database_symlinks_are_rejected(tmp_path):
     with pytest.raises(ValueError, match="symbolic links"):
         create_plan(tmp_path, "Research")
     assert outside.read_bytes() == b"sentinel"
+
+
+def test_structured_conditions_survive_edits_confirmation_and_legacy_revisions(tmp_path):
+    draft = create_plan(tmp_path, "Japan competitor cotton shirt, new only")["plan"]
+    conditions = [
+        {"field": "brand", "operator": "not_equals", "value": "Uniqlo"},
+        {"field": "material", "operator": "contains", "value": "cotton 100%"},
+        {"field": "condition", "operator": "equals", "value": "new"},
+    ]
+    staged = submit_plan_preview(tmp_path, draft["id"], 1, {**_proposal(), "conditions": conditions})["plan"]
+    assert staged["conditions"] == conditions
+    edited = revise_plan(tmp_path, draft["id"], 2, {"conditions": conditions[:2]})["plan"]
+    assert edited["conditions"] == conditions[:2]
+    regenerated = submit_plan_preview(tmp_path, draft["id"], 3, {**_proposal(), "conditions": conditions})["plan"]
+    assert regenerated["conditions"] == conditions[:2]
+    confirmed = confirm_plan(tmp_path, draft["id"], 4, True)["plan"]
+    assert confirmed_snapshot(tmp_path, draft["id"], 5)["conditions"] == conditions[:2]
+    assert confirmed["conditions"] == conditions[:2]
+
+    legacy = create_plan(tmp_path, "Old record")["plan"]
+    legacy_body = {key: value for key, value in legacy.items() if key not in {"conditions", "conditions_user_edited"}}
+    with sqlite3.connect(tmp_path / "plans.sqlite3") as db:
+        db.execute("UPDATE plan_revisions SET body=? WHERE plan_id=? AND revision=1",
+                   (json.dumps(legacy_body), legacy["id"]))
+    assert get_plan(tmp_path, legacy["id"])["plan"]["conditions"] == []
+    assert next(item for item in list_plans(tmp_path)["plans"] if item["id"] == legacy["id"])["conditions"] == []
+    expected = hashlib.sha256(json.dumps(legacy_body, ensure_ascii=False, sort_keys=True,
+                                        separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+    assert fingerprint(get_plan(tmp_path, legacy["id"])["plan"]) == expected
+
+
+def test_missing_market_discards_ai_candidates_but_preserves_manual_source(tmp_path):
+    draft = create_plan(tmp_path, "Groceries with unspecified sales region")["plan"]
+    manual = revise_plan(tmp_path, draft["id"], 1, {"added_candidates": [
+        {"url": "https://manual.example.test/product"}]})["plan"]
+    proposal = {**_proposal(), "topic": {"industry": "groceries", "product": "food", "market": ""},
+                "note": "", "conditions": [{"field": "condition", "operator": "equals", "value": "new"}]}
+    staged = submit_plan_preview(tmp_path, draft["id"], 2, proposal)["plan"]
+    assert [item["url"] for item in staged["candidates"]] == [manual["candidates"][0]["url"]]
+    assert staged["candidates"][0]["origin"] == "user"
+    assert "geographic market" in staged["note"]
+    with pytest.raises(ValueError, match="market"):
+        confirm_plan(tmp_path, draft["id"], 3, True)
+
+
+def test_missing_market_clarification_note_stays_within_limit(tmp_path):
+    draft = create_plan(tmp_path, "Groceries")["plan"]
+    proposal = {**_proposal(), "topic": {"industry": "food", "product": "groceries", "market": ""},
+                "note": "a" * 3000}
+    staged = submit_plan_preview(tmp_path, draft["id"], 1, proposal)["plan"]
+    assert len(staged["note"]) <= 3000
+    assert staged["note"].endswith("Which geographic market should be researched?")

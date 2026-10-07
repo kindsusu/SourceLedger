@@ -274,8 +274,15 @@ def resume_job(root: str | Path, job_id: str) -> dict[str, Any]:
             raise FileNotFoundError(f"Unknown job: {job_id}")
         if job.get("operation") == "recommend":
             raise ValueError("AI recommendation jobs have no checkpoint; run a new request from Sources")
-        if job.get("operation") in {"plan_preview", "research_plan"}:
-            raise ValueError("Plan jobs have no resumable checkpoint; review the plan and start a new run")
+        if job.get("operation") == "plan_preview":
+            raise ValueError("AI preview jobs have no checkpoint; generate a new preview")
+        if job.get("operation") == "research_plan":
+            from .catalog_checkpoint import read_checkpoint
+            from .assistant_workspace import _managed_output
+            plan_id = job["arguments"]["plan_id"]
+            output = _managed_output(workspace, workspace / "catalog-prices" / plan_id, "plan output")
+            if not read_checkpoint(output, job_id):
+                raise ValueError("Research plan has no checkpoint to resume")
         result_path = path.with_name("result.json")
         result = _read_json(result_path)
         paused_agent = (job.get("status") == "succeeded" and job.get("operation") == "agent" and

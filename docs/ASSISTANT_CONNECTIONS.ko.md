@@ -48,6 +48,14 @@ source-ledger.cmd connect --client claude-code --project-dir "C:\work\my-project
 
 설치는 없는 `sourceledger` 서버 항목만 병합합니다. 다른 설정을 유지하고, 대상 파일 옆에 바이트 단위 백업(`.sourceledger-<id>.bak`)을 남기며, 같은 이름에 다른 설정이 있으면 덮어쓰지 않고 거절합니다. 그 경우 다른 이름을 쓰거나 생성된 설정을 직접 검토해 병합하세요. 프로젝트 `.mcp.json`과 백업 파일은 Git이 추적하지 않습니다.
 
+## 상품 조건과 조사 지역
+
+선택적 `conditions` 배열은 UI와 MCP에서 함께 사용합니다. 각 항목은 `field`, `operator`, `value`로 구성됩니다. 필드는 `brand`, `manufacturer`, `seller`, `model`, `material`, `condition`, `category`, `name`, `other`이며 연산자는 `equals`, `not_equals`, `contains`, `not_contains`입니다. 예를 들어 `{"field":"condition","operator":"equals","value":"new"}`는 새 상품 조건입니다. 지원하지 않는 조건은 원문과 `other` 조건에 남겨 검토 전까지 미확정으로 유지합니다.
+
+`submit_research_preview`와 `update_research_plan`으로 조건을 제출·수정하고 사용자 편집을 보존합니다. 사용자가 명시적으로 정한 문자 필터만 유지합니다. 조사 지역이 없으면 AI 출처 후보를 제안하기 전에 지역을 확인합니다. 저장 단계에서도 `topic.market`이 비어 있으면 AI 후보를 보류합니다. 직접 넣은 URL은 보존하지만 필수 주제가 채워질 때까지 수집할 수 없습니다.
+
+수집 결과에는 조건 판정과 방문 범위를 파생 정보로 제공합니다. 기존 작업·관측 조회 도구로 미확정 조건과 근거를 확인하고 연결된 AI에 검토를 요청할 수 있습니다. 조건 충족은 가격 표시·통화·상업 조건의 검증을 뜻하지 않으며, 수집 중 상품마다 모델을 자동 호출하지 않습니다.
+
 ## worker와 작업 수명
 
 AI 클라이언트 밖의 일반 터미널에서 worker를 시작합니다.
@@ -70,9 +78,9 @@ source-ledger.cmd assistant stop --workspace-root .sourceledger
 
 ## 로컬 MCP 서버의 범위
 
-새 연구 계획 경로에는 `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, `generate_research_preview`의 도구 8개가 추가되어 assistant MCP 도구는 총 27개입니다. 짧거나 여러 줄의 상세 요청을 그대로 저장합니다. 연결된 AI 앱은 자체 검색·브라우저 도구로 실제 근거를 살펴본 뒤 `submit_research_preview`로 URL과 이유를 제출할 수 있으며, 모델은 호스트 앱이 관리합니다. 또는 Codex CLI·Claude Code CLI 공급자와 모델을 명시적으로 선택해 `generate_research_preview`를 실행할 수 있습니다. 두 경로의 결과는 제한된 미검증 출처 근거이며 가격 관측이 아닙니다. 사용자는 후보를 추가·제거·선택하고 산업군·상품·시장과 표시된 수정본을 승인한 뒤 `start_research_plan`으로 수집을 시작합니다. 정확한 상품 식별자는 이 흐름에서 고급 선택 사항입니다.
+새 연구 계획 경로에는 `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, `generate_research_preview`의 도구 8개가 추가되어 assistant MCP 도구는 보완 도구 3개를 포함해 총 30개입니다. 짧거나 여러 줄의 상세 요청을 그대로 저장합니다. 연결된 AI 앱은 자체 검색·브라우저 도구로 실제 근거를 살펴본 뒤 `submit_research_preview`로 URL과 이유를 제출할 수 있으며, 모델은 호스트 앱이 관리합니다. 또는 Codex CLI·Claude Code CLI 공급자와 모델을 명시적으로 선택해 `generate_research_preview`를 실행할 수 있습니다. 두 경로의 결과는 제한된 미검증 출처 근거이며 가격 관측이 아닙니다. 사용자는 후보를 추가·제거·선택하고 산업군·상품·시장과 표시된 수정본을 승인한 뒤 `start_research_plan`으로 수집을 시작합니다. 정확한 상품 식별자는 이 흐름에서 고급 선택 사항입니다.
 
-승인한 계획은 페이지·시간 한도 안에서 선택 URL을 수집하고 방문·미처리 범위를 기록하며 SQLite 원문 근거와 XLSX 보고서를 만듭니다. 선택 호스트의 관련 없는 탐색 링크도 한도 안에서 방문할 수 있습니다. 일반 JSON-LD Product/Offer는 여러 상품 종류의 원문 가격·속성을 보존할 수 있지만 화면 표시 근거가 없는 값은 검토 대상으로 남습니다. 알려진 어댑터의 가격도 자연어 연구 범위와 상업 조건을 독립적으로 확인하지 않았으므로 검토 대상입니다. 임의 페이지 레이아웃과 조건의 의미 검증은 지원하지 않으며 없는 값은 추정하지 않습니다. 미리보기 내용은 범위를 넓히거나 가격 수집을 지시하는 명령이 아닙니다.
+승인한 계획은 페이지·시간 한도 안에서 선택 URL을 수집하고 방문·미처리 범위를 기록하며 SQLite 원문 근거와 XLSX 보고서를 만듭니다. 선택 호스트의 관련 없는 탐색 링크도 한도 안에서 방문할 수 있습니다. 일반 JSON-LD Product/Offer는 여러 상품 종류의 원문 가격·속성을 보존할 수 있지만 화면 표시 근거가 없는 값은 검토 대상으로 남습니다. 지원하는 구조화 조건은 근거와 규칙으로 판정하고 확인 불가·제외 상품을 별도로 집계합니다. 이 판정이 모든 자연어·상업 조건의 확인을 뜻하지 않으므로 알려진 어댑터의 가격에도 범위 검토 표시를 유지합니다. 임의 페이지 레이아웃과 제한 없는 의미 검증은 지원하지 않으며 없는 값은 추정하지 않습니다. 미리보기 내용은 범위를 넓히거나 가격 수집을 지시하는 명령이 아닙니다.
 
 UI에서 회사·사이트 URL을 입력하면 바로 출처로 등록합니다. 회사명만 입력하거나 출처 키워드를 입력하면 추천 요청을 저장합니다. **Sources**의 요청 문구를 연결된 AI에 복사해 전달해야 하며, 저장만으로 AI 클라이언트가 시작되지는 않습니다. AI는 `list_source_recommendation_requests`를 호출하고, 필요하면 `request_source_recommendations(query, kind)`로 요청을 만들 수 있습니다. 자체 검색 도구로 실제 사이트를 찾은 뒤 `submit_source_recommendations(request_id, candidates, note)`를 호출합니다. 각 후보에는 `name`, `url`, `reason`, `evidence_url`이 필요합니다. 검색이 불가능하거나 결과가 없으면 빈 후보 목록과 설명을 제출할 수 있습니다. 사용자는 UI에서 이유·근거를 검토하고 체크박스로 등록할 후보를 고릅니다. MCP에는 사용자를 대신해 추천을 선택하는 도구가 없습니다.
 
@@ -99,3 +107,5 @@ stdio만 사용합니다. MCP 클라이언트가 이 명령을 시작하므로 �
 요청 실행은 로컬 worker 작업을 대기열에 넣습니다. 결과는 Sources에서 사람이 검토하고 선택해야 하는 미검증 추천 후보이며, 가격 수집 작업을 시작하거나 가격 관측을 만들지 않습니다. 검색 중 공급자 CLI가 웹 페이지에 접근할 수 있습니다. 기존 수집 모델 호출은 계속 선택 사항이며 기본값은 0회입니다.
 
 이 연결은 클라우드 배포가 아닙니다. Codex/Claude 웹·모바일 접근, 원격 산출물 다운로드, 호스트 브라우저 세션 직접 재사용, 예약 실행, 무인 복구는 이번 구현 범위 밖입니다.
+
+실패·누락 조회, 브라우저 근거 제출, 부분 재시도와 체크포인트 재개는 [MCP 근거 보완과 조사 재개](MCP_FOLLOWUP.ko.md)를 참고하세요.

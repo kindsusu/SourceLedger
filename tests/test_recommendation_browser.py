@@ -194,7 +194,7 @@ def test_real_browser_mcp_recommendation_handoff(tmp_path):
             page.goto(f"{server.url}/#overview")
             page.locator("#setup-form").get_by_label("Industry", exact=True).fill("Fixture machinery")
             page.locator("#setup-form").get_by_label("Product", exact=True).fill("Fixture part")
-            page.locator("#setup-form").get_by_label("Market", exact=True).fill("Offline market")
+            page.locator("#setup-form").get_by_label("Research region", exact=True).fill("Offline market")
             page.get_by_role("button", name="Create workspace").click()
             page.locator('nav a[data-route="sources"]').click()
             page.locator('#recommendation-form input[name="query"]').fill("Fixture suppliers")

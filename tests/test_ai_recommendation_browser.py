@@ -197,7 +197,7 @@ def test_real_web_ai_job_review_and_model_receipt(tmp_path, monkeypatch):
             page.goto(f"{server.url}/#overview")
             page.locator("#setup-form").get_by_label("Industry", exact=True).fill("Fixture machinery")
             page.locator("#setup-form").get_by_label("Product", exact=True).fill("Fixture part")
-            page.locator("#setup-form").get_by_label("Market", exact=True).fill("Offline market")
+            page.locator("#setup-form").get_by_label("Research region", exact=True).fill("Offline market")
             page.get_by_role("button", name="Create workspace").click()
             page.locator('nav a[data-route="connections"]').click()
             page.locator("#ai-model-choice").select_option("fixture-model")

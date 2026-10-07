@@ -14,14 +14,15 @@ import sqlite3
 import uuid
 
 from .assistant_workspace import workspace_guard
+from .scope_conditions import normalize_conditions
 
 
 MAX_REQUEST = 12000
 MAX_ITEMS = 100
 MAX_DOCUMENT_BYTES = 256 * 1024
-_PREVIEW_KEYS = {"summary", "topic", "categories", "candidates", "note", "include_terms", "exclude_terms"}
+_PREVIEW_KEYS = {"summary", "topic", "categories", "candidates", "note", "include_terms", "exclude_terms", "conditions"}
 _EDIT_KEYS = {"request_text", "include_terms", "exclude_terms", "topic", "summary", "categories",
-              "selected_candidate_ids", "removed_candidate_ids", "added_candidates"}
+              "conditions", "selected_candidate_ids", "removed_candidate_ids", "added_candidates"}
 _CANDIDATE_KEYS = {"name", "url", "evidence_url", "reason", "kind"}
 
 
@@ -54,13 +55,6 @@ def _strings(value: Any, label: str, maximum: int = 160) -> list[str]:
             result.append(clean)
             seen.add(clean.casefold())
     return result
-
-
-def _merged(left: list[str], right: list[str]) -> list[str]:
-    combined = {}
-    for term in left + right:
-        combined.setdefault(term.casefold(), term)
-    return _strings(list(combined.values()), "terms")
 
 
 def _topic(value: Any) -> dict[str, str]:
@@ -173,7 +167,12 @@ def _load(db: sqlite3.Connection, plan_id: str, revision: int | None = None) -> 
         row = db.execute("SELECT body FROM plan_revisions WHERE plan_id=? AND revision=?", (plan_id, revision)).fetchone()
     if row is None:
         raise ValueError("Research plan or revision not found")
-    return json.loads(row[0])
+    plan = json.loads(row[0])
+    # Older revisions predate structured conditions. Keep their immutable
+    # stored body unchanged while exposing the current contract to callers.
+    plan.setdefault("conditions", [])
+    plan.setdefault("conditions_user_edited", False)
+    return plan
 
 
 def _save(db: sqlite3.Connection, plan: dict[str, Any]) -> None:
@@ -204,6 +203,7 @@ def create_plan(root: str | Path, request_text: str, include_terms: list[str] | 
         now = _now()
         plan = {"id": "plan-" + uuid.uuid4().hex, "revision": 1, "state": "draft",
                 "request_text": request, "include_terms": included, "exclude_terms": excluded,
+                "conditions": [], "conditions_user_edited": False,
                 "topic": _topic({}), "summary": "", "categories": [],
                 "candidates": [], "excluded_urls": [], "note": "", "created_at": now,
                 "updated_at": now, "confirmed_at": None}
@@ -216,7 +216,11 @@ def list_plans(root: str | Path) -> dict[str, Any]:
         rows = db.execute("SELECT body FROM plan_revisions AS p WHERE revision=("
                           "SELECT MAX(revision) FROM plan_revisions WHERE plan_id=p.plan_id) "
                           "ORDER BY rowid DESC LIMIT 100").fetchall()
-    return {"plans": [json.loads(row[0]) for row in rows]}
+    loaded = [json.loads(row[0]) for row in rows]
+    for plan in loaded:
+        plan.setdefault("conditions", [])
+        plan.setdefault("conditions_user_edited", False)
+    return {"plans": loaded}
 
 
 def get_plan(root: str | Path, plan_id: str) -> dict[str, Any]:
@@ -237,6 +241,9 @@ def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes:
         for key in ("include_terms", "exclude_terms", "categories"):
             if key in edit:
                 plan[key] = _strings(edit[key], key, 300 if key == "categories" else 160)
+        if "conditions" in edit:
+            plan["conditions"] = normalize_conditions(edit["conditions"])
+            plan["conditions_user_edited"] = True
         if "topic" in edit:
             plan["topic"] = _topic({**plan["topic"], **_object(edit["topic"], "topic", {"industry", "product", "market"})})
         candidates = [dict(item) for item in plan["candidates"]]
@@ -281,10 +288,18 @@ def submit_plan_preview(root: str | Path, plan_id: str, expected_revision: int,
     note = _text(data.get("note", ""), "note", 3000)
     included = _strings(data.get("include_terms", []), "include_terms")
     excluded = _strings(data.get("exclude_terms", []), "exclude_terms")
+    conditions = normalize_conditions(data.get("conditions", []))
     raw_candidates = data.get("candidates", [])
     if not isinstance(raw_candidates, list) or len(raw_candidates) > MAX_ITEMS:
         raise ValueError("candidates must be a bounded list")
-    proposed = [_candidate(item, "ai") for item in raw_candidates]
+    # A location-free query can name relevant organizations yet still yield
+    # unusable sales channels. Do not stage model-suggested targets until the
+    # geographic market is explicit. Manually added targets survive below.
+    proposed = [_candidate(item, "ai") for item in raw_candidates] if topic["market"] else []
+    if not topic["market"]:
+        question = "Which geographic market should be researched?"
+        if question.casefold() not in note.casefold():
+            note = f"{note[:3000 - len(question) - 1]}\n{question}".strip()
     with _db(root) as db:
         plan = _next(_current(db, plan_id, expected_revision))
         previous = {item["url"]: item for item in plan["candidates"]}
@@ -303,9 +318,16 @@ def submit_plan_preview(root: str | Path, plan_id: str, expected_revision: int,
                 combined[item["url"]] = item
         if len(combined) > MAX_ITEMS:
             raise ValueError("Too many candidates")
+        existing_conditions = plan.get("conditions", [])
+        if plan.get("conditions_user_edited") or "conditions" not in data:
+            conditions = existing_conditions
+        # Only a user edit can create a hard literal text filter. A model may
+        # suggest semantic constraints, but auto-generated synonyms must not
+        # silently remove otherwise eligible products during collection.
         plan.update(summary=summary, topic=topic, categories=categories, note=note,
-                    include_terms=_merged(plan["include_terms"], included),
-                    exclude_terms=_merged(plan["exclude_terms"], excluded),
+                    conditions=conditions,
+                    include_terms=plan["include_terms"],
+                    exclude_terms=plan["exclude_terms"],
                     candidates=list(combined.values()), state="preview" if combined else "draft")
         _save(db, plan)
     return {"plan": plan}
@@ -338,5 +360,12 @@ def confirmed_snapshot(root: str | Path, plan_id: str, revision: int) -> dict[st
 def fingerprint(plan: dict[str, Any]) -> str:
     if not isinstance(plan, dict):
         raise ValueError("plan must be an object")
-    encoded = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    canonical = dict(plan)
+    # Historical plan revisions lacked these defaults. A worker queued before
+    # migration must keep the same immutable snapshot fingerprint on resume.
+    if canonical.get("conditions") == []:
+        canonical.pop("conditions", None)
+    if canonical.get("conditions_user_edited") is False:
+        canonical.pop("conditions_user_edited", None)
+    encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

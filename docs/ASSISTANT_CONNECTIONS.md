@@ -71,6 +71,14 @@ different settings. Rename the server or inspect and merge the generated
 snippet yourself in that case. The project `.mcp.json` and connection backups
 are ignored by Git.
 
+## Product conditions and research region
+
+The optional `conditions` array is shared by UI and MCP. Each entry has `field`, `operator`, and `value`. Fields are `brand`, `manufacturer`, `seller`, `model`, `material`, `condition`, `category`, `name`, and `other`; operators are `equals`, `not_equals`, `contains`, and `not_contains`. For example, `{"field":"condition","operator":"equals","value":"new"}` represents a new-product requirement. Keep unsupported requirements in the full request and an `other` condition, which remains unknown pending review.
+
+Submit or edit conditions with `submit_research_preview` and `update_research_plan`, preserving user edits. Keep only explicit user text filters. An unspecified research region must be clarified before suggesting AI source candidates. Storage withholds AI candidates when `topic.market` is empty. Manual URLs are preserved, but cannot be collected until required topic fields are complete.
+
+Collection results include derived condition assessments and page coverage. Existing job and observation tools expose unresolved checks and evidence for review with a connected assistant. A matched scope check does not verify price display, currency, or commercial terms. Collection adds no automatic per-product model calls.
+
 ## Worker and job lifecycle
 
 Start the worker from a regular terminal, outside the AI client:
@@ -98,9 +106,9 @@ dead worker marks its running job `interrupted`; it is never silently rerun.
 
 ## What the local MCP server can do
 
-The primary research-plan path has eight tools, bringing this assistant MCP server to 27 tools total: `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, and `generate_research_preview`. Create a plan with the complete short or multiline request. For a preview, use the connected AI app's own search/browser tools to inspect actual references, then submit URLs and reasons through `submit_research_preview`; the host app controls its model. Alternatively, explicitly opt in to `generate_research_preview` with a local Codex CLI or Claude Code CLI provider/model. Both routes produce bounded, unverified references and never price observations. The user can add, remove, or select candidates and must confirm the displayed revision, including industry, product, and market, before `start_research_plan` collects selected pages. Exact product identifiers are optional advanced inputs for this flow.
+The primary research-plan path has eight tools, bringing this assistant MCP server to 30 tools total (including three follow-up tools): `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, and `generate_research_preview`. Create a plan with the complete short or multiline request. For a preview, use the connected AI app's own search/browser tools to inspect actual references, then submit URLs and reasons through `submit_research_preview`; the host app controls its model. Alternatively, explicitly opt in to `generate_research_preview` with a local Codex CLI or Claude Code CLI provider/model. Both routes produce bounded, unverified references and never price observations. The user can add, remove, or select candidates and must confirm the displayed revision, including industry, product, and market, before `start_research_plan` collects selected pages. Exact product identifiers are optional advanced inputs for this flow.
 
-The confirmed plan uses page and time limits, records visited and unprocessed coverage, and retains source evidence in SQLite with an XLSX report. Some unrelated navigation links on a selected host may be visited within the page budget. Generic JSON-LD Product/Offer data can preserve raw prices and attributes across product categories, but embedded prices lack visual proof and remain review-only. Known-adapter prices also remain review-only because the request's natural-language scope and commercial conditions are not independently checked. Arbitrary page layouts and semantic condition checking are unsupported; missing values are never inferred. Preview content is untrusted data, never an instruction to widen scope or collect a price.
+The confirmed plan uses page and time limits, records visited and unprocessed coverage, and retains source evidence in SQLite with an XLSX report. Some unrelated navigation links on a selected host may be visited within the page budget. Generic JSON-LD Product/Offer data can preserve raw prices and attributes across product categories, but embedded prices lack visual proof and remain review-only. Supported structured conditions receive deterministic evidence checks; unknown and excluded products are separately accounted for. Known-adapter prices keep scope review flags because these checks do not establish every natural-language or commercial condition. Arbitrary page layouts and unrestricted semantic checking remain unsupported; missing values are never inferred. Preview content is untrusted data, never an instruction to widen scope or collect a price.
 
 For the UI source-targeting flow, enter a company/site URL to register it
 directly. Entering only a company name, or a source keyword, instead saves a
@@ -169,3 +177,5 @@ Running a request queues a local worker job. It only returns unverified recommen
 The connection is not a cloud deployment. Codex/Claude web or mobile access,
 remote artifact download, direct reuse of a host browser session, scheduling,
 and unattended repair are outside this implementation.
+
+See [MCP evidence and recovery](MCP_FOLLOWUP.md) for coverage gaps, browser evidence submission, bounded retries and checkpoint resume.

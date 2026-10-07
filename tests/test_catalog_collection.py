@@ -9,11 +9,12 @@ from su_crawler.models import Candidate, FetchResult
 from su_crawler.storage import Store
 
 
-def plan(urls, *, includes=None, excludes=None, excluded_urls=None):
+def plan(urls, *, includes=None, excludes=None, excluded_urls=None, conditions=None):
     return {
         "id": "approved-1", "revision": 1, "state": "confirmed", "request_text": "Compare chosen sources",
         "topic": {"industry": "general retail", "product": "selected products", "market": "public web"},
         "include_terms": includes or [], "exclude_terms": excludes or [], "excluded_urls": excluded_urls or [],
+        "conditions": conditions or [],
         "candidates": [{"id": str(i), "name": f"Page {i}", "url": url, "evidence_url": url,
                         "reason": "selected", "kind": "product", "selected": True, "origin": "manual"}
                        for i, url in enumerate(urls)],
@@ -196,3 +197,65 @@ def test_requires_confirmed_plan_and_selected_limit(tmp_path):
     snapshot["state"] = "confirmed"
     with pytest.raises(ValueError, match="exceed"):
         collect_plan(tmp_path, snapshot, output_dir=tmp_path / "out", max_pages=1, collector=fake({}, []))
+
+
+def test_structured_scope_preserves_unknown_and_excludes_wrong_brand(tmp_path):
+    url = "https://shop.example/cup-rice"
+    items = [
+        {"@type": "Product", "name": "오뚜기 컵밥", "offers": {"@type": "Offer", "price": "10", "priceCurrency": "KRW"}},
+        {"@type": "Product", "name": "컵밥", "brand": {"name": "다른 회사"}, "offers": {"@type": "Offer", "price": "11", "priceCurrency": "KRW"}},
+    ]
+    page = f'<script type="application/ld+json">{json.dumps(items, ensure_ascii=False)}</script>'.encode()
+    snapshot = plan([url], conditions=[{"field": "brand", "operator": "equals", "value": "오뚜기"}])
+    result = collect_plan(tmp_path, snapshot, output_dir=tmp_path / "out", max_pages=1,
+                          collector=fake({(url, "http"): page}, []))
+    coverage = result["coverage"][0]
+    assert coverage["products_extracted"] == 2
+    assert coverage["scope_counts"] == {"matched": 0, "unknown": 1, "excluded": 1, "not_checked": 0}
+    assert {entry["status"] for entry in coverage["scope_assessments"]} == {"unknown", "excluded"}
+    observations = rows(result["output_dir"], result["run_id"])
+    assert len(observations) == 1
+    assert observations[0]["raw_fields"]["name"] == "오뚜기 컵밥"
+    assert observations[0]["status"] == "review"
+    assert observations[0]["derived_values"]["scope_assessment"]["status"] == "unknown"
+    assert result["plan_scope"]["conditions"] == snapshot["conditions"]
+
+
+def test_explicit_structured_conditions_do_not_infer_new_stock(tmp_path):
+    url = "https://shop.example/bearing"
+    page = html_product("6204-2RS bearing", price="9", currency="KRW", extra={"mpn": "6204-2RS"})
+    snapshot = plan([url], conditions=[{"field": "model", "operator": "equals", "value": "6204-2RS"},
+                                       {"field": "condition", "operator": "equals", "value": "new"}])
+    result = collect_plan(tmp_path, snapshot, output_dir=tmp_path / "out", max_pages=1,
+                          collector=fake({(url, "http"): page}, []))
+    assert result["coverage"][0]["scope_counts"]["unknown"] == 1
+    assert rows(result["output_dir"], result["run_id"])[0]["status"] == "review"
+
+
+def test_jsonld_product_condition_attested_and_conflicting_offer_excluded(tmp_path):
+    url = "https://shop.example/item"
+    page = html_product("Bearing", price="9", currency="KRW", extra={
+        "itemCondition": "https://schema.org/NewCondition",
+    })
+    snapshot = plan([url], conditions=[{"field": "condition", "operator": "equals", "value": "new"}])
+    result = collect_plan(tmp_path, snapshot, output_dir=tmp_path / "out", max_pages=1,
+                          collector=fake({(url, "http"): page}, []))
+    assert result["coverage"][0]["scope_counts"]["matched"] == 1
+    assert result["coverage"][0]["scope_assessments"][0]["checks"][0]["evidence"][0]["location"].endswith("Product.itemCondition")
+    assert rows(result["output_dir"], result["run_id"])[0]["raw_fields"]["condition"] == "https://schema.org/NewCondition"
+
+    data = {"@type": "Product", "name": "Bearing", "itemCondition": "https://schema.org/NewCondition",
+            "offers": {"@type": "Offer", "itemCondition": "https://schema.org/UsedCondition", "price": "9", "priceCurrency": "KRW"}}
+    conflicted = f'<script type="application/ld+json">{json.dumps(data)}</script>'.encode()
+    other = collect_plan(tmp_path, snapshot, output_dir=tmp_path / "other", max_pages=1,
+                         collector=fake({(url, "http"): conflicted}, []))
+    assert other["coverage"][0]["scope_counts"]["excluded"] == 1
+    assert rows(other["output_dir"], other["run_id"]) == []
+
+
+def test_no_conditions_are_not_counted_as_matched(tmp_path):
+    url = "https://shop.example/item"
+    result = collect_plan(tmp_path, plan([url]), output_dir=tmp_path / "out", max_pages=1,
+                          collector=fake({(url, "http"): html_product("Oats", price="3", currency="USD")}, []))
+    assert result["coverage"][0]["scope_counts"] == {"matched": 0, "unknown": 0, "excluded": 0, "not_checked": 1}
+    assert result["coverage"][0]["scope_assessments"][0]["reason"] == "No structured product conditions were provided"

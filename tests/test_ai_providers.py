@@ -16,12 +16,14 @@ PLAN = {"request_text": "Find Acme pumps in Korea.\nExclude used goods.",
         "topic": {"industry": "manufacturing", "product": "pump", "market": "Korea"},
         "summary": "User-edited Acme pump scope", "categories": ["Acme pumps"],
         "include_terms": ["Acme"], "exclude_terms": ["used"],
+        "conditions": [],
         "candidates": [{"name": "Manual Acme site", "url": "https://manual.example.com/pumps",
                         "evidence_url": "https://manual.example.com/pumps", "reason": "User added",
                         "kind": "site", "origin": "user", "selected": False}],
         "excluded_urls": ["https://excluded.example.com/catalog"]}
 PREVIEW = {"summary": "Acme pump sources", "topic": PLAN["topic"], "categories": ["Acme catalog"],
            "include_terms": ["Acme"], "exclude_terms": ["used"],
+           "conditions": [{"field": "condition", "operator": "equals", "value": "new"}],
            "candidates": [{"name": "Acme catalog", "url": "https://example.com/pumps",
                            "evidence_url": "https://example.com/search", "reason": "Public catalog",
                            "kind": "site"}], "note": "Review before collection"}
@@ -240,11 +242,16 @@ def test_plan_preview_uses_restricted_structured_cli(provider, monkeypatch, tmp_
     monkeypatch.setattr(ai, "_run_cli", fake_run)
     result = ai.generate_plan_preview(PLAN, {"provider": provider, "model": "sample-model"})
     assert result["summary"] == PREVIEW["summary"]
+    assert result["conditions"] == PREVIEW["conditions"]
     assert result["candidates"] == PREVIEW["candidates"]
     assert result["actual_model"] == ("claude-model-xyz" if provider == "claude" else None)
     prompt_data = json.loads(captured["prompt"].split("User request and current edits JSON follows:\n", 1)[1])
     assert prompt_data == PLAN
     assert "Do not turn natural-language conditions into literal terms" in captured["prompt"]
+    assert "If the geographic market is unspecified, do not search the web" in captured["prompt"]
+    assert "Each condition must be atomic" in captured["prompt"]
+    assert "Never use a compound 'A or competitors' value" in captured["prompt"]
+    assert "include an evidenced A source among the candidates" in captured["prompt"]
     assert "no exclude term may match" in captured["prompt"]
     assert "Do not collect prices" in captured["prompt"]
     from su_crawler.research_intent import INTENT_GUIDANCE
@@ -257,6 +264,27 @@ def test_plan_preview_uses_restricted_structured_cli(provider, monkeypatch, tmp_
                if key not in {"provider", "requested_model", "actual_model"}}
     saved = submit_plan_preview(tmp_path, draft["id"], draft["revision"], preview)["plan"]
     assert saved["state"] == "preview" and saved["candidates"][0]["origin"] == "ai"
+    assert saved["conditions"] == PREVIEW["conditions"]
+
+
+def test_plan_preview_without_market_has_no_ai_candidates():
+    proposed = {**PREVIEW, "topic": {**PREVIEW["topic"], "market": ""}}
+    normalized = ai._validate_plan_preview(proposed)
+    assert normalized["candidates"] == []
+    assert "geographic market" in normalized["note"]
+
+
+def test_plan_preview_accepts_old_response_without_conditions():
+    old = {key: value for key, value in PREVIEW.items() if key != "conditions"}
+    assert ai._validate_plan_preview(old)["conditions"] == []
+
+
+def test_model_generated_literal_filters_do_not_replace_user_filters(monkeypatch):
+    proposed = {**PREVIEW, "include_terms": ["synthetic synonym"], "exclude_terms": ["used"]}
+    monkeypatch.setattr(ai, "_generate_structured", lambda *args: (proposed, {}))
+    result = ai.generate_plan_preview(PLAN, {"provider": "codex"})
+    assert result["include_terms"] == PLAN["include_terms"]
+    assert result["exclude_terms"] == PLAN["exclude_terms"]
 
 
 @pytest.mark.parametrize("bad", [
@@ -264,6 +292,7 @@ def test_plan_preview_uses_restricted_structured_cli(provider, monkeypatch, tmp_
     {**PREVIEW, "candidates": [{**PREVIEW["candidates"][0], "currency": "KRW"}]},
     {**PREVIEW, "candidates": [{**PREVIEW["candidates"][0], "evidence_url": "http://localhost/"}]},
     {**PREVIEW, "topic": {"industry": "manufacturing"}},
+    {**PREVIEW, "conditions": [{"field": "brand", "operator": "not_equals", "value": ""}]},
 ])
 def test_plan_preview_rejects_malformed_or_price_fields(bad, monkeypatch):
     monkeypatch.setattr(ai, "_claude_command", lambda: [sys.executable])

@@ -53,7 +53,7 @@ def test_plan_preserves_detailed_request_and_confirms_before_start(tmp_path):
                 plan = {"id": f"plan-{len(archived) + 1}", "revision": 1, "state": "draft",
                         "request_text": body["request_text"], "summary": "", "note": "",
                         "topic": {"industry": "", "product": "", "market": ""},
-                        "categories": [], "include_terms": [], "exclude_terms": [],
+                        "categories": [], "conditions": [], "include_terms": [], "exclude_terms": [],
                         "candidates": [], "excluded_urls": []}
                 route.fulfill(json={"plan": copy.deepcopy(plan)})
             elif path == "plans/preview":
@@ -71,7 +71,7 @@ def test_plan_preserves_detailed_request_and_confirms_before_start(tmp_path):
                 assert body["expected_revision"] == plan["revision"]
                 changes = body["changes"]
                 plan.update({key: copy.deepcopy(value) for key, value in changes.items()
-                             if key in {"summary", "topic", "categories", "include_terms", "exclude_terms", "request_text"}})
+                             if key in {"summary", "topic", "categories", "conditions", "include_terms", "exclude_terms", "request_text"}})
                 selected = set(changes.get("selected_candidate_ids", []))
                 for candidate in plan["candidates"]:
                     candidate["selected"] = candidate["id"] in selected
@@ -131,6 +131,11 @@ def test_plan_preserves_detailed_request_and_confirms_before_start(tmp_path):
             assert calls[1][0] == "plans/preview"
             assert calls[1][1]["provider"] == "codex"
             page.locator("#plan-categories").fill("Bench instruments\nPortable instruments")
+            page.locator(".plan-details").first.locator("summary").click()
+            page.locator("#plan-condition-add").click()
+            page.locator('[data-condition="field"]').select_option("condition")
+            page.locator('[data-condition="operator"]').select_option("equals")
+            page.locator('[data-condition="value"]').fill("new")
             page.locator("#plan-candidates [data-plan-select]").check()
             page.locator("#language-select").select_option("ko")
             playwright.expect(page.locator("#plan-categories")).to_have_value("Bench instruments\nPortable instruments")
@@ -139,6 +144,7 @@ def test_plan_preserves_detailed_request_and_confirms_before_start(tmp_path):
             playwright.expect(page.locator("#job-detail")).to_contain_text("job-1")
             assert [path for path, _ in calls] == ["plans", "plans/preview", "plans/edit", "plans/confirm", "plans/start"]
             assert calls[2][1]["changes"]["categories"] == ["Bench instruments", "Portable instruments"]
+            assert calls[2][1]["changes"]["conditions"] == [{"field": "condition", "operator": "equals", "value": "new"}]
             page.goto(f"{server.url}/#plan")
             page.locator("#plan-candidates [data-plan-remove]").click()
             page.locator("#plan-preview").click()
@@ -247,8 +253,8 @@ def test_completed_empty_preview_shows_note_and_distinct_statuses(tmp_path):
                 playwright.expect(page.locator("#plan-status")).to_contain_text(completed_text)
                 playwright.expect(page.locator("#plan-status")).to_contain_text(plan["note"])
                 playwright.expect(page.locator("#plan-candidates")).not_to_contain_text("No AI suggestions yet")
-            page.locator("#plan-start").click()
-            playwright.expect(page.locator("#plan-error")).to_contain_text("URL")
+            playwright.expect(page.locator("#plan-start")).to_be_disabled()
+            playwright.expect(page.locator("#plan-readiness")).to_contain_text("情報源URL")
             assert posts == []
 
             # A preview with candidates must still show its provider note.
@@ -345,5 +351,113 @@ def test_plan_create_waits_for_bootstrap_and_shows_create_error(tmp_path):
             playwright.expect(page.locator("#plan-workspace")).to_be_hidden()
             playwright.expect(page.locator("#plan-create")).to_be_enabled()
             assert posts == ["plans"]
+        finally:
+            browser.close()
+
+
+def test_plan_readiness_and_optional_fields_across_languages(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    with running_server(tmp_path) as server, playwright.sync_playwright() as driver:
+        browser = launch_browser(driver)
+        page = browser.new_page(viewport={"width": 1100, "height": 800})
+        page.set_default_timeout(8000)
+        errors = []
+        page.on("pageerror", lambda exc: errors.append(str(exc)))
+        plan = {"id": "plan-regional", "revision": 2, "state": "preview",
+                "request_text": "Compare shelf-stable soy drinks", "summary": "Soy drinks", "note": "",
+                "topic": {"industry": "Food", "product": "Soy drinks", "market": ""},
+                "categories": [], "conditions": [], "include_terms": [], "exclude_terms": [],
+                "candidates": [{"id": "candidate-1", "name": "Example catalog",
+                                "url": "https://example.invalid/catalog", "evidence_url": "",
+                                "reason": "Catalog listing", "kind": "category", "selected": True}],
+                "excluded_urls": []}
+        bootstrap = {
+            "csrf_token": "test-token", "status": "unconfigured", "version": "test",
+            "workspace_root": str(tmp_path), "worker": {"status": "stopped"},
+            "jobs": [], "plan_jobs": [], "research_plans": {"plans": [plan]},
+            "recommendation_jobs": [], "recommendations": {"requests": []},
+            "mcp_available": True,
+            "ai": {"settings": {"provider": "codex", "model": "", "timeout_seconds": 180},
+                   "providers": [{"id": "codex", "label": "Codex", "available": True,
+                                  "models": [], "message": ""}]},
+        }
+        calls = []
+
+        def route_api(route):
+            path = route.request.url.split("/api/", 1)[1]
+            if route.request.method == "GET" and path == "bootstrap":
+                route.fulfill(json=copy.deepcopy(bootstrap))
+            elif path == "plans/edit":
+                body = route.request.post_data_json
+                calls.append((path, copy.deepcopy(body)))
+                plan.update({key: copy.deepcopy(value) for key, value in body["changes"].items()
+                             if key in {"topic", "conditions", "categories", "summary", "include_terms", "exclude_terms"}})
+                for candidate in plan["candidates"]:
+                    candidate["selected"] = candidate["id"] in body["changes"].get("selected_candidate_ids", [])
+                for addition in body["changes"].get("added_candidates", []):
+                    plan["candidates"].append({"id": "candidate-added", "origin": "user", "selected": True,
+                                               **addition})
+                plan["revision"] += 1
+                route.fulfill(json={"plan": copy.deepcopy(plan)})
+            else:
+                calls.append((path, route.request.post_data_json))
+                route.fulfill(status=404, json={"error": "Unexpected request"})
+
+        try:
+            page.route("**/api/**", route_api)
+            page.goto(f"{server.url}/#plan")
+            playwright.expect(page.locator("#plan-workspace")).to_be_visible()
+            for language, region_label, readiness in (
+                ("en", "Research region", "enter research region"),
+                ("ko", "조사 지역", "조사 지역 입력"),
+                ("ja", "調査地域", "調査地域を入力"),
+            ):
+                page.locator("#language-select").select_option(language)
+                playwright.expect(page.locator("#plan-market").locator("xpath=parent::label")).to_contain_text(region_label)
+                playwright.expect(page.locator("#plan-readiness")).to_contain_text(readiness)
+                playwright.expect(page.locator("#plan-start")).to_be_disabled()
+                playwright.expect(page.locator("#plan-change")).to_be_disabled()
+            playwright.expect(page.locator("#plan-status")).to_contain_text("調査地域")
+            playwright.expect(page.locator("#plan-region-help")).to_contain_text("どの国・地域")
+            playwright.expect(page.locator("#plan-candidates .plan-candidate-unverified")).to_contain_text("製品条件は未確認")
+            playwright.expect(page.locator("#plan-add-form input[name=name]")).not_to_have_attribute("required", "")
+            playwright.expect(page.locator("#plan-add-form button[type=submit]")).to_be_disabled()
+            page.locator("#plan-add-form input[name=url]").fill("not a URL")
+            playwright.expect(page.locator("#plan-add-form button[type=submit]")).to_be_disabled()
+            page.locator("#plan-add-form input[name=url]").fill("https://example.invalid/soy")
+            playwright.expect(page.locator("#plan-add-form button[type=submit]")).to_be_enabled()
+            page.locator("#plan-add-form button[type=submit]").click()
+            playwright.expect(page.locator("#plan-candidates .plan-candidate")).to_have_count(2)
+            assert calls[0][1]["changes"]["added_candidates"][0]["name"] == "https://example.invalid/soy"
+            assert calls[0][1]["changes"]["added_candidates"][0]["reason"] == ""
+            assert "conditions" not in calls[0][1]["changes"]
+            page.locator("#plan-market").fill("Japan")
+            playwright.expect(page.locator("#plan-region-help")).to_be_hidden()
+            playwright.expect(page.locator("#plan-start")).to_be_enabled()
+            page.locator("#plan-save").click()
+            assert "conditions" not in calls[1][1]["changes"]
+            page.locator("#plan-conditions-details summary").click()
+            page.locator("#plan-condition-add").click()
+            page.locator('[data-condition="field"]').select_option("brand")
+            page.locator('[data-condition="value"]').fill("Example")
+            playwright.expect(page.locator('[data-condition="value"]')).to_have_attribute("maxlength", "160")
+            page.locator("#plan-save").click()
+            assert calls[2][1]["changes"]["conditions"] == [{"field": "brand", "operator": "equals", "value": "Example"}]
+            playwright.expect(page.locator("#plan-conditions-details")).to_have_attribute("open", "")
+            page.locator("[data-condition-remove]").click()
+            page.locator("#plan-save").click()
+            assert calls[3][1]["changes"]["conditions"] == []
+            page.locator("#plan-conditions-details summary").click()
+            page.evaluate("for (let i = 0; i < 20; i++) document.getElementById('plan-condition-add').click()")
+            playwright.expect(page.locator("#plan-condition-add")).to_be_disabled()
+            page.evaluate("document.querySelectorAll('[data-condition-remove]').forEach(button => button.click())")
+            playwright.expect(page.locator("#plan-condition-add")).to_be_enabled()
+            page.locator("#plan-change-text").fill("Include refrigerated products")
+            playwright.expect(page.locator("#plan-change")).to_be_enabled()
+            playwright.expect(page.locator("#plan-start")).to_be_disabled()
+            page.locator("#plan-change-text").fill("")
+            playwright.expect(page.locator("#plan-change")).to_be_disabled()
+            playwright.expect(page.locator("#plan-start")).to_be_enabled()
+            assert errors == []
         finally:
             browser.close()

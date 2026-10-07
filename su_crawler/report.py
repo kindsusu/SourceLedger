@@ -167,6 +167,8 @@ def export_report(
     demo = bool(run.get("demo", config.demo))
     by_source = {source.id: source for source in config.sources}
     by_product = {product.id: product for product in config.products}
+    from .result_view import build_result_view, FIELD_LABELS
+    presentation = build_result_view(observations)
     # A report must expose an uncreated task as a coverage gap, rather than
     # silently treating the absence of an observation as a zero-price result.
     task_keys = {(t.get("product_id"), t.get("source_id")) for t in tasks}
@@ -197,11 +199,44 @@ def export_report(
         }
         fmts['number']['scientific'] = wb.add_format({'num_format': '0.##############E+00', 'valign': 'top'})
 
+        # The default reading surface counts offers, never supporting captures.
+        headers = ["Product", "Source", "Recorded Price (not a final quote)", "Currency", "Result Status",
+                   "Recorded Conditions", "Missing Conditions", "Supporting Evidence Count", "Conflicting Values", "Source URL", "Observation ID"]
+        ws = wb.add_worksheet("Results"); row = _setup_sheet(ws, headers, fmts, demo)
+        for obs in presentation["rows"]:
+            fields = obs.get("raw_fields") or {}
+            recorded = "\n".join(f'{item["label"]}: {item["value"]}' for key, item in obs["field_status"].items() if key not in {"price", "currency"} and item["status"] != "missing")
+            values = [fields.get("name") or obs.get("product_id"), obs.get("source_name"),
+                      _observed_amount(obs, include_review=True), obs.get("currency"), obs["result_status"],
+                      recorded, "\n".join(FIELD_LABELS.get(key, key) for key in obs["missing_conditions"]), len(obs["supporting_evidence"]),
+                      "\n".join(f'{FIELD_LABELS.get(c["field"], c["field"])}: {c["observed"]} / {c["submitted"]}' for c in obs["conflicts"]), obs.get("source_url"), obs["id"]]
+            for col, value in enumerate(values):
+                if col in (2, 7): _write_decimal(ws, row, col, value, fmts["number"])
+                elif col == 9 and _safe_url(value): ws.write_url(row, col, value, fmts["link"], value)
+                else: _write_value(ws, row, col, value, fmts["text"])
+            row += 1
+        ws.set_column(0, 1, 28); ws.set_column(2, 4, 23); ws.set_column(5, 6, 46)
+        ws.set_column(7, 7, 20); ws.set_column(8, 10, 42)
+        _finish_sheet(ws, 1 if demo else 0, row, len(headers) - 1)
+        if presentation["evidence_count"]:
+            headers = ["Evidence ID", "Linked Observation ID", "Association", "Product", "Submitted Fields (unverified)", "Conflicts", "Source URL", "Evidence File"]
+            ws = wb.add_worksheet("Supporting Evidence"); row = _setup_sheet(ws, headers, fmts, demo)
+            evidence_rows = presentation["evidence_submissions"] + [e for item in presentation["rows"] for e in item["supporting_evidence"]]
+            for evidence in evidence_rows:
+                values = [evidence["id"], evidence.get("target_observation_id"), evidence["association_status"],
+                          (evidence.get("raw_fields") or {}).get("name"), evidence.get("raw_fields"), evidence.get("conflicts"), evidence.get("source_url"), evidence.get("evidence_path")]
+                for col, value in enumerate(values): _write_value(ws, row, col, value, fmts["text"])
+                row += 1
+            ws.set_column(0, 3, 26); ws.set_column(4, 7, 48)
+            _finish_sheet(ws, 1 if demo else 0, row, len(headers) - 1)
+
         # 1. Run summary
         ws = wb.add_worksheet(SHEETS[0]); row = _setup_sheet(ws, ["Field", "Value"], fmts, demo)
         summary = [("Run ID", run.get("id")), ("Status", run.get("status")), ("Started at (UTC)", _utc(run.get("started_at"))),
                    ("Finished at (UTC)", _utc(run.get("finished_at"))), ("Demo data", "Yes" if demo else "No"),
-                   ("Planned collection tasks", len(coverage_rows)), ("Observations", len(observations)), ("Products", len(config.products)), ("Sources", len(config.sources)),
+                   ("Planned collection tasks", len(coverage_rows)), ("Result rows", presentation["result_count"]),
+                   ("Supporting evidence", presentation["evidence_count"]), ("Audit records", len(observations)),
+                   ("Products", len(config.products)), ("Sources", len(config.sources)),
                    ("Calculator estimates", sum(o.get("value_origin") == "calculator_estimate" for o in observations)),
                    ("Evidence verification", "Validated means source fields passed checks; it does not certify a final commercial quote."),
                    ("Blank values", "Unknown values stay blank. Zero appears only when explicitly provided by the source.")]
@@ -226,7 +261,7 @@ def export_report(
 
         # 3. Only verified, fresh, explicitly comparable observations.
         ws = wb.add_worksheet(SHEETS[2]); row = _setup_sheet(ws, ["Comparison Key", "Product ID", "Product", "Source", "Price", "Raw Price", "Normalized Amount", "Calculation", "Currency", "Unit", "Pack Quantity", "Collected at (UTC)", "Evidence URL", "Group Count", "Minimum", "Maximum", "Median"], fmts, demo)
-        comparable = [o for o in observations if o.get("comparable") is True and _comparison_evidence_ok(o) and o.get("freshness") == "observed" and _decimal(_observed_amount(o)) is not None and o.get("comparison_key")]
+        comparable = [o for o in presentation["rows"] if o.get("comparable") is True and _comparison_evidence_ok(o) and o.get("freshness") == "observed" and _decimal(_observed_amount(o)) is not None and o.get("comparison_key")]
         # One latest verified observation per (comparison key, product, source).
         latest: dict[tuple[str, str, str], dict[str, Any]] = {}
         for obs in comparable:
@@ -309,7 +344,7 @@ def export_report(
 
         # Rental terms deserve separate, readable columns rather than forcing
         # operators to interpret JSON or treating monthly rent as a unit price.
-        rentals = [o for o in observations if o.get("price_profile") == "rental"]
+        rentals = [o for o in presentation["rows"] if o.get("price_profile") == "rental"]
         if rentals:
             headers = ["Product", "Source", "Observed Monthly Price", "Estimated Monthly Price (not observed)",
                        "Currency", "Term (months)", "Deposit Amount", "Advance Amount", "Annual Mileage (km)",

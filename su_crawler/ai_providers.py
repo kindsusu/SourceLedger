@@ -18,6 +18,7 @@ from .research import _atomic_write
 from .search import _public_url
 from .research_plans import canonical_url
 from .research_intent import INTENT_GUIDANCE
+from .scope_conditions import CONDITION_SCHEMA, normalize_conditions
 
 
 SETTINGS_FILE = "ai-settings.json"
@@ -56,6 +57,7 @@ _PLAN_SCHEMA: dict[str, Any] = {
                           "items": {"type": "string"}},
         "exclude_terms": {"type": "array", "maxItems": 100,
                           "items": {"type": "string"}},
+        "conditions": CONDITION_SCHEMA,
         "candidates": {"type": "array", "maxItems": 30, "items": {
             "type": "object", "additionalProperties": False,
             "properties": {**{key: {"type": "string"}
@@ -64,7 +66,7 @@ _PLAN_SCHEMA: dict[str, Any] = {
             "required": ["name", "url", "evidence_url", "reason", "kind"]}},
         "note": {"type": "string"},
     },
-    "required": ["summary", "topic", "categories", "include_terms", "exclude_terms", "candidates", "note"],
+    "required": ["summary", "topic", "categories", "include_terms", "exclude_terms", "conditions", "candidates", "note"],
 }
 
 
@@ -505,7 +507,8 @@ def _plan_prompt(plan: dict) -> str:
         raise ValueError("Research plan topic is invalid")
     topic = {key: bounded_text(topic[key], f"topic.{key}", 160) for key in ("industry", "product", "market")}
     current = {"summary": bounded_text(plan.get("summary", ""), "summary", 3000),
-               "categories": bounded_list(plan.get("categories", []), "categories", 300)}
+               "categories": bounded_list(plan.get("categories", []), "categories", 300),
+               "conditions": normalize_conditions(plan.get("conditions", []))}
     for key in ("include_terms", "exclude_terms"):
         current[key] = bounded_list(plan.get(key), key, 160)
     excluded_urls = bounded_list(plan.get("excluded_urls", []), "excluded_urls", 2048, limit=1000)
@@ -543,11 +546,29 @@ def _plan_prompt(plan: dict) -> str:
         "specific request into unrelated categories or restore removed URLs. If existing edits conflict with "
         "the request, explain the conflict and ask for clarification in note. Leave unknown industry, "
         "product, and market fields empty for user review; infer no missing topic. "
+        "If the geographic market is unspecified, do not search the web or propose candidates. "
+        "Return candidates=[] and ask which sales region to research in note. "
+        "Use conditions for semantic brand, manufacturer, seller, model, material, product condition, "
+        "category, name, and other requirements. In condition values use new, used, or refurbished "
+        "for product condition when known. In a competitors-only request, an excluded reference "
+        "company becomes brand not_equals only if it is a product brand; use seller not_equals "
+        "for a rental operator or retailer. A comparison including that company must not exclude it. "
+        "Each condition must be atomic: one field, one operator, one value that an individual "
+        "product's evidence could satisfy. Never use a compound 'A or competitors' value as "
+        "manufacturer, brand, or seller; never encode geographic sales scope or competitor "
+        "relationships in other conditions. Use topic.market, summary, and note for those. "
+        "Reserve other for a single requested product attribute such as unsweetened or adult "
+        "when no dedicated field exists; explain that it requires evidence review. Do not add "
+        "category equals for a broad discovery category or a label likely to differ by source "
+        "language. Keep broad discovery scope in categories and summary; use a category condition "
+        "only when exact source field comparison is justified. "
         "include_terms and exclude_terms are literal product-text filters: any include term may match, "
         "and no exclude term may match. Do not turn natural-language conditions into literal terms. "
-        "Retain the original condition in request_text and suggest only concrete names or phrases likely "
-        "to appear verbatim in product text. "
-        "Suggest up to 30 public candidate sites, product pages, or category pages. Search the web and give "
+        "Preserve only user-explicit literal text filters; do not "
+        "synthesize hard include/exclude terms from semantic conditions. Keep the original request. "
+        "Suggest up to 30 public candidate sites, product pages, or category pages. In an explicit "
+        "A-and-competitors comparison, include an evidenced A source among the candidates when "
+        "available, along with at least one competitor source when available. Search the web and give "
         "each candidate a real public evidence_url from a search result or fetched page. Never invent a URL, "
         "company, identifier, price, currency, or commercial condition. If web evidence is unavailable or "
         "uncertain, leave candidates empty and explain in note. Do not collect prices or report observations. "
@@ -565,7 +586,8 @@ def _validate_plan_preview(value: Any) -> dict[str, Any]:
                 (not required or bool(item.strip())) and
                 not any(ord(char) < 32 and char not in "\n\t" for char in item))
 
-    if not isinstance(value, dict) or set(value) != set(_PLAN_SCHEMA["required"]):
+    if not isinstance(value, dict) or set(value) - set(_PLAN_SCHEMA["required"]) or (
+            set(_PLAN_SCHEMA["required"]) - {"conditions"}) - set(value):
         raise invalid()
     for key in ("summary", "note"):
         if not valid_text(value[key], 3000):
@@ -579,6 +601,10 @@ def _validate_plan_preview(value: Any) -> dict[str, Any]:
         if not isinstance(items, list) or len(items) > 100 or any(
                 not valid_text(item, maximum, required=True) for item in items):
             raise invalid()
+    try:
+        conditions = normalize_conditions(value.get("conditions", []))
+    except ValueError as exc:
+        raise invalid() from exc
     raw_candidates = value["candidates"]
     if not isinstance(raw_candidates, list) or len(raw_candidates) > 30:
         raise invalid()
@@ -598,15 +624,26 @@ def _validate_plan_preview(value: Any) -> dict[str, Any]:
             raise invalid() from exc
         if not _public_url(url, []) or not _public_url(evidence, []):
             raise invalid()
-        candidates.append({"name": item["name"].strip(), "url": url, "evidence_url": evidence,
-                           "reason": item["reason"].strip(), "kind": item["kind"]})
+        if topic["market"].strip():
+            candidates.append({"name": item["name"].strip(), "url": url, "evidence_url": evidence,
+                               "reason": item["reason"].strip(), "kind": item["kind"]})
+    note = value["note"].strip()
+    if not topic["market"].strip():
+        question = "Which geographic market should be researched?"
+        if question.casefold() not in note.casefold():
+            note = f"{note[:3000 - len(question) - 1]}\n{question}".strip()
     return {"summary": value["summary"].strip(), "topic": {key: topic[key].strip() for key in topic},
             "categories": [item.strip() for item in value["categories"]],
             "include_terms": [item.strip() for item in value["include_terms"]],
             "exclude_terms": [item.strip() for item in value["exclude_terms"]],
-            "candidates": candidates, "note": value["note"].strip()}
+            "conditions": conditions, "candidates": candidates, "note": note}
 
 
 def generate_plan_preview(plan: dict, settings: dict) -> dict:
     data, metadata = _generate_structured(_plan_prompt(plan), settings, _PLAN_SCHEMA)
-    return {**_validate_plan_preview(data), **metadata}
+    preview = _validate_plan_preview(data)
+    # The model can suggest structured conditions, but hard text filters are
+    # sourced only from the operator's saved plan fields.
+    for key in ("include_terms", "exclude_terms"):
+        preview[key] = list(plan.get(key, []))
+    return {**preview, **metadata}

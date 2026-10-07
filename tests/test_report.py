@@ -18,7 +18,7 @@ def test_evidence_first_workbook(tmp_path):
          {"id": "o1", "task_id": "t1", "product_id": "p1", "source_id": "s1", "source_name": "출처 1", "source_url": "https://shop.example/p", "collected_at": "2026-01-01T00:00:00Z", "status": "review", "reason": "단위 미확인", "amount": None, "raw_fields": {"price": "문의"}, "evidence": {}, "evidence_path": "", "evidence_sha256": "", "locator": "", "extraction_method": "dom", "comparable": False, "freshness": "observed"}], out := tmp_path / "report.xlsx")
     assert out.exists()
     wb = load_workbook(out, read_only=True, data_only=False)
-    assert wb.sheetnames == list(SHEETS)
+    assert wb.sheetnames == ["Results", *SHEETS]
     assert wb["Price Comparison"]["E3"].value == 0
     assert wb["Price Comparison"]["F3"].value == "0"
     assert wb["Observation History"]["H4"].value is None
@@ -75,7 +75,7 @@ def test_rental_report_separates_estimates_unknowns_and_deposit_kinds(tmp_path):
     ]
     out = export_report(cfg, {"id": "r"}, [], observations, tmp_path / "rental.xlsx")
     wb = load_workbook(out, data_only=False)
-    assert wb.sheetnames == [*SHEETS, "Rental Quotes"]
+    assert wb.sheetnames == ["Results", *SHEETS, "Rental Quotes"]
     ws = wb["Rental Quotes"]
     data = [dict(zip([c.value for c in ws[1]], row)) for row in ws.iter_rows(min_row=2, values_only=True)]
     assert data[0]["Observed Monthly Price"] == 590000

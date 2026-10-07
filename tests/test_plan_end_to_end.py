@@ -19,7 +19,7 @@ from test_web_server import request, json_response, running_server
 
 
 REQUEST = (
-    "Research Acme cotton shirts sold in Japan.\n"
+    "Research Acme 100% cotton shirts sold in Japan.\n"
     "Use only the Acme product page below. Exclude used items.\n"
     "Keep original price evidence and show any unmet conditions for review."
 )
@@ -28,13 +28,20 @@ EVIDENCE_URL = "https://catalog.example.test/search/acme"
 PREVIEW = {
     "summary": "Acme cotton shirt sources in Japan",
     "topic": {"industry": "Clothing", "product": "Cotton shirts", "market": "Japan"},
-    "categories": ["Shirts"], "include_terms": ["Acme"], "exclude_terms": ["used"],
+    "categories": ["Shirts"], "include_terms": [], "exclude_terms": [],
+    "conditions": [
+        {"field": "brand", "operator": "equals", "value": "Acme"},
+        {"field": "material", "operator": "equals", "value": "cotton 100%"},
+        {"field": "condition", "operator": "equals", "value": "new"},
+    ],
     "candidates": [{"name": "Acme cotton shirt", "url": PRODUCT_URL,
                     "evidence_url": EVIDENCE_URL, "reason": "Public product page", "kind": "product"}],
     "note": "Suggested reference; price not verified",
 }
 HTML = (b'<html><body><script type="application/ld+json">'
         b'{"@context":"https://schema.org","@type":"Product","name":"Acme cotton shirt",'
+        b'"brand":{"@type":"Brand","name":"Acme"},"material":"100% cotton",'
+        b'"itemCondition":"https://schema.org/NewCondition",'
         b'"offers":{"@type":"Offer","price":"19.00","priceCurrency":"JPY"}}'
         b'</script></body></html>')
 
@@ -105,7 +112,8 @@ def test_connected_preview_to_confirmed_collection_and_report(tmp_path, monkeypa
                 playwright.expect(page.locator("#plan-candidates a.plan-url")).to_have_count(2)
                 assert page.locator("#plan-candidates a.plan-url").first.get_attribute("href") == PRODUCT_URL
                 assert page.locator("#plan-product").input_value() == "Cotton shirts"
-                assert page.locator("#plan-exclude").input_value() == "used"
+                assert page.locator("#plan-exclude").input_value() == ""
+                assert get_plan(workspace, draft["id"])["plan"]["conditions"] == PREVIEW["conditions"]
                 assert get_plan(workspace, draft["id"])["plan"]["request_text"] == REQUEST
                 page.screenshot(path=str(artifacts / "research-plan-desktop.png"), full_page=True)
 
@@ -118,6 +126,7 @@ def test_connected_preview_to_confirmed_collection_and_report(tmp_path, monkeypa
                 approved = final["research_plans"]["plans"][0]
                 assert approved["state"] == "confirmed"
                 assert approved["request_text"] == REQUEST
+                assert approved["conditions"] == PREVIEW["conditions"]
                 assert confirmed_snapshot(workspace, approved["id"], approved["revision"]) == approved
                 assert (workspace / "research.json").is_file()
                 jobs = [job for job in final["jobs"] if job["operation"] == "research_plan"]
@@ -129,9 +138,12 @@ def test_connected_preview_to_confirmed_collection_and_report(tmp_path, monkeypa
                 assert result["plan_revision"] == approved["revision"]
                 assert result["result"]["coverage"]
                 assert result["result"]["coverage"][0]["url"] == PRODUCT_URL
+                assert result["result"]["coverage"][0]["scope_counts"]["matched"] == 1
+                assert result["result"]["coverage"][0]["scope_counts"]["unknown"] == 0
                 rows = result_observations(workspace, job)
                 assert rows["total"] == 1
                 assert rows["rows"][0]["raw_fields"]["name"] == "Acme cotton shirt"
+                assert rows["rows"][0]["status"] == "review"
                 report = Path(result_report(workspace, job)["path"])
                 assert report.is_file() and report.stat().st_size > 0
                 from openpyxl import load_workbook
@@ -143,6 +155,8 @@ def test_connected_preview_to_confirmed_collection_and_report(tmp_path, monkeypa
                 playwright.expect(page.locator("#job-detail .plan-coverage-row")).to_have_count(1)
                 playwright.expect(page.locator("#job-detail table tbody tr")).to_have_count(1)
                 detail_text = page.locator("#job-detail").inner_text()
+                assert "Product condition checks" in detail_text
+                assert "matched" in detail_text.lower()
                 assert all(key not in detail_text for key in
                            ("plan.scopeNote", "plan.scopeBound", "plan.scopeDetails"))
                 with page.expect_download() as download_event:

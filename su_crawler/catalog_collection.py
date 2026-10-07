@@ -9,6 +9,7 @@ from collections import deque
 from dataclasses import asdict, replace
 import json
 import math
+import re
 from pathlib import Path
 import time
 from urllib.parse import urljoin, urlsplit
@@ -22,6 +23,9 @@ from .pipeline import execute, _candidate_quality, _has_sufficient_evidence
 from .research import _atomic_write
 from .research_plans import canonical_url
 from .site_collection import HOST_ADAPTERS, _ready_recipe
+from .scope_conditions import assess_conditions, normalize_conditions, normalize_text
+from .catalog_checkpoint import read_checkpoint, write_checkpoint
+from .storage import Store
 
 
 def _url(value: str) -> str:
@@ -93,6 +97,8 @@ def _jsonld_candidates(result: FetchResult) -> list[Candidate]:
                 add(key, node.get(key), at=f"Product.{key}")
             add("manufacturer", _named(node.get("manufacturer")), at="Product.manufacturer")
             add("brand", _named(node.get("brand")), at="Product.brand")
+            add("seller", _named(offer.get("seller")), at="Offer.seller")
+            add("condition", node.get("itemCondition"), at="Product.itemCondition")
             for key in ("category", "color", "size", "material", "pattern", "weight"):
                 add(key, node.get(key), spec=True, at=f"Product.{key}")
             for key in ("color", "size", "material"):
@@ -104,6 +110,7 @@ def _jsonld_candidates(result: FetchResult) -> list[Candidate]:
             add("offer_sku", offer.get("sku"), at="Offer.sku")
             add("option", offer.get("name"), at="Offer.name")
             add("availability", offer.get("availability"), at="Offer.availability")
+            add("offer_condition", offer.get("itemCondition"), at="Offer.itemCondition")
             add("valid_to", offer.get("priceValidUntil"), at="Offer.priceValidUntil")
             add("currency", offer.get("priceCurrency"), at="Offer.priceCurrency")
             if _type(offer, "AggregateOffer"):
@@ -138,6 +145,8 @@ def _links(result: FetchResult, page_url: str, host: str, excluded: set[str]):
             link = _url(urljoin(page_url, anchor["href"]))
         except ValueError:
             continue
+        if HOST_ADAPTERS.get(host) == "jetcar" and not re.fullmatch(r"/sub(?:0201|0301)/\d+/?", urlsplit(link).path):
+            continue
         if urlsplit(link).hostname == host and link not in excluded and link not in links:
             links.append(link)
     return links[:100]
@@ -146,7 +155,7 @@ def _links(result: FetchResult, page_url: str, host: str, excluded: set[str]):
 def _term_match(candidate: Candidate, includes: list[str], excludes: list[str]) -> bool:
     text = " ".join(str(v) for k, v in candidate.fields.items() if k not in {"price", "currency"} and v is not None)
     text += " " + " ".join(str(v) for v in candidate.specs.values())
-    text = text.casefold()
+    text = normalize_text(text)
     return (not includes or any(term in text for term in includes)) and not any(term in text for term in excludes)
 
 
@@ -172,7 +181,9 @@ def _products_for(source: Source, candidates: list[Candidate], fallback_name: st
 
 
 def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
-                 max_pages: int = 10, max_seconds: float = 120, collector=None) -> dict:
+                 max_pages: int = 10, max_seconds: float = 120, collector=None,
+                 checkpoint_id: str | None = None, retry_urls: list[str] | None = None,
+                 parent_checkpoint_id: str | None = None) -> dict:
     """Collect selected pages and at most ``max_pages`` same-host pages total.
 
     The returned coverage is page-scoped, never a claim about whole-site coverage.
@@ -190,8 +201,9 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     excludes = snapshot.get("exclude_terms", [])
     if any(not isinstance(terms, list) or any(not isinstance(x, str) for x in terms) for terms in (includes, excludes)):
         raise ValueError("Plan terms must be lists of strings")
-    includes = [x.strip().casefold() for x in includes if x.strip()]
-    excludes = [x.strip().casefold() for x in excludes if x.strip()]
+    includes = [normalize_text(x) for x in includes if x.strip()]
+    excludes = [normalize_text(x) for x in excludes if x.strip()]
+    conditions = normalize_conditions(snapshot.get("conditions", []))
     excluded_urls = {_url(x) for x in snapshot.get("excluded_urls", [])}
     selections = snapshot.get("candidates", [])
     if not isinstance(selections, list):
@@ -211,7 +223,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     chosen = list(dict.fromkeys(url for url, _ in selected if url not in excluded_urls))
     if not chosen:
         raise ValueError("Every selected page is excluded")
-    if len(chosen) > max_pages:
+    if len(chosen) > max_pages and retry_urls is None:
         raise ValueError("Selected pages exceed max_pages")
     allowed_hosts = {urlsplit(url).hostname for url in chosen}
     destination = Path(output_dir).resolve()
@@ -227,18 +239,69 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     for url, item in selected:
         if url in excluded_urls:
             coverage.append({"url": url, "status": "excluded", "reason": "excluded_urls", "candidate_id": item.get("id")})
-    while queue and len(visited) < max_pages and time.monotonic() < deadline:
+    binding = stable_id(snapshot, max_pages, max_seconds, retry_urls, parent_checkpoint_id)
+    state = read_checkpoint(destination, checkpoint_id) if checkpoint_id else None
+    if state and state["binding"] != binding:
+        raise ValueError("Collection checkpoint scope or budget changed")
+    if state and state.get("result"):
+        return state["result"]
+    captures = {}
+    elapsed, dispatched = 0.0, 0
+    if not state and retry_urls is not None:
+        parent = read_checkpoint(destination, parent_checkpoint_id) if parent_checkpoint_id else None
+        if not parent or not parent.get("result"):
+            raise ValueError("Retry requires a completed parent checkpoint")
+        targets = {_url(url) for url in retry_urls}
+        allowed = {item["url"] for item in parent["result"]["coverage"] if item["status"] != "excluded"}
+        if not targets or len(targets) > max_pages or not targets <= allowed or targets & excluded_urls:
+            raise ValueError("Retry URLs must be previously covered, approved pages within the new budget")
+        captures = {url: data for url, data in parent["captures"].items() if url not in targets}
+        coverage = [item for item in parent["result"]["coverage"] if item["url"] not in targets]
+        visited = set(captures)
+        queue = deque((url, "retry") for url in sorted(targets))
+        queued = set(visited) | targets
+    if state:
+        captures, coverage = state["captures"], state["coverage"]
+        queue, visited, queued = deque(state["queue"]), set(state["visited"]), set(state["queued"])
+        elapsed, dispatched = state["elapsed"], state["dispatched"]
+        if state.get("inflight"):
+            coverage.append({"url": state["inflight"], "status": "interrupted",
+                             "reason": "Worker stopped during this page; reserved time was charged. Retry explicitly."})
+    for data in captures.values():
+        sources.append(Source(**data["source"]))
+        products.extend(Product(**item) for item in data["products"])
+        prefetched[data["source"]["id"]] = [(FetchResult(**result), [Candidate(**c) for c in candidates])
+                                            for result, candidates in data["responses"]]
+    started = time.monotonic()
+    deadline = started + max(0, max_seconds - elapsed)
+    collection_finished = bool(state and state.get("collection_finished"))
+
+    def save(*, inflight=None, reserve=0, result=None):
+        if checkpoint_id:
+            write_checkpoint(destination, checkpoint_id, {
+                "binding": binding, "captures": captures, "coverage": coverage,
+                "queue": list(queue), "visited": sorted(visited), "queued": sorted(queued),
+                "elapsed": min(max_seconds, elapsed + time.monotonic() - started + reserve),
+                "dispatched": dispatched, "inflight": inflight, "result": result,
+                "collection_finished": collection_finished})
+
+    save()
+    while not collection_finished and queue and dispatched < max_pages and time.monotonic() < deadline:
         url, origin = queue.popleft()
         if url in visited:
             continue
         visited.add(url)
+        dispatched += 1
+        # On a hard crash, conservatively charge the maximum time reserved for
+        # the page. Completed pages refund unused time in the next checkpoint.
+        save(inflight=url, reserve=min(60, max(0, deadline - time.monotonic())))
         host = urlsplit(url).hostname
         adapter = HOST_ADAPTERS.get(host)
         source_id = "catalog_source_" + stable_id(url)
         source = Source(source_id, host, "web", url, [], allowed_domains=[host], adapter=adapter,
                         max_attempts=1, backends=["http", "playwright"], min_interval_seconds=0)
         responses = []
-        chosen_result, chosen_candidates, best_score = None, [], (-1,)
+        chosen_result, chosen_candidates, chosen_assessments, best_score = None, [], [], (-1,)
         for backend in source.backends:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -258,6 +321,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 except ValueError:
                     result = FetchResult(source_id, "policy_denied", backend, message="Invalid response URL")
             candidates = []
+            assessments = []
             if result.status == "fetched":
                 try:
                     candidates = extract(result, source) if adapter else []
@@ -265,15 +329,31 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                         candidates = _jsonld_candidates(result)
                 except Exception as exc:
                     result.message = f"Extraction needs review: {type(exc).__name__}"
-                candidates = [c for c in candidates if _term_match(c, includes, excludes)]
+                kept = []
                 for candidate in candidates:
+                    name = str(candidate.fields.get("name") or candidate.fields.get("model") or "")[:160]
+                    if not _term_match(candidate, includes, excludes):
+                        assessments.append({"name": name, "locator": candidate.locator, "status": "excluded",
+                                            "reason": "explicit text filter", "checks": []})
+                        continue
+                    assessment = assess_conditions(candidate, conditions)
+                    assessments.append({"name": name, "locator": candidate.locator,
+                                        "status": assessment["status"], "reason": assessment.get("reason", ""),
+                                        "checks": assessment["checks"]})
+                    if assessment["status"] == "excluded":
+                        continue
+                    candidate.derived_values["scope_assessment"] = assessment
                     flag = "Research-plan scope and natural-language conditions have not been independently verified"
                     if flag not in candidate.review_flags:
                         candidate.review_flags.append(flag)
+                    if assessment["status"] in {"unknown", "not_checked"}:
+                        candidate.review_flags.append("Structured product conditions lack evidence")
+                    kept.append(candidate)
+                candidates = kept
             responses.append((result, candidates))
             score = (bool(candidates), max((_candidate_quality(c) for c in candidates), default=(-1,)))
             if chosen_result is None or score > best_score:
-                chosen_result, chosen_candidates, best_score = result, candidates, score
+                chosen_result, chosen_candidates, chosen_assessments, best_score = result, candidates, assessments, score
             if result.status in {"policy_denied", "needs_auth"}:
                 break
             if candidates and _has_sufficient_evidence(candidates):
@@ -283,31 +363,78 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         result = chosen_result or responses[-1][0]
         candidates = chosen_candidates
         sources.append(source)
-        products.extend(_products_for(source, candidates, next((str(item.get("name")) for candidate_url, item in selected if candidate_url == url), topic["product"])))
+        page_products = _products_for(source, candidates, next((str(item.get("name")) for candidate_url, item in selected if candidate_url == url), topic["product"]))
+        products.extend(page_products)
         prefetched[source_id] = responses
+        captures[url] = {"source": asdict(source), "products": [asdict(p) for p in page_products],
+                         "responses": [(asdict(r), [asdict(c) for c in cs]) for r, cs in responses]}
         status = result.status if result.status != "fetched" else "visited" if candidates else "no_data"
+        scope_counts = {key: sum(item["status"] == key for item in chosen_assessments)
+                        for key in ("matched", "unknown", "excluded", "not_checked")}
         coverage.append({"url": url, "source_id": source_id, "origin": origin, "status": status,
-                         "products": len(candidates), "reason": result.message or ("No supported structured product data" if not candidates and status == "no_data" else "")})
-        if result.status == "fetched":
+                         "products": len(candidates), "products_extracted": len(chosen_assessments),
+                         "scope_counts": scope_counts, "scope_assessments": chosen_assessments[:100],
+                         "scope_assessments_truncated": max(0, len(chosen_assessments) - 100),
+                         "reason": result.message or ("No supported structured product data or no products satisfying the explicit scope" if not candidates and status == "no_data" else "")})
+        if result.status == "fetched" and retry_urls is None:
             for link in _links(result, result.final_url or url, host, excluded_urls):
                 if link not in visited and link not in queued and urlsplit(link).hostname in allowed_hosts:
                     queue.append((link, "discovered"))
                     queued.add(link)
-    for url, origin in queue:
-        if url not in visited:
-            coverage.append({"url": url, "origin": origin, "status": "unprocessed", "reason": "page or time budget reached"})
+        save()
+    if not collection_finished:
+        for url, origin in queue:
+            if url not in visited:
+                coverage.append({"url": url, "origin": origin, "status": "unprocessed", "reason": "page or time budget reached"})
+        collection_finished = True
+        # Seal the exact page set before constructing a run. If report writing
+        # is interrupted, a restart must not expand or change that run's config.
+        save()
     config = CollectionConfig(f"{topic['industry']} — {topic['product']} — {topic['market']}", products, sources,
-                              str(destination), base_dir, max_run_seconds=max(5, deadline - time.monotonic()))
-    run = execute(config, prefetched=prefetched)
+                              str(destination), base_dir, max_run_seconds=60)
+    run_id = "catalog_" + stable_id(checkpoint_id) if checkpoint_id else None
+    resume_id = None
+    if run_id:
+        store = Store(destination)
+        try:
+            if store.db.execute("SELECT 1 FROM runs WHERE id=?", (run_id,)).fetchone():
+                resume_id = run_id
+        finally:
+            store.close()
+    run = execute(config, prefetched=prefetched, resume_id=resume_id, new_run_id=run_id)
+    if parent_checkpoint_id:
+        # Supplemental evidence survives a partial retry as review-only history.
+        parent = read_checkpoint(destination, parent_checkpoint_id)
+        parent_run = parent["result"]["run_id"]
+        store = Store(destination)
+        try:
+            rows = store.db.execute("SELECT id,data FROM browser_submissions WHERE run_id=?", (parent_run,)).fetchall()
+            with store.db:
+                for original in rows:
+                    row = json.loads(original["data"])
+                    row["id"] = "browser_" + stable_id(run["id"], original["id"])
+                    row["run_id"] = run["id"]
+                    row["derived_values"]["parent_submission_id"] = original["id"]
+                    store.db.execute("INSERT OR IGNORE INTO browser_submissions(id,run_id,data) VALUES(?,?,?)",
+                                     (row["id"], run["id"], json.dumps(row, ensure_ascii=False)))
+            if rows:
+                from .pipeline import report_for_run
+                run = report_for_run(config, store, run["id"])
+        finally:
+            store.close()
     config_path = destination / f"collection-{run['id']}.json"
     document = asdict(config)
     document.pop("base_dir")
     _atomic_write(config_path, document)
-    status = "partial" if any(x["status"] in {"unprocessed", "blocked", "policy_denied", "needs_auth", "failed", "timeout", "tool_unavailable", "budget_exhausted"} for x in coverage) else "needs_review" if any(x["status"] == "no_data" for x in coverage) or run["status"] != "completed" else "completed"
-    return {"run_id": run["id"], "output_dir": str(destination), "report_path": run["report_path"],
+    status = "partial" if any(x["status"] in {"unprocessed", "interrupted", "blocked", "policy_denied", "needs_auth", "failed", "timeout", "tool_unavailable", "budget_exhausted"} for x in coverage) else "needs_review" if any(x["status"] == "no_data" or any(x.get("scope_counts", {}).get(key, 0) for key in ("unknown", "excluded", "not_checked")) for x in coverage) or run["status"] != "completed" else "completed"
+    result = {"run_id": run["id"], "output_dir": str(destination), "report_path": run["report_path"],
             "status": status, "coverage": coverage, "config_path": str(config_path),
             "plan_scope": {"request_text": snapshot.get("request_text", ""), "topic": topic,
                            "categories": snapshot.get("categories", []), "include_terms": snapshot.get("include_terms", []),
-                           "exclude_terms": snapshot.get("exclude_terms", [])},
+                           "exclude_terms": snapshot.get("exclude_terms", []), "conditions": conditions},
             "scope": "Visited pages only; unrelated same-host navigation links may be visited within the page budget. No whole-site completeness claim.",
-            "scope_note": "Research-plan scope and natural-language conditions have not been independently verified."}
+            "scope_note": "Coverage distinguishes visited pages, extracted products, explicit condition matches, unknowns, and exclusions. Only fields present in product evidence were checked. Other natural-language and commercial conditions still require review."}
+    result["budget"] = {"pages_used": dispatched, "max_pages": max_pages,
+                        "seconds_used": min(max_seconds, elapsed + time.monotonic() - started), "max_seconds": max_seconds}
+    save(result=result)
+    return result

@@ -70,6 +70,12 @@ class Store:
         CREATE TABLE IF NOT EXISTS source_snapshots (
             cache_key TEXT PRIMARY KEY, data TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS catalog_checkpoints (
+            id TEXT PRIMARY KEY, data TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS browser_submissions (
+            id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), data TEXT NOT NULL
+        );
         """)
 
     def close(self):
@@ -100,7 +106,9 @@ class Store:
         return [dict(r) for r in self.db.execute("SELECT * FROM tasks WHERE run_id=? ORDER BY source_id,product_id", (run_id,))]
 
     def observations(self, run_id: str) -> list[dict]:
-        return [json.loads(r[0]) for r in self.db.execute("SELECT data FROM observations WHERE run_id=? ORDER BY id", (run_id,))]
+        return [json.loads(r[1]) for r in self.db.execute(
+            "SELECT id,data FROM observations WHERE run_id=? UNION ALL SELECT id,data FROM browser_submissions WHERE run_id=? ORDER BY id",
+            (run_id, run_id))]
 
     def update_task(self, task_id: str, status: str, reason: str = "", backend: str | None = None, attempt: bool = False):
         self.db.execute("UPDATE tasks SET status=?, reason=?, backend=?, updated_at=?, attempts=attempts+? WHERE id=?",

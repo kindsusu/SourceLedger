@@ -307,7 +307,7 @@ def execute_job(root: str | Path, operation: str, args: dict[str, Any], *, job_i
         return execute_generation(root, args)
     if operation in {"plan_preview", "research_plan"}:
         from .plan_jobs import execute_plan_job
-        return execute_plan_job(root, operation, args)
+        return execute_plan_job(root, operation, args, job_id=job)
     with workspace_guard(root) as base:
         clean = validate_job_args(base, operation, args)
         fingerprint = _require_current_workspace(base, clean.pop("workspace_fingerprint", None))
@@ -448,7 +448,10 @@ def result_observations(root: str | Path, job: dict[str, Any], *, offset: int = 
         rows = store.observations(str(result["run_id"]))
     finally:
         store.close()
-    return {"total": len(rows), "offset": offset, "limit": limit, "rows": rows[offset:offset + limit]}
+    from .result_view import build_result_view
+    presentation = build_result_view(rows)
+    return {**presentation, "total": len(presentation["rows"]), "offset": offset, "limit": limit,
+            "rows": presentation["rows"][offset:offset + limit], "total_records": len(rows)}
 
 
 def result_report(root: str | Path, job: dict[str, Any]) -> dict[str, Any]:

@@ -204,7 +204,7 @@ def test_switch_preserves_forms_candidates_and_machine_values(localized_ui, tmp_
                 expect(page.locator('#advanced-fields input[name="max_tasks"]')).to_have_value("7")
                 cells = page.locator("#job-detail table tbody tr").first.locator("td")
                 expect(cells.nth(2)).to_have_text("Observed")
-                expect(cells.nth(3)).to_have_text("1000.50")
+                expect(cells.nth(3)).to_have_text("1,000.50")
                 expect(cells.nth(4)).to_have_text("—")
                 expect(cells.nth(5)).to_have_text("USD")
                 expect(cells.nth(7)).not_to_have_text("needs_review")

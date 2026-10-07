@@ -8,6 +8,8 @@
   const writeLines = value => Array.isArray(value) ? value.join("\n") : "";
   const apiCall = (path, body) => api(path, { method: "POST", body });
   const safeLink = value => safeWebUrl(value);
+  const conditionFields = ["brand", "manufacturer", "seller", "model", "material", "condition", "category", "name", "other"];
+  const conditionOperators = ["equals", "not_equals", "contains", "not_contains"];
 
   function error(message) {
     const target = $("plan-error");
@@ -24,7 +26,90 @@
   function syncControls() {
     const disabled = ui.busy || !ready();
     for (const id of ["plan-create", "plan-save", "plan-preview", "plan-change", "plan-start", "plan-copy", "plan-new-request", "plan-history"]) $(id).disabled = disabled;
-    $("plan-add-form").querySelector('button[type="submit"]').disabled = disabled;
+    $("plan-add-form").querySelector('button[type="submit"]').disabled = disabled || !safeLink($("plan-add-form").elements.url.value.trim());
+    $("plan-change").disabled = disabled || !$("plan-change-text").value.trim();
+    $("plan-condition-add").disabled = disabled || conditionRows().length >= 20;
+    for (const button of document.querySelectorAll("[data-condition-remove]")) button.disabled = disabled;
+    const reasons = readinessReasons();
+    $("plan-start").disabled = disabled || reasons.length > 0;
+    $("plan-readiness").textContent = ui.plan ? (reasons.length ? tr("readinessMissing", { fields: reasons.join("; ") }) : tr("readinessReady")) : "";
+    for (const field of ["industry", "product", "market"]) {
+      const input = $(`plan-${field}`);
+      input.setAttribute("aria-invalid", ui.plan && !input.value.trim() ? "true" : "false");
+    }
+    $("plan-region-help").hidden = !ui.plan || !!$("plan-market").value.trim();
+  }
+  function readinessReasons() {
+    if (!ui.plan) return [];
+    const reasons = [];
+    if (!$("plan-industry").value.trim()) reasons.push(tr("readinessIndustry"));
+    if (!$("plan-product").value.trim()) reasons.push(tr("readinessProduct"));
+    if (!$("plan-market").value.trim()) reasons.push(tr("readinessRegion"));
+    const selected = [...document.querySelectorAll("[data-plan-select]:checked")];
+    if (!selected.length) reasons.push(tr("readinessSource"));
+    if (selected.length > 50) reasons.push(tr("readinessTooMany"));
+    if (selected.some(box => !safeLink(ui.plan.candidates.find(item => item.id === box.dataset.planSelect)?.url))) reasons.push(tr("readinessInvalid"));
+    if (ui.stale) reasons.push(tr("readinessStale"));
+    if (ui.requestDirty && $("plan-request-text").value.trim() !== ui.plan.request_text) reasons.push(tr("readinessUnsaved"));
+    if ($("plan-change-text").value.trim() || [...$("plan-add-form").querySelectorAll("input")].some(input => input.value.trim())) reasons.push(tr("readinessUnsaved"));
+    if (conditionRows().some(row => !row.value)) reasons.push(tr("conditionIncomplete"));
+    return reasons;
+  }
+  function conditionRows() {
+    return [...$("plan-condition-rows").querySelectorAll(".plan-condition-row")].map(row => ({
+      field: row.querySelector('[data-condition="field"]').value,
+      operator: row.querySelector('[data-condition="operator"]').value,
+      value: row.querySelector('[data-condition="value"]').value.trim(),
+    }));
+  }
+  function conditionSelect(type, values, selected) {
+    const select = el("select");
+    select.dataset.condition = type;
+    select.dataset.planEdit = "";
+    select.setAttribute("aria-label", tr(type === "field" ? "conditionField" : "conditionOperator"));
+    for (const value of values) {
+      const option = el("option", "", tr(`${type === "field" ? "field" : "operator"}.${value}`));
+      option.value = value;
+      select.append(option);
+    }
+    select.value = values.includes(selected) ? selected : values[0];
+    return select;
+  }
+  function addCondition(condition = {}) {
+    const row = el("div", "plan-condition-row");
+    row.append(conditionSelect("field", conditionFields, condition.field), conditionSelect("operator", conditionOperators, condition.operator));
+    const value = el("input");
+    value.type = "text";
+    value.maxLength = 160;
+    value.dataset.condition = "value";
+    value.dataset.planEdit = "";
+    value.value = condition.value || "";
+    value.placeholder = tr("conditionValue");
+    value.setAttribute("aria-label", tr("conditionValue"));
+    const remove = el("button", "button button-secondary", tr("conditionRemove"));
+    remove.type = "button";
+    remove.dataset.conditionRemove = "";
+    row.append(value, remove);
+    $("plan-condition-rows").append(row);
+    syncControls();
+  }
+  function renderConditions(conditions) {
+    $("plan-condition-rows").replaceChildren();
+    for (const condition of Array.isArray(conditions) ? conditions : []) addCondition(condition);
+    $("plan-conditions-details").open = Array.isArray(conditions) && conditions.length > 0;
+  }
+  function translateConditionRows() {
+    for (const row of $("plan-condition-rows").querySelectorAll(".plan-condition-row")) {
+      for (const type of ["field", "operator"]) {
+        const select = row.querySelector(`[data-condition="${type}"]`);
+        select.setAttribute("aria-label", tr(type === "field" ? "conditionField" : "conditionOperator"));
+        for (const option of select.options) option.textContent = tr(`${type}.${option.value}`);
+      }
+      const value = row.querySelector('[data-condition="value"]');
+      value.placeholder = tr("conditionValue");
+      value.setAttribute("aria-label", tr("conditionValue"));
+      row.querySelector("[data-condition-remove]").textContent = tr("conditionRemove");
+    }
   }
   function setBusy(value) {
     ui.busy = value;
@@ -46,6 +131,7 @@
     $("plan-categories").value = writeLines(plan.categories);
     $("plan-include").value = writeLines(plan.include_terms);
     $("plan-exclude").value = writeLines(plan.exclude_terms);
+    renderConditions(plan.conditions);
     if (!ui.changeDirty) $("plan-change-text").value = "";
     renderPlan();
   }
@@ -87,6 +173,8 @@
     ui.selection.clear();
     $("plan-request-text").value = "";
     $("plan-change-text").value = "";
+    $("plan-add-form").reset();
+    $("plan-condition-rows").replaceChildren();
     $("plan-request-error").hidden = true;
     error("");
     renderHistory(plansFromBootstrap(ui.bootstrap));
@@ -172,7 +260,7 @@
       card.dataset.candidateId = candidate.id;
       const top = el("div", "plan-candidate-head");
       top.append(el("strong", "", candidate.name || candidate.url), el("span", "badge info", tr(`kind.${candidate.kind || "site"}`)));
-      card.append(top);
+      card.append(top, el("p", "plan-candidate-unverified", tr("candidateUnverified")));
       if (candidate.reason) card.append(el("p", "plan-reason", candidate.reason));
       const refs = el("div", "plan-refs");
       refs.append(el("span", "plan-ref-label", tr("sourceLink")), link(candidate.url, candidate.url || "—"));
@@ -201,7 +289,7 @@
   function handoffText() {
     const plan = ui.plan;
     if (!plan) return "";
-    return `Use SourceLedger host tools to prepare a research preview for plan ${plan.id} at revision ${plan.revision}. First call get_research_plan(plan_id=${plan.id}) and read its current revision, request, edited topic, summary, categories, text filters, selected and manually added candidates, and excluded_urls. Respect all of those choices. Search or browse for real product and source URLs. Preserve the full research request and its detailed conditions. Distinguish reference entities from research targets: for competitors of A, exclude A's own products and prices unless explicitly requested; for compare A and its competitors, include both. State targets and exclusions in summary and note, not literal text filters. Leave unspecified markets empty; never copy unrelated workspace defaults. If the relationship is ambiguous, leave candidates empty and explain the alternatives for review. Never invent URLs, identifiers, prices, currencies, or commercial terms. Never reintroduce an excluded URL. Submit only unverified suggestions; do not start research. Call submit_research_preview with plan_id=${plan.id}, expected_revision=${plan.revision}, and preview {summary, topic:{industry,product,market}, categories, include_terms, exclude_terms, candidates:[{name,url,evidence_url,reason,kind}], note}. If the current server revision differs from ${plan.revision}, stop and ask the user to review the updated plan. The user must review and explicitly confirm before start_research_plan. Include/exclude terms are literal text filters, not proof that detailed requirements are met.\n\nResearch request:\n${plan.request_text}\n\nCurrent topic: ${JSON.stringify(plan.topic || {})}\nCurrent summary: ${plan.summary || ""}\nCurrent categories: ${JSON.stringify(plan.categories || [])}\nCurrent include text: ${JSON.stringify(plan.include_terms || [])}\nCurrent exclude text: ${JSON.stringify(plan.exclude_terms || [])}\nSelected source URLs: ${JSON.stringify((plan.candidates || []).filter(item => item.selected).map(item => item.url))}\nManually added candidates: ${JSON.stringify((plan.candidates || []).filter(item => item.origin === "user").map(item => ({ name: item.name, url: item.url, selected: item.selected })))}\nRemoved source URLs: ${JSON.stringify(plan.excluded_urls || [])}`;
+    return `Use SourceLedger host tools to prepare a research preview for plan ${plan.id} at revision ${plan.revision}. First call get_research_plan(plan_id=${plan.id}) and read its current revision, request, edited topic, summary, categories, structured conditions, text filters, selected and manually added candidates, and excluded_urls. Respect all of those choices. Search or browse for real product and source URLs only after the research region is specified; if the region is blank, return an empty candidate list and ask the user to supply it. Preserve the full research request and its detailed conditions. Conditions describe one individual product requirement at a time. Keep geographic scope and competitor relationships in topic, summary, and note; never encode a comparison group or disjunction as a single manufacturer, brand, or seller. Distinguish reference entities from research targets: for competitors of A, exclude A's own products and prices unless explicitly requested; for compare A and its competitors, include both. State targets and exclusions in summary and note, not literal text filters. Never copy unrelated workspace defaults. If the relationship is ambiguous, leave candidates empty and explain the alternatives for review. Never invent URLs, identifiers, prices, currencies, or commercial terms. Never reintroduce an excluded URL. Submit only unverified suggestions; do not start research. Call submit_research_preview with plan_id=${plan.id}, expected_revision=${plan.revision}, and preview {summary, topic:{industry,product,market}, categories, conditions:[{field,operator,value}], include_terms, exclude_terms, candidates:[{name,url,evidence_url,reason,kind}], note}. If the current server revision differs from ${plan.revision}, stop and ask the user to review the updated plan. The user must review and explicitly confirm before start_research_plan. Include/exclude terms are literal text filters, not proof that detailed requirements are met.\n\nResearch request:\n${plan.request_text}\n\nCurrent topic: ${JSON.stringify(plan.topic || {})}\nCurrent summary: ${plan.summary || ""}\nCurrent categories: ${JSON.stringify(plan.categories || [])}\nCurrent structured conditions: ${JSON.stringify(plan.conditions || [])}\nCurrent include text: ${JSON.stringify(plan.include_terms || [])}\nCurrent exclude text: ${JSON.stringify(plan.exclude_terms || [])}\nSelected source URLs: ${JSON.stringify((plan.candidates || []).filter(item => item.selected).map(item => item.url))}\nManually added candidates: ${JSON.stringify((plan.candidates || []).filter(item => item.origin === "user").map(item => ({ name: item.name, url: item.url, selected: item.selected })))}\nRemoved source URLs: ${JSON.stringify(plan.excluded_urls || [])}`;
   }
   function renderAiPath() {
     const local = $("plan-ai-path").value === "local";
@@ -227,7 +315,9 @@
     const pending = ui.previewJob && ["queued", "running", "starting"].includes(ui.previewJob.status);
     const failed = ui.previewJob && ["failed", "interrupted"].includes(ui.previewJob.status);
     const failureDetail = typeof ui.previewJob?.error?.message === "string" ? ui.previewJob.error.message : "";
+    const missingRegion = !$("plan-market").value.trim();
     const message = ui.feedback || (pending ? tr("previewPending") : failed ? [tr("previewFailed"), failureDetail].filter(Boolean).join(" ")
+      : missingRegion ? tr("regionBeforeSources")
       : completedEmptyPreview() ? tr("previewEmpty") : plan.state === "preview" ? tr("previewReady") : "");
     const target = $("plan-status");
     target.replaceChildren();
@@ -241,18 +331,19 @@
     const plan = ui.plan;
     $("plan-workspace").hidden = !plan;
     $("plan-new-request").hidden = !plan;
-    if (!plan) return;
+    if (!plan) { syncControls(); return; }
     $("plan-status-title").textContent = plan.summary || tr("newPlan");
     $("plan-state-badge").textContent = tr(plan.state || "draft");
     if (!ui.dirty && !ui.stale) renderStatus();
     renderCandidates();
     updateBudget();
     $("plan-copy-text").textContent = handoffText();
+    syncControls();
   }
   function changes() {
     const plan = ui.plan;
     const choices = [...document.querySelectorAll("[data-plan-select]")];
-    return {
+    const changed = {
       summary: $("plan-summary").value.trim(),
       topic: Object.fromEntries(["industry", "product", "market"].map(field => [field, $(`plan-${field}`).value.trim()])),
       categories: lineValues($("plan-categories").value),
@@ -261,11 +352,15 @@
       selected_candidate_ids: choices.filter(box => box.checked).map(box => box.dataset.planSelect),
       removed_candidate_ids: [...ui.removed],
     };
+    const conditions = conditionRows();
+    if (JSON.stringify(conditions) !== JSON.stringify(plan.conditions || [])) changed.conditions = conditions;
+    return changed;
   }
   async function save(extra = {}) {
     if (!ui.plan) throw new Error(tr("noRequest"));
     if (ui.stale) throw new Error(tr("stale"));
     if (!ui.dirty && !Object.keys(extra).length) return ui.plan;
+    if (conditionRows().some(row => !row.value)) throw new Error(tr("conditionIncomplete"));
     const result = await apiCall("/api/plans/edit", { plan_id: ui.plan.id, expected_revision: ui.plan.revision, changes: { ...changes(), ...extra } });
     applyPlan(result.plan);
     return result.plan;
@@ -342,7 +437,17 @@
       }
     });
     $("plan-request-text").addEventListener("input", () => { ui.requestDirty = true; if (!ui.plan) ui.newRequestMode = true; });
-    $("plan-change-text").addEventListener("input", () => { ui.changeDirty = true; });
+    $("plan-request-text").addEventListener("input", syncControls);
+    $("plan-change-text").addEventListener("input", () => { ui.changeDirty = true; syncControls(); });
+    $("plan-add-form").addEventListener("input", syncControls);
+    $("plan-condition-add").addEventListener("click", () => { addCondition(); ui.dirty = true; });
+    $("plan-condition-rows").addEventListener("click", event => {
+      const button = event.target.closest("[data-condition-remove]");
+      if (!button) return;
+      button.closest(".plan-condition-row").remove();
+      ui.dirty = true;
+      syncControls();
+    });
     $("plan-request-form").addEventListener("submit", event => {
       event.preventDefault();
       const request = $("plan-request-text").value.trim();
@@ -361,10 +466,17 @@
       }, { request: true });
     });
     $("plan-workspace").addEventListener("input", event => {
-      if (event.target.matches("[data-plan-edit]")) ui.dirty = true;
+      if (event.target.matches("[data-plan-edit]")) {
+        ui.dirty = true;
+        if (event.target.id === "plan-market") renderStatus();
+        syncControls();
+      }
+    });
+    $("plan-workspace").addEventListener("change", event => {
+      if (event.target.matches("[data-plan-edit]")) { ui.dirty = true; syncControls(); }
     });
     $("plan-candidates").addEventListener("change", event => {
-      if (event.target.matches("[data-plan-select]")) { ui.selection.set(event.target.dataset.planSelect, event.target.checked); ui.dirty = true; ui.candidateFingerprint = null; updateBudget(); }
+      if (event.target.matches("[data-plan-select]")) { ui.selection.set(event.target.dataset.planSelect, event.target.checked); ui.dirty = true; ui.candidateFingerprint = null; updateBudget(); syncControls(); }
     });
     $("plan-candidates").addEventListener("click", event => {
       const button = event.target.closest("[data-plan-remove]");
@@ -373,6 +485,7 @@
       ui.dirty = true;
       renderCandidates();
       updateBudget();
+      syncControls();
     });
     $("plan-save").addEventListener("click", () => act(async () => { await saveIncludingRequest(); status(tr("saved")); await loadBootstrap({ quiet: true }); }));
     $("plan-preview").addEventListener("click", () => act(async () => { await saveIncludingRequest(); await preview(); }));
@@ -394,6 +507,7 @@
         if (!safeLink(url)) throw new Error(tr("invalidUrl"));
         await saveIncludingRequest({ added_candidates: [{ name: String(data.get("name") || "").trim() || url, url, evidence_url: url, reason: String(data.get("reason") || "").trim(), kind: "site" }] });
         form.reset();
+        syncControls();
         status(tr("saved"));
         await loadBootstrap({ quiet: true });
       });
@@ -437,6 +551,8 @@
     ui.historyFingerprint = null;
     renderHistory(plansFromBootstrap(ui.bootstrap));
     renderPlan();
+    translateConditionRows();
+    if (ui.plan) renderStatus();
     // Static labels are translated by the shared i18n layer; inputs are intentionally untouched.
   }
   install();

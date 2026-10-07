@@ -60,6 +60,8 @@ Web execution requires the CLI installed and signed in on the computer running S
 
 Preview references are unverified and never become price observations. Add, remove, or select candidates and confirm the complete plan revision before starting collection. Collection visits selected pages and bounded same-host links, records coverage gaps, and produces SQLite evidence and XLSX. Generic JSON-LD Product/Offer extraction can preserve prices and attributes on other hosts, but embedded prices need review and are not comparable without display proof. Arbitrary page layouts and natural-language commercial-condition checks are not automated; missing prices, currencies, identifiers, and conditions remain missing.
 
+Research plans ask for a missing research region before suggesting sources. Editable product conditions are separate from optional literal filters; collection reports matched, unknown, excluded, and unchecked products without inventing missing evidence. The start button shows missing requirements, and source candidates are clearly separated from product checks.
+
 The advanced guided-research path uses only registered sources you select (up to 50) and has a 120-second budget. Plan collection uses a separate page budget (10 by default). Existing collection model calls remain opt-in and default to zero; the CLI agent example below retains its separate default of three sources.
 
 Start and stop the independent worker from the UI when queued work is needed. Closing the browser tab or the UI web server does not cancel jobs already owned by that worker. The UI and Codex/Claude MCP connector can share the same workspace and job history. A job marked `succeeded` completed its program execution; inspect its separate evidence status before treating a price as verified.
@@ -252,3 +254,5 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 Scanned-document OCR, autonomous browser navigation, rule recovery, and scheduled operation require further design and validation. ERP integration and analysis/simulation features are outside this scope.
 
 See [implementation status](docs/STATUS.md) for implemented scope and validation.
+
+MCP follow-up supports coverage-gap inspection, review-only browser evidence, partial retry and checkpoint resume. See [Evidence and recovery](docs/MCP_FOLLOWUP.md).
