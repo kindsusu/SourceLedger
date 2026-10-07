@@ -22,6 +22,8 @@ from .assistant_workspace import (
 from .connections import CLIENTS, connect
 from .research import _canonical_url, add_source, init_workspace, load_workspace, research_status, set_product
 from .recommendations import create_recommendation_request, list_recommendations, select_recommendations
+from .ai_providers import get_ai_configuration, save_ai_settings
+from .recommendation_jobs import latest_recommendation_jobs, queue_generation
 
 
 MAX_BODY_BYTES = 256 * 1024
@@ -222,6 +224,8 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             "worker": runtime_status(self.server.workspace),
             "jobs": list_jobs(self.server.workspace, limit=20),
             "mcp_available": importlib.util.find_spec("mcp") is not None,
+            "ai": get_ai_configuration(self.server.workspace),
+            "recommendation_jobs": latest_recommendation_jobs(self.server.workspace),
         }
 
     def do_GET(self) -> None:
@@ -325,6 +329,14 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
 
     def _post_route(self, path: str, value: dict[str, Any]) -> dict[str, Any]:
         base = self.server.workspace
+        if path == "/api/ai/settings":
+            self._fields(value, allowed={"provider", "model", "timeout_seconds"}, required={"provider"})
+            return save_ai_settings(base, value)
+        if path == "/api/recommendations/run":
+            self._fields(value, allowed={"request_id", "provider", "model", "timeout_seconds"},
+                         required={"request_id", "provider"})
+            job = queue_generation(base, value)
+            return {"job": job, "worker": start_worker(base)}
         if path == "/api/recommendations":
             self._fields(value, allowed={"query", "kind"}, required={"query"})
             return create_recommendation_request(base, query=value["query"], kind=value.get("kind", "keyword"))

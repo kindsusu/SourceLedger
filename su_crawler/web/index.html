@@ -115,13 +115,13 @@
               <form id="recommendation-form" class="card form-card" novalidate>
                 <div class="section-heading"><div><span class="eyebrow">AI suggestions</span><h3>Find sources by keyword</h3></div></div>
                 <label>Source keyword<input name="query" placeholder="e.g. servo motor distributors in South Korea" required></label>
-                <p class="hint">Create a request, then ask your connected Claude or Codex assistant to search and submit real source references. Review suggestions before adding them. Selection does not verify a source or its prices.</p>
+                <p class="hint">Create a request, then run it with a local AI CLI here or use your connected AI app. Review suggestions before adding them. Selection does not verify a source or its prices.</p>
                 <p class="form-error" data-form-error role="alert" hidden></p>
                 <button class="button button-secondary" type="submit">Create recommendation request</button>
               </form>
             </div>
-            <p id="recommendation-empty" class="workflow-hint">Create a company or keyword request to prepare a connected assistant handoff. Requested suggestions will appear here.</p>
-            <section id="recommendation-register" class="card recommendation-register" hidden><div class="section-heading"><div><span class="eyebrow">Assistant handoff</span><h3>Recommendation requests</h3></div></div><div id="recommendation-list" class="recommendation-list"></div></section>
+            <p id="recommendation-empty" class="workflow-hint">Create a company or keyword request to find source suggestions. Requests and unverified suggestions will appear here.</p>
+            <section id="recommendation-register" class="card recommendation-register" hidden><div class="section-heading"><div><span class="eyebrow">Source discovery</span><h3>Recommendation requests</h3></div></div><div id="recommendation-list" class="recommendation-list"></div></section>
             <section class="card source-register"><div class="section-heading source-heading"><div><span class="eyebrow">Research targets</span><h3>Registered sources</h3></div><label class="filter-label">Filter<span class="sr-only"> sources</span><input id="source-filter" type="search" placeholder="Name or host"></label></div><p id="source-selection-summary" class="hint" aria-live="polite"></p><div id="source-list" class="source-list"></div></section>
             <form id="identity-form" class="card form-card" novalidate>
                 <div class="section-heading"><div><span class="eyebrow">Product identity</span><h3>Exact matching fields</h3></div></div>
@@ -156,8 +156,20 @@
         </section>
 
         <section id="connections-view" class="view" data-view="connections" hidden>
-          <div class="hero-row compact"><div><span class="eyebrow accent">Local MCP</span><h2>Connections</h2><p class="lede">Connect an assistant client to this exact workspace without sharing credentials.</p></div></div>
+          <div class="hero-row compact"><div><span class="eyebrow accent">Local AI and MCP</span><h2>Connections</h2><p class="lede">Set a local CLI for web recommendations or connect an AI app to this workspace.</p></div></div>
           <div class="connections-layout">
+            <section class="card ai-settings-card"><div class="section-heading"><div><span class="eyebrow">Web recommendations</span><h3>Workspace AI default</h3></div></div>
+              <p class="hint">Use Codex CLI or Claude Code CLI installed and signed in on this computer. These model settings apply to web recommendations; choose your AI app's model in that app.</p>
+              <form id="ai-settings-form" class="form-card" novalidate>
+                <label>Provider<select name="provider" id="ai-provider"></select></label>
+                <p id="ai-provider-status" class="hint" role="status"></p>
+                <label>Model<select name="model_choice" id="ai-model-choice"></select></label>
+                <label id="ai-custom-model-label" hidden>Custom model ID<input name="custom_model" id="ai-custom-model" autocomplete="off" placeholder="Exact provider model ID"></label>
+                <details class="ai-advanced"><summary>Advanced timeout</summary><label>Timeout (seconds)<input name="timeout_seconds" id="ai-timeout" type="number" min="30" max="600" step="1" value="180" required></label></details>
+                <p class="form-error" data-form-error role="alert" hidden></p>
+                <button class="button button-primary" type="submit">Save AI settings</button>
+              </form>
+            </section>
             <section class="card"><div class="section-heading"><div><span class="eyebrow">Client configuration</span><h3>Generate a snippet</h3></div></div>
               <form id="connection-form" class="form-card inline-form"><label>Client<select name="client" id="connection-client"><option value="codex">Codex</option><option value="claude-code">Claude Code</option><option value="claude-desktop">Claude Desktop</option></select></label><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-primary" type="submit">Generate snippet</button></form>
               <div id="connection-result" hidden><div class="code-heading"><strong>Configuration snippet</strong><button id="copy-snippet" class="button button-secondary" type="button">Copy</button></div><pre tabindex="0"><code id="connection-snippet"></code></pre></div>

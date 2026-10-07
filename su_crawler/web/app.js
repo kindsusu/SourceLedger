@@ -22,6 +22,13 @@ const state = {
   sourceSelectionWorkspace: null,
   jobFingerprint: null,
   overviewFingerprint: null,
+  aiSettingsWorkspace: null,
+  aiSettingsSavedFingerprint: null,
+  aiProvidersFingerprint: null,
+  aiSettingsDirty: false,
+  recommendationRunPending: new Set(),
+  recommendationReceipts: new Map(),
+  recommendationRunErrors: new Map(),
 };
 
 const byId = (id) => document.getElementById(id);
@@ -100,6 +107,23 @@ function sources() {
 function recommendationRequests() {
   const requests = state.bootstrap?.recommendations?.requests;
   return Array.isArray(requests) ? requests : [];
+}
+
+function aiSettings() {
+  return state.bootstrap?.ai?.settings || { provider: "codex", model: "", timeout_seconds: 180 };
+}
+
+function aiProviders() {
+  return Array.isArray(state.bootstrap?.ai?.providers) ? state.bootstrap.ai.providers : [];
+}
+
+function aiProvider(id) {
+  return aiProviders().find((provider) => provider.id === id);
+}
+
+function aiModelLabel(providerId, modelId) {
+  if (!modelId) return "Provider default";
+  return aiProvider(providerId)?.models?.find((model) => model.id === modelId)?.label || modelId;
 }
 
 function selectedSourceIds() {
@@ -383,13 +407,15 @@ function renderRecommendations(force = false) {
   const requests = recommendationRequests();
   byId("recommendation-register").hidden = !isConfigured() || !requests.length;
   byId("recommendation-empty").hidden = !isConfigured() || Boolean(requests.length);
-  const fingerprint = JSON.stringify(requests);
+  const recommendationJobs = [...(state.bootstrap?.recommendation_jobs || []), ...jobs()]
+    .filter((job) => job.operation === "recommend");
+  const fingerprint = JSON.stringify([requests, recommendationJobs, aiSettings(), aiProviders(), [...state.recommendationRunPending]]);
   if (!force && fingerprint === state.recommendationFingerprint) return;
   state.recommendationFingerprint = fingerprint;
   const target = byId("recommendation-list");
   const active = document.activeElement?.closest?.("[data-candidate-id]");
   const focusedCandidate = active ? [active.dataset.candidateRequest, active.dataset.candidateId] : null;
-  const opened = new Set([...target.querySelectorAll(".recommendation-request")].filter((card) => card.querySelector("details")?.open).map((card) => card.dataset.requestId));
+  const opened = new Set([...target.querySelectorAll(".recommendation-request")].filter((card) => card.querySelector(".handoff details")?.open).map((card) => card.dataset.requestId));
   clear(target);
   if (!requests.length) {
     target.append(node("div", { className: "empty-inline" }, [node("strong", { text: "No recommendation requests" }), node("p", { text: "Enter a company name or keyword to prepare a connected assistant search." })]));
@@ -401,8 +427,33 @@ function renderRecommendations(force = false) {
     card.append(node("div", { className: "recommendation-head" }, [
       node("div", {}, [node("span", { className: "eyebrow", text: request.kind === "company" ? "Company lookup" : "Keyword search" }), node("h4", { text: request.query || "Untitled request", attrs: { tabindex: "-1" } }), node("small", { text: `Request ${requestId} · ${formatDate(request.created_at)}` })]), badge(request.status || "pending"),
     ]));
+    const job = recommendationJobs.find((item) => String(item.arguments?.request_id) === requestId)
+      || state.recommendationReceipts.get(requestId);
+    const runActive = state.recommendationRunPending.has(requestId) || ["queued", "running"].includes(job?.status);
+    const settings = aiSettings();
+    const provider = aiProvider(settings.provider);
+    const available = provider?.available === true;
+    const run = node("div", { className: "web-recommendation" }, [
+      node("div", {}, [
+        node("strong", { text: "Run in web UI" }),
+        node("p", { className: "hint", text: `${provider?.label || titleCase(settings.provider)} · ${aiModelLabel(settings.provider, settings.model)} · ${settings.timeout_seconds} seconds` }),
+        node("a", { text: "Change workspace default", attrs: { href: "#connections" } }),
+      ]),
+      node("button", { className: "button button-primary", type: "button", text: runActive ? "Recommendation running…" : job?.status === "failed" || job?.status === "interrupted" ? "Retry in web UI" : "Run in web UI", disabled: runActive || !available, attrs: { "data-run-recommendation": requestId } }),
+    ]);
+    if (!available) run.append(node("p", { className: "hint web-run-message", text: "Install and sign in to the selected CLI to run here. You can still use an AI app below." }));
+    if (state.recommendationRunErrors.has(requestId)) run.append(node("p", { className: "form-error", attrs: { role: "alert" } }, state.recommendationRunErrors.get(requestId)));
+    if (job) {
+      const requested = job.arguments || settings;
+      run.append(node("p", { className: "request-status", attrs: { role: "status" } }, [
+        badge(job.status), ` ${titleCase(requested.provider)} · ${aiModelLabel(requested.provider, requested.model)}${job.status === "succeeded" ? " · Review suggestions below." : ""}`,
+      ]));
+      if (!runActive && !state.recommendationRunErrors.has(requestId) && ["failed", "interrupted"].includes(job.status)) run.append(node("p", { className: "form-error", attrs: { role: "alert" } }, job.error?.message || (typeof job.error === "string" ? job.error : "The recommendation run stopped. Check the CLI setup, then retry.")));
+    } else if (runActive) run.append(node("p", { className: "request-status", attrs: { role: "status" } }, "Queueing recommendation…"));
+    card.append(run);
     const handoff = node("div", { className: "handoff" }, [
-      node("p", { text: "Use a connected Claude or Codex assistant to search, then submit candidates with source references. This page does not call an AI service." }),
+      node("strong", { text: "Use an AI app" }),
+      node("p", { text: "Copy this request into your connected Claude or Codex app. That app controls its own model and submits source references through MCP." }),
       node("button", { className: "button button-secondary", type: "button", text: "Copy request", attrs: { "data-copy-request": requestId } }),
       node("details", {}, [node("summary", { text: "View request text" }), node("pre", { text: recommendationHandoff(request) })]),
     ]);
@@ -410,7 +461,7 @@ function renderRecommendations(force = false) {
     card.append(handoff);
     if (request.note) card.append(node("p", { className: "hint", text: request.note }));
     const candidates = Array.isArray(request.candidates) ? request.candidates : [];
-    if (request.status === "pending" && !candidates.length) card.append(node("p", { className: "request-status", text: "Pending assistant suggestions. Copy this request into your connected assistant." }));
+    if (request.status === "pending" && !candidates.length) card.append(node("p", { className: "request-status", text: "No suggestions yet. Run in web UI or copy the request to an AI app." }));
     else if (!candidates.length) card.append(node("p", { className: "request-status", text: "No suggestions were returned. You can create another request or ask the assistant to search again." }));
     else {
       const list = node("div", { className: "candidate-list" });
@@ -560,7 +611,7 @@ function renderJobDetail() {
   const result = job.result || {};
   const actions = node("div", { className: "detail-actions" });
   const evidence = result.evidence_status || result.result?.status;
-  const resumable = job.status === "interrupted" || (job.operation === "agent" && evidence === "paused");
+  const resumable = job.operation !== "recommend" && (job.status === "interrupted" || (job.operation === "agent" && evidence === "paused"));
   if (resumable) actions.append(node("button", { className: "button button-secondary", type: "button", text: "Resume", attrs: { "data-resume-job": job.id } }));
   if (result.report_path) actions.append(node("a", { className: "button button-primary", text: "Download XLSX", attrs: { href: `/api/jobs/${encodeURIComponent(job.id)}/report` } }));
   const executionStatus = result.execution_status || job.status;
@@ -570,6 +621,10 @@ function renderJobDetail() {
   target.append(node("dl", { className: "detail-facts" }, [
     fact("Job state", job.status), fact("Execution", executionStatus), fact("Evidence", evidence || "Not available"),
     fact("Attempt", job.attempt ?? 0), fact("Created", formatDate(job.created_at)), fact("Updated", formatDate(job.updated_at)),
+  ]));
+  if (job.operation === "recommend") target.append(node("dl", { className: "detail-facts" }, [
+    fact("Requested provider", job.arguments?.provider), fact("Requested model", aiModelLabel(job.arguments?.provider, job.arguments?.model)),
+    fact("Actual model", result.result?.actual_model || "Not reported"),
   ]));
   if (job.error) target.append(node("div", { className: "detail-error", text: typeof job.error === "string" ? job.error : displayValue(job.error) }));
   if (result.execution_status === "succeeded") target.append(node("p", { className: "hint", text: "Execution succeeded only means the job completed. Accept evidence only after reviewing its evidence status and observations." }));
@@ -621,6 +676,46 @@ function renderConnections() {
   install.classList.toggle("notice-error", state.bootstrap?.mcp_available === false);
   install.title = state.bootstrap?.mcp_available === false ? "MCP support is not installed in this environment." : "MCP support is available.";
   renderClientTarget();
+  renderAiSettings();
+}
+
+function renderAiSettings() {
+  const workspaceKey = String(state.bootstrap?.workspace_root || "local");
+  const providerInput = byId("ai-provider");
+  const savedFingerprint = JSON.stringify(aiSettings());
+  const providersFingerprint = JSON.stringify(aiProviders());
+  if (state.aiSettingsWorkspace !== workspaceKey || (!state.aiSettingsDirty && (state.aiSettingsSavedFingerprint !== savedFingerprint || state.aiProvidersFingerprint !== providersFingerprint))) {
+    state.aiSettingsWorkspace = workspaceKey;
+    state.aiSettingsSavedFingerprint = savedFingerprint;
+    state.aiProvidersFingerprint = providersFingerprint;
+    state.aiSettingsDirty = false;
+    const providers = aiProviders();
+    clear(providerInput);
+    for (const provider of providers) providerInput.append(node("option", { value: provider.id, text: provider.label || titleCase(provider.id) }));
+    if (!providers.length) providerInput.append(node("option", { value: "codex", text: "Codex CLI" }), node("option", { value: "claude", text: "Claude Code CLI" }));
+    const settings = aiSettings();
+    providerInput.value = settings.provider;
+    if (!providerInput.value) providerInput.selectedIndex = 0;
+    byId("ai-timeout").value = String(settings.timeout_seconds ?? 180);
+    renderAiModelChoices(settings.model || "");
+  }
+  const provider = aiProvider(providerInput.value);
+  byId("ai-provider-status").textContent = provider?.available
+    ? `${provider.label || titleCase(provider.id)} installed. Sign-in is checked when you run a request, together with model access.`
+    : `${provider?.label || titleCase(providerInput.value)} unavailable.${provider?.message ? ` ${provider.message}` : " Install and sign in to its native CLI before running here."}`;
+}
+
+function renderAiModelChoices(savedModel = "") {
+  const providerId = byId("ai-provider").value;
+  const select = byId("ai-model-choice");
+  clear(select);
+  select.append(node("option", { value: "", text: "Provider default (CLI decides)" }));
+  for (const model of aiProvider(providerId)?.models || []) select.append(node("option", { value: model.id, text: model.label || model.id }));
+  select.append(node("option", { value: "__custom__", text: "Custom model ID…" }));
+  const known = [...select.options].some((option) => option.value === savedModel);
+  select.value = savedModel && !known ? "__custom__" : savedModel;
+  byId("ai-custom-model").value = savedModel && !known ? savedModel : "";
+  byId("ai-custom-model-label").hidden = select.value !== "__custom__";
 }
 
 function renderClientTarget() {
@@ -647,6 +742,7 @@ function setPending(form, pending) {
 function toast(message) {
   const item = node("div", { className: "toast", text: message });
   byId("toast-region").append(item);
+  while (byId("toast-region").childElementCount > 2) byId("toast-region").firstElementChild.remove();
   window.setTimeout(() => item.remove(), 4200);
 }
 
@@ -781,6 +877,31 @@ function installEvents() {
     card.querySelector("[data-add-request]").disabled = count === 0;
   });
   byId("recommendation-list").addEventListener("click", async (event) => {
+    const run = event.target.closest("[data-run-recommendation]");
+    if (run) {
+      const requestId = run.dataset.runRecommendation;
+      if (state.recommendationRunPending.has(requestId)) return;
+      const settings = aiSettings();
+      if (aiProvider(settings.provider)?.available !== true) return;
+      state.recommendationRunErrors.delete(requestId);
+      state.recommendationRunPending.add(requestId);
+      renderRecommendations(true);
+      try {
+        const result = await api("/api/recommendations/run", { method: "POST", body: {
+          request_id: requestId, provider: settings.provider, model: settings.model,
+          timeout_seconds: settings.timeout_seconds,
+        } });
+        if (result?.job) state.recommendationReceipts.set(requestId, result.job);
+        toast("Recommendation queued. Review its suggestions when the run succeeds.");
+        await loadBootstrap({ quiet: true });
+      } catch (error) {
+        state.recommendationRunErrors.set(requestId, error.message);
+      } finally {
+        state.recommendationRunPending.delete(requestId);
+        renderRecommendations(true);
+      }
+      return;
+    }
     const copy = event.target.closest("[data-copy-request]");
     if (copy) {
       const request = recommendationRequests().find((item) => String(item.id) === copy.dataset.copyRequest);
@@ -850,6 +971,30 @@ function installEvents() {
   byId("connection-form").addEventListener("submit", (event) => {
     event.preventDefault(); const form = event.currentTarget; const data = new FormData(form);
     submit(form, async () => { const result = await api("/api/connections", { method: "POST", body: { client: String(data.get("client")) } }); byId("connection-snippet").textContent = String(result.snippet || ""); byId("connection-result").hidden = false; }, "Connection snippet generated.");
+  });
+  byId("ai-settings-form").addEventListener("input", () => { state.aiSettingsDirty = true; });
+  byId("ai-settings-form").addEventListener("change", () => { state.aiSettingsDirty = true; });
+  byId("ai-provider").addEventListener("change", () => { renderAiModelChoices(); renderAiSettings(); });
+  byId("ai-model-choice").addEventListener("change", () => {
+    const custom = byId("ai-model-choice").value === "__custom__";
+    byId("ai-custom-model-label").hidden = !custom;
+    if (custom) byId("ai-custom-model").focus();
+  });
+  byId("ai-settings-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const model = data.get("model_choice") === "__custom__"
+      ? String(data.get("custom_model") || "").trim() : String(data.get("model_choice") || "");
+    const timeout = Number(data.get("timeout_seconds"));
+    if (data.get("model_choice") === "__custom__" && !model) { showFormError(form, "Enter an exact model ID."); byId("ai-custom-model").focus(); return; }
+    if (!Number.isInteger(timeout) || timeout < 30 || timeout > 600) { showFormError(form, "Enter a timeout from 30 to 600 seconds."); byId("ai-timeout").focus(); return; }
+    const settings = { provider: String(data.get("provider")), model, timeout_seconds: timeout };
+    submit(form, async () => {
+      const result = await api("/api/ai/settings", { method: "POST", body: settings });
+      state.aiSettingsDirty = false;
+      return result;
+    }, "Workspace AI settings saved.");
   });
   byId("connection-client").addEventListener("change", () => {
     renderClientTarget();

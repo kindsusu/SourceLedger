@@ -181,7 +181,21 @@ def create_recommendation_request(root: str | Path, *, query: str, kind: str = "
         return {"request": request}
 
 
-def submit_recommendations(root: str | Path, *, request_id: str, candidates: list[dict], note: str = "") -> dict[str, Any]:
+def request_fingerprint(request: dict[str, Any]) -> str:
+    """Pin discovery inputs without invalidating jobs when candidates are reviewed."""
+    return _fingerprint({key: request[key] for key in ("id", "query", "kind", "topic_fingerprint")})
+
+
+def get_recommendation_request(root: str | Path, request_id: str) -> dict[str, Any]:
+    with workspace_guard(root) as base:
+        workspace = research.load_workspace(research_path(base))
+        request = _request(_load(_sidecar(base)), request_id)
+        _check_topic(request, workspace)
+        return request
+
+
+def submit_recommendations(root: str | Path, *, request_id: str, candidates: list[dict], note: str = "",
+                           expected_fingerprint: str | None = None) -> dict[str, Any]:
     note = _text(note, "note", 2000, empty=True)
     if not isinstance(candidates, list) or len(candidates) > MAX_CANDIDATES:
         raise ValueError("candidates must be a list with at most 50 entries")
@@ -198,6 +212,8 @@ def submit_recommendations(root: str | Path, *, request_id: str, candidates: lis
         document = _load(path)
         request = _request(document, request_id)
         _check_topic(request, workspace)
+        if expected_fingerprint is not None and request_fingerprint(request) != expected_fingerprint:
+            raise ValueError("Recommendation request changed during generation; submit a new job")
         known = {item["url"] for item in request["candidates"]}
         additions = []
         for item in normalized:

@@ -31,7 +31,7 @@ The second command opens the local browser UI. Enter the industry, product, and 
 
 The launchers use the repository `.venv` by location, so Windows does not need PowerShell activation or an execution-policy change. The block above is for Command Prompt; in PowerShell use `.\setup.cmd` and `.\source-ledger.cmd`. On macOS/Linux, run `bash setup.sh` followed by `bash source-ledger.sh`. A repository launcher with no arguments opens the UI.
 
-The core installation is enough for the UI and local-file workflows. Install optional Playwright collection and local AI connections when needed:
+The core installation is enough for the UI and local-file workflows. Install optional Playwright collection and MCP support when needed. For web UI recommendations, separately install and sign in to [Codex CLI](https://developers.openai.com/codex/cli/) or [Claude Code](https://code.claude.com/docs/en/setup) using the providers’ official instructions:
 
 ```powershell
 .\setup.cmd --browser --mcp
@@ -46,9 +46,18 @@ The browser UI is the primary local starting point in 0.5. It provides four area
 - **Overview** — first-run setup, research readiness, and independent-worker controls.
 - **Sources** — exact product identity, direct URL registration, company/keyword recommendation requests, candidate selection, bounded discovery, and extraction proposals.
 - **Runs** — queued-job status, evidence status, paginated observations, and registered XLSX reports.
-- **Connections** — copyable Codex, Claude Code, and Claude Desktop settings. It does not rewrite client settings.
+- **Connections** — copyable AI-app settings and optional Codex CLI or Claude Code CLI provider settings. It does not rewrite client settings.
 
-For recommendations, copy the saved request into a connected AI client, review its returned URLs and references, and tick only the candidates to register. Select registered sources for guided research; the UI passes those explicit sources, up to 50, with a 120-second budget. You can add more sources later. Recommendations are unverified and never become price observations by selection alone. The SourceLedger UI and MCP connector make no embedded external search or model calls and require no paid API; the connected AI client's own plan and tool limits apply. The CLI agent example below retains its separate default of three sources.
+To run a recommendation, choose one of these paths:
+
+- **AI app:** Copy the request into your connected AI app and submit candidates through MCP. Choose the model in that app.
+- **Web UI:** In **Connections**, choose Codex CLI or Claude Code CLI and a model, then save. In **Sources**, choose **Run in web UI**. The worker starts automatically for this action.
+
+Web execution requires the CLI installed and signed in on the computer running SourceLedger; native CLI account usage applies. Choose the provider default, a suggested model, or a custom model ID. The timeout is 180 seconds by default and adjustable from 30 to 600 seconds. Web settings do not change the model in an open AI app. See [Browser UI](docs/WEB_UI.md) for setup and execution details.
+
+Review returned candidates and tick only the sources you want to register. They remain unverified; selecting them does not create price observations or start price collection.
+
+Guided research uses only the registered sources you select (up to 50) and has a 120-second budget. Existing collection model calls remain opt-in and default to zero; the CLI agent example below retains its separate default of three sources.
 
 Start and stop the independent worker from the UI when queued work is needed. Closing the browser tab or the UI web server does not cancel jobs already owned by that worker. The UI and Codex/Claude MCP connector can share the same workspace and job history. A job marked `succeeded` completed its program execution; inspect its separate evidence status before treating a price as verified.
 

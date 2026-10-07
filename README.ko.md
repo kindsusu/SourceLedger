@@ -31,7 +31,7 @@ source-ledger.cmd
 
 launcher는 위치 기준으로 프로젝트 `.venv`를 사용하므로 Windows에서 PowerShell 활성화나 실행 정책 변경이 필요 없습니다. 위 블록은 명령 프롬프트용이며 PowerShell에서는 `.\setup.cmd`와 `.\source-ledger.cmd`를 사용합니다. macOS/Linux에서는 `bash setup.sh` 다음 `bash source-ledger.sh`를 실행하세요. 저장소 launcher를 인수 없이 실행하면 UI가 열립니다.
 
-기본 설치만으로 UI와 로컬 파일 작업을 사용할 수 있습니다. Playwright 수집과 로컬 AI 연결이 필요할 때만 선택 기능을 설치하세요.
+기본 설치만으로 UI와 로컬 파일 작업을 사용할 수 있습니다. Playwright 수집과 MCP 연결은 필요할 때 선택 설치합니다. 웹 UI 추천 실행을 위해서는 공급자 공식 안내에 따라 [Codex CLI](https://developers.openai.com/codex/cli/) 또는 [Claude Code](https://code.claude.com/docs/en/setup)를 별도로 설치하고 로그인하세요.
 
 ```powershell
 .\setup.cmd --browser --mcp
@@ -46,9 +46,18 @@ launcher는 위치 기준으로 프로젝트 `.venv`를 사용하므로 Windows�
 - **Overview** — 최초 설정, 연구 준비 상태, 독립 worker 제어
 - **Sources** — 정확한 상품 식별자, URL 직접 등록, 회사·키워드 추천 요청과 후보 선택, 제한된 링크 발견과 추출 규칙 제안
 - **Runs** — 대기 작업 상태, 근거 상태, 페이지 단위 관측 조회, 등록된 XLSX 보고서
-- **Connections** — Codex, Claude Code, Claude Desktop용 복사 가능한 설정. 클라이언트 설정 파일을 직접 변경하지 않습니다.
+- **Connections** — AI 앱 연결용 복사 설정과 Codex CLI·Claude Code CLI 선택 공급자 설정. 클라이언트 설정 파일을 직접 변경하지 않습니다.
 
-추천 요청 문구를 연결된 AI 클라이언트에 복사하고, 반환된 URL·근거를 검토한 뒤 원하는 후보만 체크해 등록합니다. 등록된 출처 중 연구 대상을 선택하면 UI는 해당 출처 ID를 명시적으로 전달하며 최대 50개, 120초 한도로 실행합니다. 나중에 출처를 더 추가할 수 있습니다. 추천은 미검증 정보이며 후보를 선택하는 것만으로 가격 관측이 되지 않습니다. SourceLedger UI와 MCP 연결 자체는 외부 검색·모델을 호출하지 않고 유료 API도 요구하지 않습니다. 연결한 AI 클라이언트의 요금제·도구 제한은 별도로 적용됩니다. 아래 CLI agent 예시의 기본 출처 수 3개는 별개입니다.
+추천 실행은 다음 두 방법 중 하나를 선택합니다.
+
+- **AI 앱:** 요청을 연결된 AI 앱에 복사해 전달하고 MCP로 후보를 제출합니다. 모델은 해당 앱에서 선택합니다.
+- **웹 UI:** **Connections**에서 Codex CLI 또는 Claude Code CLI와 모델을 선택해 저장한 뒤, **Sources**에서 **Run in web UI**를 누릅니다. 이 동작은 worker를 자동으로 시작합니다.
+
+웹 실행에는 SourceLedger가 실행되는 PC의 CLI 설치·로그인이 필요하며, 해당 CLI의 계정 사용 조건이 적용됩니다. 공급자 기본 모델, 제안 목록 또는 직접 입력한 모델 ID를 사용할 수 있습니다. 실행 제한은 기본 180초이며 30~600초로 조정할 수 있습니다. 웹 설정은 열린 AI 앱의 모델을 바꾸지 않습니다. 자세한 설정은 [브라우저 UI 안내](docs/WEB_UI.ko.md)를 참고하세요.
+
+추천 결과를 검토한 뒤 등록할 출처만 체크하세요. 후보는 미검증 상태이며, 선택만으로 가격 관측이 생기거나 가격 수집이 시작되지 않습니다.
+
+안내형 연구는 선택한 등록 출처만 사용하며 최대 50개, 120초 한도로 실행합니다. 기존 수집 모델 호출은 계속 선택 사항이며 기본값은 0회입니다. 아래 CLI agent 예시의 기본 출처 수 3개는 별도 설정입니다.
 
 대기 작업을 실행할 때 UI에서 독립 worker를 시작·중지할 수 있습니다. 브라우저 탭이나 UI 웹 서버를 닫아도 worker가 맡은 작업은 취소되지 않습니다. UI와 Codex·Claude MCP 연결은 같은 워크스페이스와 작업 이력을 공유할 수 있습니다. 작업의 `succeeded`는 프로그램 실행 성공을 뜻하므로, 가격을 확인된 값으로 사용하기 전에 별도의 근거 상태를 확인해야 합니다.
 

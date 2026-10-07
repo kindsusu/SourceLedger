@@ -175,10 +175,18 @@ legend span { color: #7c898e; font-weight: 500; }
 .recommendation-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
 .recommendation-head h4 { margin: 5px 0; overflow-wrap: anywhere; }
 .recommendation-head small { color: var(--ink-soft); overflow-wrap: anywhere; }
+.web-recommendation { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px 18px; margin-top: 16px; padding: 15px; border: 1px solid #b8ddd0; border-radius: 8px; background: #f3faf6; }
+.web-recommendation > div, .web-recommendation > p { min-width: 0; }
+.web-recommendation strong, .handoff strong { font-size: 13px; }
+.web-recommendation .hint { margin: 5px 0 0; overflow-wrap: anywhere; }
+.web-recommendation a { min-height: 44px; display: inline-flex; align-items: center; font-size: 12px; font-weight: 750; }
+.web-recommendation > p { grid-column: 1 / -1; margin: 0; }
+.web-recommendation .request-status { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.web-recommendation .button { min-width: 148px; }
 .handoff { margin-top: 14px; padding: 14px; border-radius: 8px; background: var(--surface-muted); }
 .handoff p { margin-bottom: 10px; font-size: 12px; }
 .handoff details { margin-top: 12px; }
-.handoff summary { width: fit-content; cursor: pointer; color: var(--teal-dark); font-size: 12px; font-weight: 700; }
+.handoff summary { width: fit-content; min-height: 44px; display: flex; align-items: center; cursor: pointer; color: var(--teal-dark); font-size: 12px; font-weight: 700; }
 .handoff pre { max-height: 180px; }
 .request-status { margin: 16px 0 0; font-size: 12px; }
 .candidate-list { margin-top: 15px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); }
@@ -252,6 +260,12 @@ td { color: #34464e; overflow-wrap: anywhere; }
 
 .connections-layout { display: grid; grid-template-columns: minmax(400px, 1fr) minmax(400px, 1fr); gap: 18px; align-items: start; }
 .connections-layout > .card { padding: 26px; }
+.ai-settings-card { grid-column: 1 / -1; }
+.ai-settings-card > .hint { margin-bottom: 18px; }
+.ai-settings-card .form-card { max-width: 620px; padding: 0; }
+.ai-advanced { border-top: 1px solid var(--line); }
+.ai-advanced summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-size: 12px; font-weight: 750; }
+.ai-advanced label { max-width: 260px; margin-top: 8px; }
 .inline-form { padding: 0; grid-template-columns: minmax(180px, 1fr) auto; align-items: end; }
 .inline-form .form-error { grid-column: 1 / -1; }
 .code-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 25px; }
@@ -315,6 +329,8 @@ pre { max-height: 360px; overflow: auto; margin: 10px 0 0; padding: 17px; color:
   .setup-steps { margin-top: 25px; }
   .form-card, .overview-grid > .card, .source-register, .recommendation-register, .job-register, .job-detail, .connections-layout > .card { padding: 20px; }
   .recommendation-request { padding: 14px; }
+  .web-recommendation { grid-template-columns: 1fr; }
+  .web-recommendation .button { width: 100%; }
   .form-row, .advanced-form, .advanced-fields, .inline-form { grid-template-columns: 1fr; }
   .advanced-form > *, .inline-form > * { grid-column: 1 !important; }
   .source-heading { align-items: start; flex-direction: column; }

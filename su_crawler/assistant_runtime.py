@@ -17,7 +17,7 @@ from .models import utc_now
 from .research import _atomic_write, _locked
 
 
-OPERATIONS = frozenset({"discover", "propose", "agent", "collect_sites", "verify", "run", "export"})
+OPERATIONS = frozenset({"discover", "propose", "agent", "collect_sites", "verify", "run", "export", "recommend"})
 JOB_STATES = frozenset({"queued", "running", "succeeded", "failed", "interrupted"})
 MAX_ARGUMENT_BYTES = 256 * 1024
 MAX_JOBS_LIMIT = 100
@@ -272,6 +272,8 @@ def resume_job(root: str | Path, job_id: str) -> dict[str, Any]:
         job = _read_json(path)
         if job is None:
             raise FileNotFoundError(f"Unknown job: {job_id}")
+        if job.get("operation") == "recommend":
+            raise ValueError("AI recommendation jobs have no checkpoint; run a new request from Sources")
         result_path = path.with_name("result.json")
         result = _read_json(result_path)
         paused_agent = (job.get("status") == "succeeded" and job.get("operation") == "agent" and
@@ -427,7 +429,10 @@ def _finish_job(root: Path, job: dict[str, Any], token: str, *, result: dict[str
             current.pop("error", None)
         else:
             details = {"type": type(error).__name__}
-            if isinstance(error, (ValueError, FileNotFoundError)):
+            from .ai_providers import AIGenerationError
+            if isinstance(error, AIGenerationError):
+                details.update(code=error.code, message=error.safe_message)
+            elif isinstance(error, (ValueError, FileNotFoundError)):
                 details["message"] = ("Required workspace input was not found."
                                       if isinstance(error, FileNotFoundError) else
                                       "Job arguments or workspace inputs are invalid; review the job configuration.")

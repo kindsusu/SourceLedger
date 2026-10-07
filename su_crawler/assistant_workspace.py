@@ -302,6 +302,9 @@ def _require_current_workspace(root: Path, expected: str | None) -> str:
 def execute_job(root: str | Path, operation: str, args: dict[str, Any], *, job_id: str) -> dict[str, Any]:
     """Execute one runtime-owned job without accepting arbitrary paths or commands."""
     job = _job_id(job_id)
+    if operation == "recommend":
+        from .recommendation_jobs import execute_generation
+        return execute_generation(root, args)
     with workspace_guard(root) as base:
         clean = validate_job_args(base, operation, args)
         fingerprint = _require_current_workspace(base, clean.pop("workspace_fingerprint", None))

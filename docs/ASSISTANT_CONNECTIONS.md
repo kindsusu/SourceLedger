@@ -5,11 +5,13 @@
 In 0.5, the [browser UI](WEB_UI.md) can generate these settings from **Connections** and start the worker. The browser and assistant share one workspace root; the stdio connector itself remains independent of the web server. Keep using the CLI below when you want to install a generated setting directly.
 
 SourceLedger can expose one workspace to Codex, Claude Code, or Claude
-Desktop through a local stdio MCP server. The connector is local: it starts no
+Desktop through a local stdio MCP server. The connector itself is local: it starts no
 web server, does not upload the workspace, and does not enable paid search or
 model providers. A connected AI can use its own available search/browser tools;
-its plan and tool limits still apply. The collection worker is a separate local
-process, so an MCP client closing does not terminate a running job.
+its plan and tool limits still apply. Separately, the browser UI can explicitly run
+source recommendations through an installed Codex CLI or Claude Code CLI. The
+collection worker is a separate local process, so closing an MCP client does not
+terminate a job already owned by that worker.
 
 This guide describes the generated settings and CLI contract. It does **not**
 claim that every Codex or Claude graphical client, cloud session, web/mobile
@@ -122,7 +124,7 @@ The server provides workspace-scoped onboarding and source management, queues
 and returns job status, observations, report metadata, and a registered local
 XLSX resource for a completed report. Job inputs are bounded and remain inside
 the chosen workspace. Arbitrary commands, paths outside the workspace,
-provider configuration, and embedded model calls are rejected by this connector. A
+provider configuration, and embedded model calls are rejected by this connector. This MCP restriction does not apply to the separate, opt-in CLI recommendation action in the browser UI. A
 source candidate or proposal is never treated as a verified price observation.
 
 The generated server command is equivalent to:
@@ -149,6 +151,12 @@ demonstrate a live Codex, Claude Code, or Claude Desktop GUI connection; use
 the clients' official local MCP instructions when their settings UI differs: [Codex](https://developers.openai.com/codex/mcp),
 [Claude Code](https://code.claude.com/docs/en/mcp), and
 [MCP local-server guidance](https://modelcontextprotocol.io/docs/develop/connect-local-servers).
+
+## Web UI CLI recommendations
+
+The browser UI also supports an explicit **Run in web UI** action for a saved source recommendation request. In **Connections**, select the installed Codex CLI or Claude Code CLI, choose its provider-default model or enter a model ID, set a timeout from 30 to 600 seconds (default 180), and save. The CLI must be installed and logged in on the computer running SourceLedger. See the providers’ [Codex CLI](https://developers.openai.com/codex/cli/) and [Claude Code setup](https://code.claude.com/docs/en/setup) instructions. Availability reports installation only; authentication is checked when the job runs. Native CLI authentication and account usage rules apply. SourceLedger does not store API keys, install or log in to the CLI, or silently fall back to another provider. This setting does not change the model in an open desktop conversation.
+
+Running a request queues a local worker job. It only returns unverified recommendation candidates for manual review and selection in Sources; it does not start a price collection job or create price observations. The provider CLI may access web pages while searching. Existing collection model calls remain opt-in and default to zero.
 
 The connection is not a cloud deployment. Codex/Claude web or mobile access,
 remote artifact download, direct reuse of a host browser session, scheduling,

@@ -42,7 +42,7 @@ The core installation is sufficient for the UI. Run `setup.cmd --browser` when P
 
 1. Open **Overview** and enter the industry, product, and market. SourceLedger does not ask for an analysis purpose.
 2. Open **Sources** and register a company/site URL directly, or enter only a company name or a keyword to prepare an AI recommendation request. Registration does not contact a source.
-3. For a request, copy its prompt into a connected Codex or Claude assistant, review its returned candidates, and tick only the sources you want to add. You can repeat this to add more sources.
+3. For a recommendation request, either copy its prompt into a connected AI app and submit candidates through MCP, or choose **Run in web UI** to queue it for the configured local Codex CLI or Claude Code CLI. Review candidates and tick only the sources you want to add.
 4. Before guided research, enter exact product identifiers such as a model, SKU, or catalog number. No identifier is inferred from the product name. Recommendation requests and source selection do not require these identifiers.
 5. Select registered sources, start the independent worker, and queue a guided research run from **Runs**.
 6. Use **Runs** to inspect execution status, evidence status, observations, missing values, and XLSX output.
@@ -57,11 +57,11 @@ Overview shows onboarding state, research blockers, source counts, recent jobs, 
 
 ### Sources
 
-Sources manages exact product identity and registered research targets. A supplied URL registers a company/site directly; a company name without a URL creates a request to find its real site. A keyword creates a request for related sources. Neither request starts an AI client or performs a search. Copy the request text into a connected Codex or Claude assistant; it may use its own available search/browser tools and submit named URLs with reasons and evidence references. If search is unavailable or yields no results, the assistant can submit an empty list with a note.
+Sources manages exact product identity and registered research targets. A supplied URL registers a company/site directly; a company name without a URL creates a request to find its real site. A keyword creates a request for related sources. Creating a request does not start an AI client or perform a search; choose **Run in web UI** to explicitly queue CLI execution. Copy the request text into a connected Codex or Claude assistant; it may use its own available search/browser tools and submit named URLs with reasons and evidence references. If search is unavailable or yields no results, the assistant can submit an empty list with a note.
 
-Recommendations remain separate from registered sources and price observations. Their reasons and reference URLs are assistant-supplied, unverified information. Review candidates and use their checkboxes to add only the intended sources. You can request and add more later. From a registered source, the UI can queue bounded same-host link discovery or an extraction proposal; these too remain candidates or proposed rules, not verified prices.
+Recommendations remain separate from registered sources and price observations. Their reasons and reference URLs are unverified information. Review candidates and use their checkboxes to add only the intended sources. You can request and add more later. **Run in web UI** requires the official Codex CLI or Claude Code CLI installed and logged in on the computer running SourceLedger. Configure the provider, provider-default or explicit model ID, and timeout in **Connections** (30–600 seconds, default 180), then save. Availability reflects CLI installation; authentication is checked when the request runs. Native CLI authentication and account usage apply; SourceLedger does not store API keys, install or log in to a CLI, or silently fall back to another provider. These settings do not change the model in an open desktop conversation. Each request must be explicitly run; it queues a local worker job and does not start a price collection job. The provider CLI may access web pages while searching. From a registered source, the UI can queue bounded same-host link discovery or an extraction proposal; these too remain candidates or proposed rules, not verified prices.
 
-Select registered sources with their checkboxes before queuing guided research. The UI passes those explicit source IDs, with a limit of 50 sources and a 120-second budget. This queued research needs the worker; creating requests and selecting recommendations do not. SourceLedger's UI and MCP connector make no embedded external search or model calls, and no paid API is required by the connector. The connected AI client's own plan and tool limits still apply. Missing prices, currencies, identifiers, and commercial conditions remain missing.
+Select registered sources with their checkboxes before queuing guided research. The UI passes those explicit source IDs, with a limit of 50 sources and a 120-second budget. This queued research needs the worker; creating requests and selecting recommendations do not. Web UI recommendation execution is an explicit external model call through the selected CLI. Existing collection model calls remain opt-in and default to zero. No model call is made in the manual AI-app handoff path by SourceLedger; the host app's plan and tool limits apply. Missing prices, currencies, identifiers, and commercial conditions remain missing.
 
 ### Runs
 
@@ -76,9 +76,9 @@ Advanced jobs include configuration verification, exact collection runs, support
 
 ### Connections
 
-Connections generates copyable local settings for Codex, Claude Code, and Claude Desktop. It does not rewrite client configuration. The connection uses the same workspace root as the UI, so both interfaces see the same onboarding data and durable job history.
+Connections generates copyable local settings for Codex, Claude Code, and Claude Desktop, and can save the provider, model, and timeout for opt-in web UI recommendations through Codex CLI or Claude Code CLI. It does not rewrite client configuration or change an open desktop conversation's model. The connection uses the same workspace root as the UI, so both interfaces see the same onboarding data and durable job history.
 
-Install the optional MCP dependencies first:
+For copyable MCP settings, install the optional MCP dependencies first; the web UI CLI recommendation path does not use MCP:
 
 ```powershell
 .\setup.cmd --mcp
