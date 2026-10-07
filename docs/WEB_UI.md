@@ -45,10 +45,13 @@ Use the top-bar **Language** selector to choose **English**, **한국어**, or *
 ## First use
 
 1. Enter a short request or paste a detailed multiline request into **Research plan**. Keep product variants, exclusions, and commercial conditions in the request.
+   Each new plan starts with an empty topic instead of inheriting an earlier workspace's settings. The preview should distinguish research targets from reference companies: "competitors of A" excludes A's own products, while "compare A and its competitors" includes both. Review that interpretation before selecting sources. An unspecified market stays blank for your review.
 2. The default path runs the bounded AI preview on this screen: configure the installed Codex CLI/Claude Code CLI provider and model in **Connections**, then click **Preview research plan**. Opening the page does not start a provider call. A connected AI app can optionally search and submit the preview through MCP. Preview references are candidates, not price observations.
 3. Review the preview, add or remove URLs, select the intended pages, and confirm the industry, product, and market. Exact identifiers are optional advanced matching inputs. The plan is revised when you edit it.
 4. Explicitly confirm the displayed plan revision, then start bounded collection. The worker starts for this plan job. Only selected pages and limited same-host links are eligible; unchecked and excluded URLs are not collected.
 5. Use **Runs** to inspect page coverage, evidence status, missing values, observations, and the XLSX report.
+
+An empty preview is not a completed search: read the provider's note before retrying. Tool-runtime failures are reported as failed jobs even when the CLI exits successfully. Codex's code-mode transport remains available for web search; shell execution, external MCP connections, and unrelated capabilities remain disabled for this preview.
 
 The older guided-research workspace represents one product lead; a research plan may describe a range of products. Exact collection configurations may later contain multiple products.
 

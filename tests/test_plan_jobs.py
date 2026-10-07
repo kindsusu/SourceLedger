@@ -120,6 +120,8 @@ def test_mcp_preview_edit_confirmation_without_external_model(tmp_path, monkeypa
     from su_crawler.assistant_server import build_assistant_server
     monkeypatch.setattr(jobs.runtime, "start_worker", lambda root: {"status": "idle"})
     server = build_assistant_server(tmp_path)
+    from su_crawler.research_intent import INTENT_GUIDANCE
+    assert INTENT_GUIDANCE in server.instructions
     def call(name, args):
         return asyncio.run(server.call_tool(name, args))[1]
     plan = call("create_research_plan", {"request_text": "Clothes\nDetailed conditions stay here."})["plan"]

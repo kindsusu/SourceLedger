@@ -189,6 +189,101 @@ def test_plan_preserves_detailed_request_and_confirms_before_start(tmp_path):
             browser.close()
 
 
+def test_completed_empty_preview_shows_note_and_distinct_statuses(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    with running_server(tmp_path) as server, playwright.sync_playwright() as driver:
+        browser = launch_browser(driver)
+        page = browser.new_page(viewport={"width": 1100, "height": 800})
+        page.set_default_timeout(8000)
+        errors = []
+        page.on("pageerror", lambda exc: errors.append(str(exc)))
+        plan = {"id": "plan-current", "revision": 2, "state": "draft",
+                "request_text": "Research test meters", "summary": "Test meters",
+                "note": "Provider could not identify a source URL for this request.",
+                "topic": {"industry": "Instruments", "product": "Meters", "market": "Japan"},
+                "categories": [], "include_terms": [], "exclude_terms": [],
+                "candidates": [], "excluded_urls": []}
+        old_failed = {"id": "preview-other", "operation": "plan_preview", "status": "failed",
+                      "arguments": {"plan_id": "plan-other", "expected_revision": 2}}
+        completed = {"id": "preview-empty", "operation": "plan_preview", "status": "succeeded",
+                     "arguments": {"plan_id": plan["id"], "expected_revision": 1}}
+        data = {
+            "csrf_token": "test-token", "status": "unconfigured", "version": "test",
+            "workspace_root": str(tmp_path), "worker": {"status": "stopped"},
+            "jobs": [], "plan_jobs": [old_failed, completed],
+            "research_plans": {"plans": [plan]}, "recommendation_jobs": [],
+            "recommendations": {"requests": []}, "mcp_available": True,
+            "ai": {"settings": {"provider": "codex", "model": "", "timeout_seconds": 180},
+                   "providers": [{"id": "codex", "label": "Codex", "available": True,
+                                  "models": [], "message": ""}]},
+        }
+        posts = []
+
+        def route_api(route):
+            path = route.request.url.split("/api/", 1)[1]
+            if route.request.method == "GET" and path == "bootstrap":
+                route.fulfill(json=copy.deepcopy(data))
+            elif path == "plans/preview":
+                posts.append(path)
+                data["plan_jobs"] = [old_failed, {"id": "preview-queued", "operation": "plan_preview",
+                                                  "status": "queued", "arguments": {"plan_id": plan["id"],
+                                                                                     "expected_revision": plan["revision"]}}]
+                route.fulfill(json={"job": {"id": "preview-queued", "operation": "plan_preview",
+                                             "status": "queued"}, "worker": {"status": "idle"}})
+            else:
+                posts.append(path)
+                route.fulfill(status=404, json={"error": "Unexpected request"})
+
+        try:
+            page.route("**/api/**", route_api)
+            page.goto(f"{server.url}/#plan")
+            playwright.expect(page.locator("#plan-workspace")).to_be_visible()
+            for language, completed_text in (
+                ("en", "AI preview completed with no source candidates"),
+                ("ko", "AI 미리보기가 완료됐지만 출처 후보가 없습니다"),
+                ("ja", "AIプレビューは完了しましたが、情報源の候補はありません"),
+            ):
+                page.locator("#language-select").select_option(language)
+                playwright.expect(page.locator("#plan-status")).to_contain_text(completed_text)
+                playwright.expect(page.locator("#plan-status")).to_contain_text(plan["note"])
+                playwright.expect(page.locator("#plan-candidates")).not_to_contain_text("No AI suggestions yet")
+            page.locator("#plan-start").click()
+            playwright.expect(page.locator("#plan-error")).to_contain_text("URL")
+            assert posts == []
+
+            # A preview with candidates must still show its provider note.
+            plan.update(revision=3, state="preview", note="Review source authenticity.",
+                        candidates=[{"id": "candidate-1", "name": "Meter catalog",
+                                     "url": "https://example.invalid/meter", "evidence_url": "",
+                                     "reason": "Catalog page", "kind": "site", "selected": False}])
+            page.evaluate("loadBootstrap({quiet: true})")
+            playwright.expect(page.locator("#plan-candidates .plan-candidate")).to_have_count(1)
+            playwright.expect(page.locator("#plan-status")).to_contain_text("Review source authenticity.")
+
+            # A failed current attempt and a fresh draft have different feedback.
+            plan.update(revision=4, state="draft", note="", candidates=[])
+            data["plan_jobs"] = [old_failed, {"id": "preview-failed", "operation": "plan_preview",
+                                              "status": "failed", "arguments": {"plan_id": plan["id"],
+                                                                                 "expected_revision": 4},
+                                              "error": {"code": "cli_tools_unavailable",
+                                                        "message": "Configured CLI tools are unavailable."}}]
+            page.evaluate("loadBootstrap({quiet: true})")
+            playwright.expect(page.locator("#plan-status")).to_contain_text("AIプレビューに失敗しました")
+            playwright.expect(page.locator("#plan-status")).to_contain_text("Configured CLI tools are unavailable.")
+            page.locator("#plan-preview").click()
+            playwright.expect(page.locator("#plan-status")).to_contain_text("AIプレビューを実行中です")
+            data["plan_jobs"][1].update(status="failed", error={"message": "Configured CLI tools are unavailable."})
+            page.evaluate("loadBootstrap({quiet: true})")
+            playwright.expect(page.locator("#plan-status")).to_contain_text("Configured CLI tools are unavailable.")
+            data["plan_jobs"] = [old_failed]
+            page.evaluate("loadBootstrap({quiet: true})")
+            playwright.expect(page.locator("#plan-candidates")).to_contain_text("AIの提案はまだありません")
+            playwright.expect(page.locator("#plan-status")).not_to_contain_text("失敗")
+            assert errors == []
+        finally:
+            browser.close()
+
+
 def test_plan_create_waits_for_bootstrap_and_shows_create_error(tmp_path):
     playwright = pytest.importorskip("playwright.sync_api")
     with running_server(tmp_path) as server, playwright.sync_playwright() as driver:

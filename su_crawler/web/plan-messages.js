@@ -52,6 +52,8 @@
     ["advancedHint", "Existing manual source, identifier, and configuration controls remain available.", "기존 수동 출처, 식별자, 설정 기능을 사용할 수 있습니다.", "既存の手動情報源、識別情報、設定機能を利用できます。"],
     ["draft", "Draft", "초안", "下書き"], ["preview", "Preview", "미리보기", "プレビュー"], ["confirmed", "Confirmed", "확정됨", "確定済み"],
     ["empty", "No AI suggestions yet. Run a preview, use a connected assistant, or add a real URL yourself.", "아직 AI 제안이 없습니다. 미리보기를 실행하거나 연결된 도우미를 사용하거나 실제 URL을 직접 추가하세요.", "AIの提案はまだありません。プレビューを実行するか、接続済みアシスタントを使うか、実際のURLを追加してください。"],
+    ["previewEmpty", "AI preview completed with no source candidates. Research cannot start until you add or select a real source URL.", "AI 미리보기가 완료됐지만 출처 후보가 없습니다. 실제 출처 URL을 추가하거나 선택해야 조사를 시작할 수 있습니다.", "AIプレビューは完了しましたが、情報源の候補はありません。実在する情報源のURLを追加または選択するまで調査を開始できません。"],
+    ["emptyAfterPreview", "Review the provider note above. You can refresh the preview, use a connected assistant, or add a real URL yourself.", "위의 제공자 메모를 확인하세요. 미리보기를 다시 실행하거나 연결된 도우미를 사용하거나 실제 URL을 직접 추가할 수 있습니다.", "上のプロバイダーのメモを確認してください。プレビューを更新するか、接続済みアシスタントを使うか、実在するURLを追加できます。"],
     ["previewPending", "AI preview is running. You can keep editing; automatic status updates preserve your input on this page.", "AI 미리보기가 실행 중입니다. 계속 수정할 수 있으며 이 화면의 자동 상태 갱신 중에도 입력이 유지됩니다.", "AIプレビューを実行中です。編集を続けられ、この画面の自動状態更新中も入力が保持されます。"],
     ["previewFailed", "AI preview failed. Review the request and retry, use a connected assistant, or add a real URL yourself.", "AI 미리보기에 실패했습니다. 요청을 확인하고 다시 시도하거나 연결된 도우미를 사용하거나 실제 URL을 직접 추가하세요.", "AIプレビューに失敗しました。依頼を確認して再試行するか、接続済みアシスタントを使うか、実際のURLを追加してください。"],
     ["previewReady", "Review the suggested scope and links. These are unverified candidates.", "제안된 범위와 링크를 검토하세요. 아직 검증되지 않은 후보입니다.", "提案された範囲とリンクを確認してください。これらは未検証の候補です。"],

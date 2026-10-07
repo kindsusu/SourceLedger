@@ -3,7 +3,7 @@
   "use strict";
   const $ = id => document.getElementById(id);
   const tr = (key, args = {}) => window.SourceLedgerI18n.t(`plan.${key}`, args);
-  const ui = { plan: null, newRequestMode: false, dirty: false, requestDirty: false, changeDirty: false, removed: new Set(), selection: new Map(), candidateFingerprint: null, historyFingerprint: null, busy: false, stale: false, bootstrap: null, previewJob: null, feedback: "" };
+  const ui = { plan: null, newRequestMode: false, dirty: false, requestDirty: false, changeDirty: false, removed: new Set(), selection: new Map(), candidateFingerprint: null, historyFingerprint: null, busy: false, stale: false, bootstrap: null, previewJob: null, queuedPreviewId: null, feedback: "" };
   const lineValues = value => String(value || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   const writeLines = value => Array.isArray(value) ? value.join("\n") : "";
   const apiCall = (path, body) => api(path, { method: "POST", body });
@@ -19,7 +19,7 @@
     target.textContent = message;
     target.hidden = !message;
   }
-  function status(message) { ui.feedback = message || ""; $("plan-status").textContent = ui.feedback; }
+  function status(message) { ui.feedback = message || ""; renderStatus(); }
   function ready() { return typeof ui.bootstrap?.csrf_token === "string" && ui.bootstrap.csrf_token.length > 0; }
   function syncControls() {
     const disabled = ui.busy || !ready();
@@ -36,6 +36,7 @@
     ui.dirty = false;
     ui.stale = false;
     ui.feedback = "";
+    ui.queuedPreviewId = null;
     ui.removed.clear();
     ui.selection = new Map((plan.candidates || []).map(candidate => [candidate.id, candidate.selected === true]));
     ui.candidateFingerprint = null;
@@ -81,6 +82,7 @@
     ui.changeDirty = false;
     ui.stale = false;
     ui.feedback = "";
+    ui.queuedPreviewId = null;
     ui.removed.clear();
     ui.selection.clear();
     $("plan-request-text").value = "";
@@ -102,6 +104,18 @@
     const value = bootstrap?.plan_jobs;
     return Array.isArray(value) ? value : Array.isArray(value?.jobs) ? value.jobs : [];
   }
+  function currentPreviewJob() {
+    const plan = ui.plan;
+    return planJobs(ui.bootstrap).find(job => job.operation === "plan_preview"
+      && (job.arguments?.plan_id === plan?.id || job.plan_id === plan?.id)
+      && (job.status === "succeeded"
+        ? job.arguments?.expected_revision + 1 === plan?.revision
+        : job.arguments?.expected_revision === plan?.revision)) || null;
+  }
+  function completedEmptyPreview() {
+    return ui.plan?.state === "draft" && !(ui.plan.candidates || []).length
+      && ui.previewJob?.status === "succeeded";
+  }
   function render(bootstrap) {
     ui.bootstrap = bootstrap;
     renderAiPath();
@@ -117,7 +131,11 @@
       }
     }
     renderHistory(plans);
-    ui.previewJob = planJobs(bootstrap).find(job => job.operation === "plan_preview" && (job.arguments?.plan_id === ui.plan?.id || job.plan_id === ui.plan?.id)) || null;
+    ui.previewJob = currentPreviewJob();
+    if (ui.previewJob?.id === ui.queuedPreviewId) {
+      ui.feedback = "";
+      if (["succeeded", "failed", "interrupted"].includes(ui.previewJob.status)) ui.queuedPreviewId = null;
+    }
     renderPlan();
     syncControls();
   }
@@ -138,14 +156,15 @@
     return a;
   }
   function renderCandidates() {
-    const fingerprint = JSON.stringify([ui.plan?.revision, [...ui.selection], [...ui.removed], window.SourceLedgerI18n.getLanguage()]);
+    const fingerprint = JSON.stringify([ui.plan?.revision, ui.previewJob?.id, ui.previewJob?.status,
+      [...ui.selection], [...ui.removed], window.SourceLedgerI18n.getLanguage()]);
     if (fingerprint === ui.candidateFingerprint) return;
     ui.candidateFingerprint = fingerprint;
     const target = $("plan-candidates");
     target.replaceChildren();
     const candidates = (ui.plan?.candidates || []).filter(candidate => !ui.removed.has(candidate.id));
     if (!candidates.length) {
-      target.append(el("p", "plan-empty", tr("empty")));
+      target.append(el("p", "plan-empty", tr(completedEmptyPreview() ? "emptyAfterPreview" : "empty")));
       return;
     }
     for (const candidate of candidates) {
@@ -182,7 +201,7 @@
   function handoffText() {
     const plan = ui.plan;
     if (!plan) return "";
-    return `Use SourceLedger host tools to prepare a research preview for plan ${plan.id} at revision ${plan.revision}. First call get_research_plan(plan_id=${plan.id}) and read its current revision, request, edited topic, summary, categories, text filters, selected and manually added candidates, and excluded_urls. Respect all of those choices. Search or browse for real product and source URLs. Preserve the full research request and its detailed conditions. Never invent URLs, identifiers, prices, currencies, or commercial terms. Never reintroduce an excluded URL. Submit only unverified suggestions; do not start research. Call submit_research_preview with plan_id=${plan.id}, expected_revision=${plan.revision}, and preview {summary, topic:{industry,product,market}, categories, include_terms, exclude_terms, candidates:[{name,url,evidence_url,reason,kind}], note}. If the current server revision differs from ${plan.revision}, stop and ask the user to review the updated plan. The user must review and explicitly confirm before start_research_plan. Include/exclude terms are literal text filters, not proof that detailed requirements are met.\n\nResearch request:\n${plan.request_text}\n\nCurrent topic: ${JSON.stringify(plan.topic || {})}\nCurrent summary: ${plan.summary || ""}\nCurrent categories: ${JSON.stringify(plan.categories || [])}\nCurrent include text: ${JSON.stringify(plan.include_terms || [])}\nCurrent exclude text: ${JSON.stringify(plan.exclude_terms || [])}\nSelected source URLs: ${JSON.stringify((plan.candidates || []).filter(item => item.selected).map(item => item.url))}\nManually added candidates: ${JSON.stringify((plan.candidates || []).filter(item => item.origin === "user").map(item => ({ name: item.name, url: item.url, selected: item.selected })))}\nRemoved source URLs: ${JSON.stringify(plan.excluded_urls || [])}`;
+    return `Use SourceLedger host tools to prepare a research preview for plan ${plan.id} at revision ${plan.revision}. First call get_research_plan(plan_id=${plan.id}) and read its current revision, request, edited topic, summary, categories, text filters, selected and manually added candidates, and excluded_urls. Respect all of those choices. Search or browse for real product and source URLs. Preserve the full research request and its detailed conditions. Distinguish reference entities from research targets: for competitors of A, exclude A's own products and prices unless explicitly requested; for compare A and its competitors, include both. State targets and exclusions in summary and note, not literal text filters. Leave unspecified markets empty; never copy unrelated workspace defaults. If the relationship is ambiguous, leave candidates empty and explain the alternatives for review. Never invent URLs, identifiers, prices, currencies, or commercial terms. Never reintroduce an excluded URL. Submit only unverified suggestions; do not start research. Call submit_research_preview with plan_id=${plan.id}, expected_revision=${plan.revision}, and preview {summary, topic:{industry,product,market}, categories, include_terms, exclude_terms, candidates:[{name,url,evidence_url,reason,kind}], note}. If the current server revision differs from ${plan.revision}, stop and ask the user to review the updated plan. The user must review and explicitly confirm before start_research_plan. Include/exclude terms are literal text filters, not proof that detailed requirements are met.\n\nResearch request:\n${plan.request_text}\n\nCurrent topic: ${JSON.stringify(plan.topic || {})}\nCurrent summary: ${plan.summary || ""}\nCurrent categories: ${JSON.stringify(plan.categories || [])}\nCurrent include text: ${JSON.stringify(plan.include_terms || [])}\nCurrent exclude text: ${JSON.stringify(plan.exclude_terms || [])}\nSelected source URLs: ${JSON.stringify((plan.candidates || []).filter(item => item.selected).map(item => item.url))}\nManually added candidates: ${JSON.stringify((plan.candidates || []).filter(item => item.origin === "user").map(item => ({ name: item.name, url: item.url, selected: item.selected })))}\nRemoved source URLs: ${JSON.stringify(plan.excluded_urls || [])}`;
   }
   function renderAiPath() {
     const local = $("plan-ai-path").value === "local";
@@ -202,6 +221,22 @@
     $("plan-preview").textContent = tr(local ? "regenerate" : "copyForHost");
     $("plan-create").textContent = tr(local ? "create" : "prepare");
   }
+  function renderStatus() {
+    const plan = ui.plan;
+    if (!plan) return;
+    const pending = ui.previewJob && ["queued", "running", "starting"].includes(ui.previewJob.status);
+    const failed = ui.previewJob && ["failed", "interrupted"].includes(ui.previewJob.status);
+    const failureDetail = typeof ui.previewJob?.error?.message === "string" ? ui.previewJob.error.message : "";
+    const message = ui.feedback || (pending ? tr("previewPending") : failed ? [tr("previewFailed"), failureDetail].filter(Boolean).join(" ")
+      : completedEmptyPreview() ? tr("previewEmpty") : plan.state === "preview" ? tr("previewReady") : "");
+    const target = $("plan-status");
+    target.replaceChildren();
+    if (message) target.append(document.createTextNode(message));
+    if (plan.note) {
+      if (message) target.append(document.createElement("br"));
+      target.append(document.createTextNode(plan.note));
+    }
+  }
   function renderPlan() {
     const plan = ui.plan;
     $("plan-workspace").hidden = !plan;
@@ -209,11 +244,7 @@
     if (!plan) return;
     $("plan-status-title").textContent = plan.summary || tr("newPlan");
     $("plan-state-badge").textContent = tr(plan.state || "draft");
-    if (!ui.dirty && !ui.stale) {
-      const pending = ui.previewJob && ["queued", "running", "starting"].includes(ui.previewJob.status);
-      const failed = ui.previewJob && ["failed", "interrupted"].includes(ui.previewJob.status);
-      $("plan-status").textContent = ui.feedback || (pending ? tr("previewPending") : failed ? tr("previewFailed") : plan.state === "preview" ? tr("previewReady") : plan.note || "");
-    }
+    if (!ui.dirty && !ui.stale) renderStatus();
     renderCandidates();
     updateBudget();
     $("plan-copy-text").textContent = handoffText();
@@ -264,11 +295,12 @@
       status(tr("providerUnavailable"));
       return;
     }
-    await apiCall("/api/plans/preview", {
+    const result = await apiCall("/api/plans/preview", {
       plan_id: plan.id, expected_revision: plan.revision,
       provider: settings.provider, model: settings.model || "", timeout_seconds: settings.timeout_seconds || 180,
     });
     status(tr("queued"));
+    ui.queuedPreviewId = result.job?.id || null;
     await loadBootstrap({ quiet: true });
   }
   async function act(task, { request = false } = {}) {
@@ -332,7 +364,7 @@
       if (event.target.matches("[data-plan-edit]")) ui.dirty = true;
     });
     $("plan-candidates").addEventListener("change", event => {
-      if (event.target.matches("[data-plan-select]")) { ui.selection.set(event.target.dataset.planSelect, event.target.checked); ui.dirty = true; ui.candidateFingerprint = JSON.stringify([ui.plan?.revision, [...ui.selection], [...ui.removed], window.SourceLedgerI18n.getLanguage()]); updateBudget(); }
+      if (event.target.matches("[data-plan-select]")) { ui.selection.set(event.target.dataset.planSelect, event.target.checked); ui.dirty = true; ui.candidateFingerprint = null; updateBudget(); }
     });
     $("plan-candidates").addEventListener("click", event => {
       const button = event.target.closest("[data-plan-remove]");

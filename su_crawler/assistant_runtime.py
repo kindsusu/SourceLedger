@@ -291,6 +291,12 @@ def resume_job(root: str | Path, job_id: str) -> dict[str, Any]:
     return job
 
 
+def _worker_creationflags() -> int:
+    # DETACHED_PROCESS makes Windows ignore CREATE_NO_WINDOW. A Windows venv
+    # launcher can then hand off to a base interpreter that opens a terminal.
+    return subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+
+
 def start_worker(root: str | Path) -> dict[str, Any]:
     workspace = _root(root)
     runtime = workspace / "runtime"
@@ -316,9 +322,7 @@ def start_worker(root: str | Path) -> dict[str, Any]:
         command = [interpreter, "-m", "su_crawler.assistant_runtime", "worker", "--root", str(workspace), "--token", token]
         options: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": subprocess.STDOUT, "cwd": str(workspace)}
         if os.name == "nt":
-            options["creationflags"] = (getattr(subprocess, "CREATE_NO_WINDOW", 0) |
-                                        getattr(subprocess, "DETACHED_PROCESS", 0) |
-                                        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            options["creationflags"] = _worker_creationflags()
         else:
             options["start_new_session"] = True
         try:
@@ -341,7 +345,7 @@ def start_worker(root: str | Path) -> dict[str, Any]:
                 "updated_at": utc_now(), "error": {"type": "WorkerStartFailed"},
             })
             raise RuntimeError(f"Assistant worker exited before it became ready; inspect {runtime / 'worker.log'}")
-        # Do not signal or kill the detached process. A token-scoped stop makes
+        # Do not signal or kill the launched process. A token-scoped stop makes
         # it exit if it later acquires the worker lock; if a new launch replaces
         # state first, its expected-token check rejects this stale child.
         _write_json(runtime / "stop.json", {"token": token, "requested_at": utc_now()})

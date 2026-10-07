@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from .research_intent import INTENT_GUIDANCE
+
 
 def build_assistant_server(root: str | Path):
     """Build a local stdio MCP server bound to one assistant workspace."""
@@ -26,7 +28,8 @@ def build_assistant_server(root: str | Path):
             "Local, workspace-scoped evidence collection. Start with get_workspace_status. "
             "Default workflow: create_research_plan with the user's full short or detailed request; "
             "use your search/browser tools for a bounded preview, then submit_research_preview. "
-            "Preserve explicit companies, products, conditions and exclusions without broadening them. "
+            "Preserve explicit company roles, products, conditions and exclusions without broadening them. "
+            + INTENT_GUIDANCE +
             "Show the interpretation, topic, categories, and referenced candidates to the user. "
             "Apply additions/removals with update_research_plan. Only after the user approves the displayed "
             "revision call confirm_research_plan and start_research_plan. Never treat permission to preview "
@@ -97,6 +100,9 @@ def build_assistant_server(root: str | Path):
         Search/open actual references with the host's tools first. URLs are assistant-supplied,
         not independently verified here. No prices, invented URLs, credentials, or extra fields.
         Preserve detailed scope; leave unknown topic values empty and ask the user at review.
+        In competitors-only requests, distinguish the reference company from actual targets. Exclude
+        the reference company's products/prices unless explicitly requested; describe these roles in
+        summary and note, not literal text filters. New plans do not inherit the legacy workspace topic.
         Empty candidates plus a note is valid when search is unavailable. This never starts collection.
         """
         return plans.submit_plan_preview(base, plan_id, expected_revision, preview)

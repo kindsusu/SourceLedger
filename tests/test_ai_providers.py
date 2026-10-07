@@ -99,6 +99,8 @@ def test_codex_command_and_result_contract(tmp_path, monkeypatch):
     assert "--ignore-user-config" in cmd and "--sandbox" in cmd and "read-only" in cmd
     disabled = {cmd[i + 1] for i, arg in enumerate(cmd[:-1]) if arg == "--disable"}
     assert set(ai.CODEX_FEATURES) <= disabled
+    assert not {"code_mode", "code_mode_host"} & disabled
+    assert "web_search='live'" in cmd
     assert "industrial pumps" in captured["prompt"] and "sourceledger-ai-" not in captured["prompt"]
 
 
@@ -120,6 +122,31 @@ def test_claude_command_and_structured_output(monkeypatch):
     assert cmd[-2:] == ["--model", "opus"]
     for flag in ("--safe-mode", "--no-session-persistence", "--tools", "--allowedTools", "--disallowedTools"):
         assert flag in cmd
+
+
+@pytest.mark.parametrize("event, expected_code", [
+    ({"type": "item.completed", "item": {"type": "error", "message":
+        "Code Mode is unavailable because code-mode host is disabled. PRIVATE DIAGNOSTIC"}}, "cli_tools_unavailable"),
+    ({"type": "turn.failed", "error": {"message": "PRIVATE DIAGNOSTIC"}}, "cli_failed"),
+])
+def test_codex_runtime_error_is_not_accepted_as_a_successful_preview(event, expected_code, monkeypatch):
+    monkeypatch.setattr(ai, "_codex_command", lambda: ["codex"])
+    monkeypatch.setattr(ai, "_check_help", lambda *args: None)
+
+    def fake_run(command, prompt, *, cwd, timeout):
+        (cwd / "last-message.json").write_text(json.dumps(PREVIEW), encoding="utf-8")
+        return 0, json.dumps(event).encode()
+
+    monkeypatch.setattr(ai, "_run_cli", fake_run)
+    with pytest.raises(ai.AIGenerationError) as failure:
+        ai.generate_plan_preview(PLAN, {"provider": "codex"})
+    assert failure.value.code == expected_code
+    assert "PRIVATE DIAGNOSTIC" not in failure.value.safe_message
+
+
+def test_codex_model_text_is_not_a_runtime_error():
+    ai._check_codex_events(b'not an event\n' + json.dumps({"type": "item.completed", "item": {
+        "type": "agent_message", "text": "Code Mode is unavailable"}}).encode())
 
 
 def test_invalid_output_is_safe_and_rejects_unverified_links(monkeypatch):
@@ -220,6 +247,8 @@ def test_plan_preview_uses_restricted_structured_cli(provider, monkeypatch, tmp_
     assert "Do not turn natural-language conditions into literal terms" in captured["prompt"]
     assert "no exclude term may match" in captured["prompt"]
     assert "Do not collect prices" in captured["prompt"]
+    from su_crawler.research_intent import INTENT_GUIDANCE
+    assert INTENT_GUIDANCE in captured["prompt"]
     assert "--sandbox" in captured["command"] if provider == "codex" else "--safe-mode" in captured["command"]
     from su_crawler.research_plans import create_plan, submit_plan_preview
 

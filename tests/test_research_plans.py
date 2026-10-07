@@ -31,12 +31,30 @@ def test_plan_works_before_legacy_setup_and_preserves_research_file(tmp_path):
     research.write_text('{"industry":"existing","product":{"name":"thing"},"market":"US"}', encoding="utf-8")
     original = research.read_bytes()
     created = create_plan(tmp_path, "Compare several products", ["small"], ["used"])["plan"]
-    assert created["topic"] == {"industry": "existing", "product": "thing", "market": "US"}
+    assert created["topic"] == {"industry": "", "product": "", "market": ""}
     assert created["state"] == "draft" and created["revision"] == 1
     assert get_plan(tmp_path, created["id"])["plan"] == created
     assert list_plans(tmp_path)["plans"] == [created]
     assert research.read_bytes() == original
     assert (tmp_path / "plans.sqlite3").is_file()
+
+
+def test_new_plan_does_not_inherit_another_plan_topic_or_change_its_revisions(tmp_path):
+    first = create_plan(tmp_path, "Find rental cars")["plan"]
+    edited = revise_plan(tmp_path, first["id"], 1, {"topic": {"industry": "rental"}})["plan"]
+    assert edited["topic"] == {"industry": "rental", "product": "", "market": ""}
+
+    second = create_plan(tmp_path, "Find medical devices")["plan"]
+    assert second["topic"] == {"industry": "", "product": "", "market": ""}
+    assert get_plan(tmp_path, first["id"])["plan"] == edited
+    assert get_plan(tmp_path, second["id"])["plan"] == second
+    assert [plan["id"] for plan in list_plans(tmp_path)["plans"]] == [second["id"], first["id"]]
+
+    preview = submit_plan_preview(tmp_path, second["id"], 1, {
+        **_proposal(), "topic": {"industry": "healthcare", "product": "device", "market": "US"},
+    })["plan"]
+    assert preview["topic"] == {"industry": "healthcare", "product": "device", "market": "US"}
+    assert get_plan(tmp_path, first["id"])["plan"] == edited
 
 
 def test_cas_confirmation_and_historic_snapshot(tmp_path):

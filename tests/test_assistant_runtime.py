@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -42,6 +44,28 @@ def test_worker_process_is_singleton_and_stops_without_pid_signals(tmp_path):
     stopped = runtime.stop_worker(tmp_path)
     assert stopped["stop_requested"] is True
     wait_for(lambda: runtime.runtime_status(tmp_path)["status"] == "stopped")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows console creation")
+def test_worker_venv_launcher_does_not_show_a_console():
+    if sys.prefix == sys.base_prefix:
+        pytest.skip("requires a Windows virtual environment launcher")
+    flags = runtime._worker_creationflags()
+    assert flags & subprocess.CREATE_NO_WINDOW
+    assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
+    assert not flags & subprocess.DETACHED_PROCESS
+
+    # Run through the same venv entry point and flags as start_worker. The
+    # launcher hands off to the base interpreter on Windows.
+    probe = ("import ctypes; "
+             "kernel = ctypes.windll.kernel32; "
+             "kernel.GetConsoleWindow.restype = ctypes.c_void_p; "
+             "window = kernel.GetConsoleWindow(); "
+             "print(int(bool(window)), int(bool(window and ctypes.windll.user32.IsWindowVisible(window))))")
+    result = subprocess.run([sys.executable, "-c", probe], stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            creationflags=flags, timeout=10, check=True, text=True)
+    assert result.stdout.strip() == "0 0", result.stderr
 
 
 def test_start_worker_reports_child_startup_failure(tmp_path, monkeypatch):
@@ -226,7 +250,9 @@ def test_resumed_attempt_passes_internal_resume_marker_only_to_executor(tmp_path
     module.execute_job = lambda root, operation, arguments, *, job_id: arguments
     monkeypatch.setitem(sys.modules, "su_crawler.assistant_workspace", module)
     thread = threading.Thread(target=runtime._run_worker, args=(tmp_path, token, 0.2), daemon=True)
-    thread.start()
+    with runtime._locked(tmp_path / "runtime" / "start"):
+        thread.start()
+        wait_for(lambda: runtime._read_json(tmp_path / "runtime" / "state.json")["status"] != "starting")
     completed = wait_for(lambda: runtime.get_job(tmp_path, job["id"])
                          if runtime.get_job(tmp_path, job["id"])["status"] == "succeeded" else None)
     thread.join(timeout=2)

@@ -17,14 +17,17 @@ from .assistant_workspace import workspace_guard
 from .research import _atomic_write
 from .search import _public_url
 from .research_plans import canonical_url
+from .research_intent import INTENT_GUIDANCE
 
 
 SETTINGS_FILE = "ai-settings.json"
 MAX_SETTINGS_BYTES = 4096
 MAX_OUTPUT_BYTES = 1024 * 1024
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._:/-]{0,199}\Z")
+# Keep Codex's tool transport available: current models may require code mode
+# even for web search. Restrict the exposed capabilities, not their dispatcher.
 CODEX_FEATURES = ("shell_tool", "unified_exec", "apps", "plugins", "hooks", "multi_agent",
-                  "browser_use", "computer_use", "memories", "code_mode", "code_mode_host",
+                  "browser_use", "computer_use", "memories",
                   "image_generation", "view_image", "tool_search", "skill_search", "artifact",
                   "remote_plugin", "plugin_sharing", "skill_mcp_dependency_install")
 _RESULT_SCHEMA: dict[str, Any] = {
@@ -388,6 +391,27 @@ def _validate_result(value: Any) -> dict:
     return {"candidates": result, "note": note.strip()}
 
 
+def _check_codex_events(output: bytes) -> None:
+    """Detect fatal tool-runtime failures without persisting raw provider output."""
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") == "error":
+            message = str(item.get("message", "")).casefold()
+            if "code mode is unavailable" in message or "code mode will fail closed" in message:
+                raise AIGenerationError(
+                    "cli_tools_unavailable",
+                    "Codex could not start its web-search tool runtime. Update or repair Codex CLI, "
+                    "then retry the preview, or use a connected AI app.")
+        if event.get("type") == "turn.failed":
+            raise AIGenerationError("cli_failed", "Codex could not complete the preview; check its setup and retry.")
+
+
 def _generate_structured(prompt: str, settings: dict, schema_data: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
     """Run a structured request under the existing isolated CLI policy."""
     settings = normalize_ai_settings(settings)
@@ -424,6 +448,8 @@ def _generate_structured(prompt: str, settings: dict, schema_data: dict[str, Any
             code, stdout = _run_cli(args, prompt, cwd=cwd, timeout=settings["timeout_seconds"])
             if code != 0:
                 raise AIGenerationError("cli_failed", f"{provider.title()} CLI failed; check sign-in, model access, and network connectivity.")
+            if provider == "codex":
+                _check_codex_events(stdout)
             try:
                 if provider == "codex":
                     if output.is_symlink() or not output.is_file() or output.stat().st_size > MAX_OUTPUT_BYTES:
@@ -510,7 +536,8 @@ def _plan_prompt(plan: dict) -> str:
         raise ValueError("Research plan prompt exceeds size limit")
     return (
         "Create an editable research-plan preview for the exact user request below. Preserve its full scope, "
-        "including each explicitly named company, product constraint, market, inclusion, and exclusion. "
+        "including the role of each named company, product constraint, market, inclusion, and exclusion. "
+        + INTENT_GUIDANCE +
         "Keep the full request_text even when the summary is concise. Respect the user's current summary, "
         "categories, manually added candidates, unchecked candidates, and excluded_urls. Do not broaden a "
         "specific request into unrelated categories or restore removed URLs. If existing edits conflict with "

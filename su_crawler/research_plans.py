@@ -13,7 +13,7 @@ import re
 import sqlite3
 import uuid
 
-from .assistant_workspace import workspace_guard, workspace_root
+from .assistant_workspace import workspace_guard
 
 
 MAX_REQUEST = 12000
@@ -195,19 +195,6 @@ def _next(plan: dict[str, Any]) -> dict[str, Any]:
     return {**plan, "revision": plan["revision"] + 1, "updated_at": _now(), "confirmed_at": None}
 
 
-def _suggested_topic(root: Path) -> dict[str, str]:
-    path = root / "research.json"
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_DOCUMENT_BYTES:
-        return _topic({})
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return _topic({"industry": data.get("industry", ""),
-                       "product": data.get("product", {}).get("name", ""),
-                       "market": data.get("market", "")})
-    except (OSError, ValueError, TypeError, AttributeError):
-        return _topic({})
-
-
 def create_plan(root: str | Path, request_text: str, include_terms: list[str] | None = None,
                 exclude_terms: list[str] | None = None) -> dict[str, Any]:
     request = _text(request_text, "request_text", MAX_REQUEST, required=True)
@@ -217,7 +204,7 @@ def create_plan(root: str | Path, request_text: str, include_terms: list[str] | 
         now = _now()
         plan = {"id": "plan-" + uuid.uuid4().hex, "revision": 1, "state": "draft",
                 "request_text": request, "include_terms": included, "exclude_terms": excluded,
-                "topic": _suggested_topic(workspace_root(root)), "summary": "", "categories": [],
+                "topic": _topic({}), "summary": "", "categories": [],
                 "candidates": [], "excluded_urls": [], "note": "", "created_at": now,
                 "updated_at": now, "confirmed_at": None}
         _save(db, plan)
