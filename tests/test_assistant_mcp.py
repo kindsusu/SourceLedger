@@ -50,9 +50,32 @@ def test_server_tool_contract_and_registered_report_resource(tmp_path):
         "queue_source_discovery", "queue_source_proposal", "queue_research_agent", "queue_supported_sites",
         "queue_verification", "queue_collection", "queue_report_export", "get_job_status",
         "list_recent_jobs", "resume_job_execution", "get_job_observations", "get_job_report",
+        "list_source_recommendation_requests", "request_source_recommendations", "submit_source_recommendations",
     } == tools
     resources = asyncio.run(server.list_resource_templates())
     assert any(str(item.uriTemplate) == "sourceledger://reports/{job_id}" for item in resources)
+
+
+def test_assistant_stages_recommendations_without_registering_or_collecting(tmp_path):
+    server = build_assistant_server(tmp_path)
+    _call(server, "initialize_workspace", {"industry": "Fixtures", "product": "Parts", "market": "Offline"})
+    created = _call(server, "request_source_recommendations", {"query": "Parts suppliers"})["request"]
+    listed = _call(server, "list_source_recommendation_requests", {})
+    assert listed["requests"][0]["id"] == created["id"]
+    assert created["status"] == "pending"
+    result = _call(server, "submit_source_recommendations", {
+        "request_id": created["id"], "candidates": [{
+            "name": "Fixture supplier", "url": "https://supplier.example/catalog",
+            "reason": "The catalog describes parts", "evidence_url": "https://supplier.example/about",
+        }],
+    })["request"]
+    assert result["status"] == "ready"
+    assert len(result["candidates"]) == 1
+    status = _call(server, "get_workspace_status", {})
+    assert status["research"]["candidate_source_count"] == 0
+    assert _call(server, "list_recent_jobs", {})["jobs"] == []
+    # Recommendations are accepted in the review UI, not silently by an AI tool.
+    assert not any(tool.name == "select_source_recommendations" for tool in asyncio.run(server.list_tools()))
 
 
 def test_real_stdio_disconnect_does_not_cancel_independent_collection(tmp_path):

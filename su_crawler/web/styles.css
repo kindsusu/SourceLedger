@@ -150,6 +150,11 @@ input:focus, select:focus { border-color: var(--teal); outline: 3px solid rgba(3
 .empty-state h3 { font-size: 20px; }
 .empty-state p { max-width: 520px; margin: 8px auto 18px; }
 .two-column { display: grid; grid-template-columns: minmax(370px, .82fr) minmax(450px, 1.18fr); gap: 18px; align-items: start; }
+.source-workflow { display: grid; gap: 18px; }
+.source-entry-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; align-items: start; }
+.source-entry-grid > *, .source-workflow > * { min-width: 0; }
+.source-workflow > #identity-form { width: 100%; max-width: 760px; }
+.workflow-hint { margin: 0; padding: 15px 18px; border: 1px dashed var(--line-strong); border-radius: 9px; font-size: 12px; }
 .stack { display: grid; gap: 18px; }
 .source-register { padding: 25px; }
 .source-heading { align-items: end; }
@@ -163,6 +168,26 @@ legend span { color: #7c898e; font-weight: 500; }
 .icon-button { width: 44px; min-height: 44px; padding: 0; border: 1px solid var(--line); border-radius: 7px; color: #6e7d82; background: var(--surface); font-size: 19px; }
 .icon-button:hover { color: var(--red); border-color: #d7aaa5; }
 .source-list { display: grid; }
+.source-include { margin-top: 8px; border-top: 1px solid var(--line); }
+.recommendation-register { padding: 25px; }
+.recommendation-list, .candidate-list { display: grid; gap: 14px; min-width: 0; }
+.recommendation-request { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.recommendation-head { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.recommendation-head h4 { margin: 5px 0; overflow-wrap: anywhere; }
+.recommendation-head small { color: var(--ink-soft); overflow-wrap: anywhere; }
+.handoff { margin-top: 14px; padding: 14px; border-radius: 8px; background: var(--surface-muted); }
+.handoff p { margin-bottom: 10px; font-size: 12px; }
+.handoff details { margin-top: 12px; }
+.handoff summary { width: fit-content; cursor: pointer; color: var(--teal-dark); font-size: 12px; font-weight: 700; }
+.handoff pre { max-height: 180px; }
+.request-status { margin: 16px 0 0; font-size: 12px; }
+.candidate-list { margin-top: 15px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); }
+.candidate-item { min-width: 0; display: grid; gap: 7px; padding: 15px; border: 1px solid var(--line); border-radius: 8px; }
+.candidate-item strong, .candidate-item a, .candidate-item span, .candidate-item p { overflow-wrap: anywhere; }
+.candidate-item p { margin: 0; font-size: 12px; }
+.candidate-item small { color: var(--ink-soft); }
+.candidate-check { margin-bottom: 5px; }
+.recommendation-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin-top: 15px; font-size: 12px; }
 .source-item { padding: 18px 0; border-top: 1px solid var(--line); }
 .source-item:first-child { border-top: 0; padding-top: 0; }
 .source-item:last-child { padding-bottom: 0; }
@@ -255,7 +280,7 @@ pre { max-height: 360px; overflow: auto; margin: 10px 0 0; padding: 17px; color:
   .primary-nav a .nav-icon { font-size: 11px; }
   .setup-panel { grid-template-columns: 1fr 400px; gap: 34px; }
   .overview-grid, .two-column, .runs-layout { grid-template-columns: 1fr; }
-  .source-register { order: -1; }
+  .source-entry-grid { grid-template-columns: 1fr; }
   .connections-layout { grid-template-columns: 1fr; }
 }
 
@@ -288,7 +313,8 @@ pre { max-height: 360px; overflow: auto; margin: 10px 0 0; padding: 17px; color:
   .setup-panel { min-height: 0; grid-template-columns: 1fr; gap: 28px; }
   .setup-copy > p { font-size: 14px; }
   .setup-steps { margin-top: 25px; }
-  .form-card, .overview-grid > .card, .source-register, .job-register, .job-detail, .connections-layout > .card { padding: 20px; }
+  .form-card, .overview-grid > .card, .source-register, .recommendation-register, .job-register, .job-detail, .connections-layout > .card { padding: 20px; }
+  .recommendation-request { padding: 14px; }
   .form-row, .advanced-form, .advanced-fields, .inline-form { grid-template-columns: 1fr; }
   .advanced-form > *, .inline-form > * { grid-column: 1 !important; }
   .source-heading { align-items: start; flex-direction: column; }

@@ -27,7 +27,7 @@ setup.cmd
 source-ledger.cmd
 ```
 
-The second command opens the local browser UI. Enter the industry, product, and market, then add exact identifiers and authorized source URLs. It binds only to `127.0.0.1`, with port `8765` and workspace `.sourceledger` as defaults. Read the [browser UI guide](docs/WEB_UI.md) for the complete workflow.
+The second command opens the local browser UI. Enter the industry, product, and market. Add a company/site URL directly, or request source suggestions from your connected Codex or Claude assistant using a company name or keyword. Exact product identifiers are required for guided research, but not for requesting and selecting sources. It binds only to `127.0.0.1`, with port `8765` and workspace `.sourceledger` as defaults. Read the [browser UI guide](docs/WEB_UI.md) for the complete workflow.
 
 The launchers use the repository `.venv` by location, so Windows does not need PowerShell activation or an execution-policy change. The block above is for Command Prompt; in PowerShell use `.\setup.cmd` and `.\source-ledger.cmd`. On macOS/Linux, run `bash setup.sh` followed by `bash source-ledger.sh`. A repository launcher with no arguments opens the UI.
 
@@ -44,11 +44,11 @@ The core installation is enough for the UI and local-file workflows. Install opt
 The browser UI is the primary local starting point in 0.5. It provides four areas:
 
 - **Overview** — first-run setup, research readiness, and independent-worker controls.
-- **Sources** — exact product identity, authorized source registration, bounded discovery, and extraction proposals.
+- **Sources** — exact product identity, direct URL registration, company/keyword recommendation requests, candidate selection, bounded discovery, and extraction proposals.
 - **Runs** — queued-job status, evidence status, paginated observations, and registered XLSX reports.
 - **Connections** — copyable Codex, Claude Code, and Claude Desktop settings. It does not rewrite client settings.
 
-The guided run uses up to three registered source candidates and a 120-second budget. The UI and local assistant MCP do not make external search or model calls. Search and model-provider configuration remains a separate CLI workflow.
+For recommendations, copy the saved request into a connected AI client, review its returned URLs and references, and tick only the candidates to register. Select registered sources for guided research; the UI passes those explicit sources, up to 50, with a 120-second budget. You can add more sources later. Recommendations are unverified and never become price observations by selection alone. The SourceLedger UI and MCP connector make no embedded external search or model calls and require no paid API; the connected AI client's own plan and tool limits apply. The CLI agent example below retains its separate default of three sources.
 
 Start and stop the independent worker from the UI when queued work is needed. Closing the browser tab or the UI web server does not cancel jobs already owned by that worker. The UI and Codex/Claude MCP connector can share the same workspace and job history. A job marked `succeeded` completed its program execution; inspect its separate evidence status before treating a price as verified.
 

@@ -21,6 +21,7 @@ from .assistant_workspace import (
 )
 from .connections import CLIENTS, connect
 from .research import _canonical_url, add_source, init_workspace, load_workspace, research_status, set_product
+from .recommendations import create_recommendation_request, list_recommendations, select_recommendations
 
 
 MAX_BODY_BYTES = 256 * 1024
@@ -216,6 +217,7 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             "workspace_root": str(self.server.workspace),
             "status": "configured" if configured else "needs_setup",
             "workspace": workspace,
+            "recommendations": list_recommendations(self.server.workspace) if configured else {"requests": []},
             "research": research_status(path) if configured else None,
             "worker": runtime_status(self.server.workspace),
             "jobs": list_jobs(self.server.workspace, limit=20),
@@ -323,6 +325,12 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
 
     def _post_route(self, path: str, value: dict[str, Any]) -> dict[str, Any]:
         base = self.server.workspace
+        if path == "/api/recommendations":
+            self._fields(value, allowed={"query", "kind"}, required={"query"})
+            return create_recommendation_request(base, query=value["query"], kind=value.get("kind", "keyword"))
+        if path == "/api/recommendations/select":
+            self._fields(value, allowed={"request_id", "candidate_ids"}, required={"request_id", "candidate_ids"})
+            return select_recommendations(base, request_id=value["request_id"], candidate_ids=value["candidate_ids"])
         if path == "/api/workspace":
             self._fields(value, allowed={"industry", "product", "market", "locale"},
                          required={"industry", "product", "market"})

@@ -104,6 +104,62 @@ def test_job_submission_prepares_before_publishing(tmp_path, monkeypatch):
     assert published == [("discover", {"source_id": "source-1", "workspace_fingerprint": "abc"})]
 
 
+def test_recommendation_review_selects_only_checked_sources(tmp_path):
+    from su_crawler.recommendations import submit_recommendations
+
+    with running_server(tmp_path) as server:
+        assert json_response(authorized(server, "POST", "/api/workspace", {
+            "industry": "Fixtures", "product": "Parts", "market": "Offline",
+        }))[0] == 200
+        status, created = json_response(authorized(server, "POST", "/api/recommendations", {
+            "query": "Fixture suppliers", "kind": "keyword",
+        }))
+        assert status == 200
+        request_id = created["request"]["id"]
+        candidates = [{
+            "name": name, "url": f"https://{name}.example/catalog", "reason": "Catalog matches the requested topic",
+            "evidence_url": f"https://{name}.example/about",
+        } for name in ("first", "second")]
+        staged = submit_recommendations(tmp_path, request_id=request_id, candidates=candidates)
+        _, before = json_response(request(server, "GET", "/api/bootstrap"))
+        assert before["workspace"]["sources"] == []
+        assert before["jobs"] == []
+        assert len(before["recommendations"]["requests"][0]["candidates"]) == 2
+
+        chosen = staged["request"]["candidates"][1]["id"]
+        body = {"request_id": request_id, "candidate_ids": [chosen]}
+        # State-changing review requires the same CSRF protection as all other UI writes.
+        assert request(server, "POST", "/api/recommendations/select", body)[0] == 403
+        status, selected = json_response(authorized(server, "POST", "/api/recommendations/select", body))
+        assert status == 200 and selected["added_count"] == 1
+        assert json_response(authorized(server, "POST", "/api/recommendations/select", body))[1]["added_count"] == 0
+        _, after = json_response(request(server, "GET", "/api/bootstrap"))
+        assert [s["location"] for s in after["workspace"]["sources"]] == [candidates[1]["url"]]
+        assert after["jobs"] == []
+
+        # Selecting research targets is not a collection instruction. A later explicit
+        # run pins only the chosen source IDs, not the unselected recommendations.
+        assert authorized(server, "POST", "/api/product", {"identifiers": {"model": "PART-1"}})[0] == 200
+        status, queued = json_response(authorized(server, "POST", "/api/jobs", {
+            "operation": "agent", "arguments": {"source_ids": selected["source_ids"], "max_sources": 1},
+        }))
+        assert status == 200 and queued["status"] == "queued"
+        assert queued["arguments"]["source_ids"] == selected["source_ids"]
+        assert queued["arguments"]["max_sources"] == 1
+
+
+def test_recommendation_routes_reject_invalid_payloads(tmp_path):
+    with running_server(tmp_path) as server:
+        authorized(server, "POST", "/api/workspace", {"industry": "I", "product": "P", "market": "M"})
+        for payload in ({"query": ""}, {"query": "Q", "kind": "unknown"}, {"query": "Q", "extra": True}):
+            assert authorized(server, "POST", "/api/recommendations", payload)[0] == 400
+        result = json_response(authorized(server, "POST", "/api/recommendations", {"query": "Company", "kind": "company"}))[1]
+        for ids in ([], "not-a-list", ["unknown"]):
+            assert authorized(server, "POST", "/api/recommendations/select", {
+                "request_id": result["request"]["id"], "candidate_ids": ids,
+            })[0] == 400
+
+
 @pytest.mark.parametrize("headers,token,origin", [
     ({"Host": "evil.example"}, "valid", "valid"),
     ({"Sec-Fetch-Site": "cross-site"}, "valid", "valid"),

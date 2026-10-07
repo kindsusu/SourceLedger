@@ -41,10 +41,11 @@ The core installation is sufficient for the UI. Run `setup.cmd --browser` when P
 ## First use
 
 1. Open **Overview** and enter the industry, product, and market. SourceLedger does not ask for an analysis purpose.
-2. Open **Sources** and enter exact product identifiers such as a model, SKU, or catalog number. No identifier is inferred from the product name.
-3. Register explicit public URLs or authorized internal URLs. Registration does not contact a source.
-4. Start the independent worker before submitting queued work.
-5. Use **Runs** to inspect execution status, evidence status, observations, missing values, and XLSX output.
+2. Open **Sources** and register a company/site URL directly, or enter only a company name or a keyword to prepare an AI recommendation request. Registration does not contact a source.
+3. For a request, copy its prompt into a connected Codex or Claude assistant, review its returned candidates, and tick only the sources you want to add. You can repeat this to add more sources.
+4. Before guided research, enter exact product identifiers such as a model, SKU, or catalog number. No identifier is inferred from the product name. Recommendation requests and source selection do not require these identifiers.
+5. Select registered sources, start the independent worker, and queue a guided research run from **Runs**.
+6. Use **Runs** to inspect execution status, evidence status, observations, missing values, and XLSX output.
 
 The first workspace represents one research product lead. Exact collection configurations may later contain multiple products.
 
@@ -56,9 +57,11 @@ Overview shows onboarding state, research blockers, source counts, recent jobs, 
 
 ### Sources
 
-Sources manages exact product identity and authorized source candidates. From a registered source, the UI can queue bounded same-host link discovery or an extraction proposal. These results remain candidates or proposed rules; they are not verified price observations.
+Sources manages exact product identity and registered research targets. A supplied URL registers a company/site directly; a company name without a URL creates a request to find its real site. A keyword creates a request for related sources. Neither request starts an AI client or performs a search. Copy the request text into a connected Codex or Claude assistant; it may use its own available search/browser tools and submit named URLs with reasons and evidence references. If search is unavailable or yields no results, the assistant can submit an empty list with a note.
 
-The guided research run uses registered source candidates, processes up to three sources, and has a fixed 120-second budget. The UI and local assistant MCP make no external search or model calls. Search and model-provider configuration is a separate CLI workflow. Missing prices, currencies, identifiers, and commercial conditions remain missing.
+Recommendations remain separate from registered sources and price observations. Their reasons and reference URLs are assistant-supplied, unverified information. Review candidates and use their checkboxes to add only the intended sources. You can request and add more later. From a registered source, the UI can queue bounded same-host link discovery or an extraction proposal; these too remain candidates or proposed rules, not verified prices.
+
+Select registered sources with their checkboxes before queuing guided research. The UI passes those explicit source IDs, with a limit of 50 sources and a 120-second budget. This queued research needs the worker; creating requests and selecting recommendations do not. SourceLedger's UI and MCP connector make no embedded external search or model calls, and no paid API is required by the connector. The connected AI client's own plan and tool limits still apply. Missing prices, currencies, identifiers, and commercial conditions remain missing.
 
 ### Runs
 

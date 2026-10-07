@@ -4,11 +4,12 @@
 
 In 0.5, the [browser UI](WEB_UI.md) can generate these settings from **Connections** and start the worker. The browser and assistant share one workspace root; the stdio connector itself remains independent of the web server. Keep using the CLI below when you want to install a generated setting directly.
 
-SourceLedger 0.4 can expose one workspace to Codex, Claude Code, or Claude
+SourceLedger can expose one workspace to Codex, Claude Code, or Claude
 Desktop through a local stdio MCP server. The connector is local: it starts no
 web server, does not upload the workspace, and does not enable paid search or
-model providers. The collection worker is a separate local process, so an MCP
-client closing does not terminate a running job.
+model providers. A connected AI can use its own available search/browser tools;
+its plan and tool limits still apply. The collection worker is a separate local
+process, so an MCP client closing does not terminate a running job.
 
 This guide describes the generated settings and CLI contract. It does **not**
 claim that every Codex or Claude graphical client, cloud session, web/mobile
@@ -95,12 +96,33 @@ dead worker marks its running job `interrupted`; it is never silently rerun.
 
 ## What the local MCP server can do
 
+For the UI source-targeting flow, enter a company/site URL to register it
+directly. Entering only a company name, or a source keyword, instead saves a
+recommendation request. Copy the request text from **Sources** into your
+connected assistant; saving it does not wake or start that client. The assistant
+can call `list_source_recommendation_requests`, optionally
+`request_source_recommendations(query, kind)`, search with its own available
+tools, and call `submit_source_recommendations(request_id, candidates, note)`.
+Each candidate supplies `name`, `url`, `reason`, and `evidence_url`; when search
+is unavailable or returns nothing, submit an empty candidate list and a note.
+The operator reviews the candidate reasons and references in the UI and checks
+which candidates to add as registered sources. The MCP server has no tool to
+select recommendations on the operator's behalf.
+
+Recommendation requests and submissions need no collection worker. Submitted
+candidates remain separate from registered sources and verified observations;
+assistant-provided reasons and evidence URLs are unverified. Selecting a source
+does not collect it. To research, select registered sources in the UI and start
+the worker for the queued guided run (up to 50 explicit sources, 120 seconds).
+This workspace begins with one product research topic, rather than automatic
+whole-catalog collection.
+
 The server provides workspace-scoped onboarding and source management, queues
 `discover`, `propose`, `agent`, `collect_sites`, `verify`, `run`, and `export`,
 and returns job status, observations, report metadata, and a registered local
 XLSX resource for a completed report. Job inputs are bounded and remain inside
 the chosen workspace. Arbitrary commands, paths outside the workspace,
-provider configuration, and model calls are rejected by this connector. A
+provider configuration, and embedded model calls are rejected by this connector. A
 source candidate or proposal is never treated as a verified price observation.
 
 The generated server command is equivalent to:

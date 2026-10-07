@@ -98,29 +98,39 @@
         </section>
 
         <section id="sources-view" class="view" data-view="sources" hidden>
-          <div class="hero-row compact"><div><span class="eyebrow accent">Evidence inputs</span><h2>Sources & identity</h2><p class="lede">Register candidates and record exact product identity before collection.</p></div></div>
+          <div class="hero-row compact"><div><span class="eyebrow accent">Evidence inputs</span><h2>Sources & identity</h2><p class="lede">Choose a company or site, request suggestions, and record exact product identity before collection.</p></div></div>
           <div id="sources-setup-empty" class="empty-state" hidden></div>
-          <div id="sources-content" class="two-column" hidden>
-            <div class="stack">
+          <div id="sources-content" class="source-workflow" hidden>
+            <div class="source-entry-grid">
               <form id="source-form" class="card form-card" novalidate>
-                <div class="section-heading"><div><span class="eyebrow">Candidate source</span><h3>Add a URL</h3></div></div>
-                <label>Source URL<input type="url" name="url" inputmode="url" required placeholder="https://example.com/catalog"></label>
-                <div class="form-row"><label>Display name <span class="optional">Optional</span><input name="name" placeholder="Supplier catalog"></label><label>Access scope<select name="scope"><option value="public">Public</option><option value="internal">Authorized internal</option></select></label></div>
-                <p class="hint">Registration makes no network request. Source content is treated as data, never instructions.</p>
+                <div class="section-heading"><div><span class="eyebrow">Direct target</span><h3>Company or site</h3></div></div>
+                <label>Company name <span class="optional">Optional when a URL is provided</span><input name="name" placeholder="Supplier name"></label>
+                <label>Source URL <span class="optional">Optional when a company name is provided</span><input type="url" name="url" inputmode="url" placeholder="https://example.com/catalog"></label>
+                <label>Access scope<select name="scope"><option value="public">Public</option><option value="internal">Authorized internal</option></select></label>
+                <p class="hint">A URL registers the site directly. A company name alone creates a request to find its real site; no URL is guessed. Registration makes no network request.</p>
                 <p class="form-error" data-form-error role="alert" hidden></p>
                 <button class="button button-primary" type="submit">Register source</button>
               </form>
 
-              <form id="identity-form" class="card form-card" novalidate>
+              <form id="recommendation-form" class="card form-card" novalidate>
+                <div class="section-heading"><div><span class="eyebrow">AI suggestions</span><h3>Find sources by keyword</h3></div></div>
+                <label>Source keyword<input name="query" placeholder="e.g. servo motor distributors in South Korea" required></label>
+                <p class="hint">Create a request, then ask your connected Claude or Codex assistant to search and submit real source references. Review suggestions before adding them. Selection does not verify a source or its prices.</p>
+                <p class="form-error" data-form-error role="alert" hidden></p>
+                <button class="button button-secondary" type="submit">Create recommendation request</button>
+              </form>
+            </div>
+            <p id="recommendation-empty" class="workflow-hint">Create a company or keyword request to prepare a connected assistant handoff. Requested suggestions will appear here.</p>
+            <section id="recommendation-register" class="card recommendation-register" hidden><div class="section-heading"><div><span class="eyebrow">Assistant handoff</span><h3>Recommendation requests</h3></div></div><div id="recommendation-list" class="recommendation-list"></div></section>
+            <section class="card source-register"><div class="section-heading source-heading"><div><span class="eyebrow">Research targets</span><h3>Registered sources</h3></div><label class="filter-label">Filter<span class="sr-only"> sources</span><input id="source-filter" type="search" placeholder="Name or host"></label></div><p id="source-selection-summary" class="hint" aria-live="polite"></p><div id="source-list" class="source-list"></div></section>
+            <form id="identity-form" class="card form-card" novalidate>
                 <div class="section-heading"><div><span class="eyebrow">Product identity</span><h3>Exact matching fields</h3></div></div>
                 <p class="hint">Use identifiers printed by the manufacturer or supplied by the operator. Values are never guessed.</p>
                 <fieldset><legend>Identifiers <span>At least one required to run</span></legend><div id="identifier-rows" class="key-value-list"></div><button class="text-button add-row" type="button" data-add-row="identifier-rows">+ Add identifier</button></fieldset>
                 <fieldset><legend>Required specifications <span>Optional</span></legend><div id="spec-rows" class="key-value-list"></div><button class="text-button add-row" type="button" data-add-row="spec-rows">+ Add specification</button></fieldset>
                 <p class="form-error" data-form-error role="alert" hidden></p>
                 <button class="button button-primary" type="submit">Save product identity</button>
-              </form>
-            </div>
-            <section class="card source-register"><div class="section-heading source-heading"><div><span class="eyebrow">Source register</span><h3>Candidate sources</h3></div><label class="filter-label">Filter<span class="sr-only"> sources</span><input id="source-filter" type="search" placeholder="Name or host"></label></div><div id="source-list" class="source-list"></div></section>
+            </form>
           </div>
         </section>
 
@@ -129,7 +139,7 @@
           <div id="runs-setup-empty" class="empty-state" hidden></div>
           <div id="runs-content" hidden>
             <section class="run-launch card">
-              <div><span class="eyebrow">Guided run</span><h3>Research registered candidates</h3><p>Up to 3 sources, 120 seconds, and no external model calls.</p><div id="run-blockers" class="blocker-list"></div></div>
+              <div><span class="eyebrow">Guided run</span><h3>Research selected sources</h3><p id="run-source-summary">Select sources on the Sources page. Up to 50 sources, 120 seconds, and no external model calls.</p><div id="run-blockers" class="blocker-list"></div></div>
               <form id="agent-form"><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-primary" type="submit">Queue research run</button></form>
             </section>
             <details class="advanced card"><summary><span>Advanced jobs</span><small>Use explicit paths and bounded options</small></summary>

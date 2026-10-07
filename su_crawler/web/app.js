@@ -16,6 +16,10 @@ const state = {
   polling: null,
   pollInFlight: false,
   sourceFingerprint: null,
+  recommendationFingerprint: null,
+  sourceSelection: new Map(),
+  candidateSelection: new Map(),
+  sourceSelectionWorkspace: null,
   jobFingerprint: null,
   overviewFingerprint: null,
 };
@@ -91,6 +95,41 @@ function sources() {
   const full = workspace()?.sources;
   if (Array.isArray(full)) return full;
   return Array.isArray(state.bootstrap?.research?.sources) ? state.bootstrap.research.sources : [];
+}
+
+function recommendationRequests() {
+  const requests = state.bootstrap?.recommendations?.requests;
+  return Array.isArray(requests) ? requests : [];
+}
+
+function selectedSourceIds() {
+  return sources().filter((source) => state.sourceSelection.get(String(source.id)) !== false).map((source) => String(source.id));
+}
+
+function syncSourceSelection() {
+  const workspaceKey = String(state.bootstrap?.workspace_root || "local");
+  if (state.sourceSelectionWorkspace !== workspaceKey) {
+    state.sourceSelectionWorkspace = workspaceKey;
+    state.sourceSelection = new Map();
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(`sourceledger:selected-sources:${workspaceKey}`) || "[]");
+      if (Array.isArray(saved)) for (const [id, selected] of saved) {
+        if (typeof id === "string" && typeof selected === "boolean") state.sourceSelection.set(id, selected);
+      }
+    } catch (_error) { /* A blocked or stale storage entry should not prevent research. */ }
+  }
+  const current = new Set();
+  for (const source of sources()) {
+    const id = String(source.id);
+    current.add(id);
+    if (!state.sourceSelection.has(id)) state.sourceSelection.set(id, true);
+  }
+  for (const id of state.sourceSelection.keys()) if (!current.has(id)) state.sourceSelection.delete(id);
+}
+
+function saveSourceSelection() {
+  try { sessionStorage.setItem(`sourceledger:selected-sources:${state.sourceSelectionWorkspace}`, JSON.stringify([...state.sourceSelection])); }
+  catch (_error) { /* Session storage is optional. */ }
 }
 
 function isConfigured() {
@@ -261,6 +300,7 @@ function renderSources({ preserveForm = false } = {}) {
     state.identityHydrated = true;
   }
   renderSourceList();
+  renderRecommendations();
 }
 
 function hydrateKeyValues(id, values, keyPlaceholder, valuePlaceholder) {
@@ -298,12 +338,16 @@ function keyValueObject(id) {
 }
 
 function renderSourceList(force = false) {
+  syncSourceSelection();
   const target = byId("source-list");
   const filter = byId("source-filter").value.trim().toLowerCase();
   const filtered = sources().filter((source) => `${source.name || ""} ${source.location || ""}`.toLowerCase().includes(filter));
-  const fingerprint = JSON.stringify([filter, filtered]);
+  const fingerprint = JSON.stringify([filter, filtered, [...state.sourceSelection]]);
+  const selected = selectedSourceIds().length;
+  byId("source-selection-summary").textContent = `${selected} of ${sources().length} registered sources selected for the next guided run${filter ? ` · ${filtered.length} shown by filter; hidden selections remain selected` : ""}.`;
   if (!force && fingerprint === state.sourceFingerprint) return;
   state.sourceFingerprint = fingerprint;
+  const focused = document.activeElement?.dataset?.runSourceId;
   clear(target);
   if (!filtered.length) {
     target.append(node("div", { className: "empty-inline" }, [node("strong", { text: sources().length ? "No matching sources" : "No source candidates" }), node("p", { text: sources().length ? "Clear the filter to see all candidates." : "Register a URL to build the source register." })]));
@@ -315,11 +359,90 @@ function renderSourceList(force = false) {
     const url = safeUrl ? node("a", { className: "source-url", text: source.location, attrs: { href: safeUrl, target: "_blank", rel: "noopener noreferrer" } }) : node("span", { className: "source-url", text: source.location || "—" });
     const discover = node("button", { className: "button button-secondary", type: "button", text: "Discover links", attrs: { "data-source-action": "discover", "data-source-id": source.id } });
     const propose = node("button", { className: "button button-secondary", type: "button", text: "Propose recipe", attrs: { "data-source-action": "propose", "data-source-id": source.id } });
+    const include = node("input", { type: "checkbox", value: String(source.id), attrs: { "data-run-source-id": String(source.id), "aria-label": `Include ${source.name || source.location || source.id} in next guided run` } });
+    include.checked = state.sourceSelection.get(String(source.id)) !== false;
     target.append(node("article", { className: "source-item" }, [
       node("div", { className: "source-top" }, [node("div", {}, [title, url]), badge(source.status || "candidate")]),
       node("div", { className: "source-meta" }, [badge(source.scope || "public", "info"), node("span", { className: "badge", text: source.kind || "web" })]),
+      node("label", { className: "checkbox-label source-include" }, [include, "Include in next guided run"]),
       node("div", { className: "source-actions" }, [discover, propose]),
     ]));
+  }
+  if (focused) [...target.querySelectorAll("[data-run-source-id]")].find((item) => item.dataset.runSourceId === focused)?.focus({ preventScroll: true });
+}
+
+function candidateKey(requestId, candidateId) { return `${requestId}:${candidateId}`; }
+
+function recommendationHandoff(request) {
+  const topic = request.topic || {};
+  const subject = [topic.industry, topic.product?.name, topic.market].filter(Boolean).join(" · ");
+  return `SourceLedger recommendation request ID: ${request.id}\nKind: ${request.kind}\nQuery: ${request.query}${subject ? `\nResearch topic: ${subject}` : ""}\nUse the connected SourceLedger MCP tools list_source_recommendation_requests and submit_source_recommendations. Search for real sites and include a real evidence URL for each suggestion. Do not invent a URL, price, currency, identifier, or commercial condition. Submit candidates for this request ID; the operator will choose which sources to add. If search tools are unavailable or no real sites are found, submit an empty result with a clear note explaining why.`;
+}
+
+function renderRecommendations(force = false) {
+  const requests = recommendationRequests();
+  byId("recommendation-register").hidden = !isConfigured() || !requests.length;
+  byId("recommendation-empty").hidden = !isConfigured() || Boolean(requests.length);
+  const fingerprint = JSON.stringify(requests);
+  if (!force && fingerprint === state.recommendationFingerprint) return;
+  state.recommendationFingerprint = fingerprint;
+  const target = byId("recommendation-list");
+  const active = document.activeElement?.closest?.("[data-candidate-id]");
+  const focusedCandidate = active ? [active.dataset.candidateRequest, active.dataset.candidateId] : null;
+  const opened = new Set([...target.querySelectorAll(".recommendation-request")].filter((card) => card.querySelector("details")?.open).map((card) => card.dataset.requestId));
+  clear(target);
+  if (!requests.length) {
+    target.append(node("div", { className: "empty-inline" }, [node("strong", { text: "No recommendation requests" }), node("p", { text: "Enter a company name or keyword to prepare a connected assistant search." })]));
+    return;
+  }
+  for (const request of requests) {
+    const requestId = String(request.id);
+    const card = node("article", { className: "recommendation-request", attrs: { "data-request-id": requestId } });
+    card.append(node("div", { className: "recommendation-head" }, [
+      node("div", {}, [node("span", { className: "eyebrow", text: request.kind === "company" ? "Company lookup" : "Keyword search" }), node("h4", { text: request.query || "Untitled request", attrs: { tabindex: "-1" } }), node("small", { text: `Request ${requestId} · ${formatDate(request.created_at)}` })]), badge(request.status || "pending"),
+    ]));
+    const handoff = node("div", { className: "handoff" }, [
+      node("p", { text: "Use a connected Claude or Codex assistant to search, then submit candidates with source references. This page does not call an AI service." }),
+      node("button", { className: "button button-secondary", type: "button", text: "Copy request", attrs: { "data-copy-request": requestId } }),
+      node("details", {}, [node("summary", { text: "View request text" }), node("pre", { text: recommendationHandoff(request) })]),
+    ]);
+    if (opened.has(requestId)) handoff.querySelector("details").open = true;
+    card.append(handoff);
+    if (request.note) card.append(node("p", { className: "hint", text: request.note }));
+    const candidates = Array.isArray(request.candidates) ? request.candidates : [];
+    if (request.status === "pending" && !candidates.length) card.append(node("p", { className: "request-status", text: "Pending assistant suggestions. Copy this request into your connected assistant." }));
+    else if (!candidates.length) card.append(node("p", { className: "request-status", text: "No suggestions were returned. You can create another request or ask the assistant to search again." }));
+    else {
+      const list = node("div", { className: "candidate-list" });
+      for (const candidate of candidates) {
+        const id = String(candidate.id);
+        const key = candidateKey(requestId, id);
+        const checkbox = node("input", { type: "checkbox", value: id, attrs: { "data-candidate-id": id, "data-candidate-request": requestId, "aria-label": `Select ${candidate.name || candidate.url || id} for research` } });
+        checkbox.checked = state.candidateSelection.get(key) === true;
+        checkbox.disabled = Boolean(candidate.source_id);
+        const link = (label, value) => {
+          const safe = safeWebUrl(value);
+          return safe ? node("a", { text: `${label}: ${value}`, attrs: { href: safe, target: "_blank", rel: "noopener noreferrer" } }) : node("span", { text: `${label}: ${value || "—"}` });
+        };
+        list.append(node("article", { className: "candidate-item" }, [
+          node("label", { className: "checkbox-label candidate-check" }, [checkbox, candidate.source_id ? "Added to research targets" : "Select this suggestion"]),
+          node("strong", { text: candidate.name || "Unnamed suggestion" }), link("Site", candidate.url),
+          node("p", { text: candidate.reason || "No reason supplied." }), link("Source reference", candidate.evidence_url),
+          node("small", { text: "Unverified recommendation · no price evidence" }),
+        ]));
+      }
+      card.append(list);
+      const selectedCount = candidates.filter((candidate) => !candidate.source_id && state.candidateSelection.get(candidateKey(requestId, String(candidate.id))) === true).length;
+      card.append(node("div", { className: "recommendation-actions" }, [
+        node("span", { text: `${selectedCount} selected` }),
+        node("button", { className: "button button-primary", type: "button", text: "Add selected to research list", disabled: selectedCount === 0, attrs: { "data-add-request": requestId } }),
+      ]));
+    }
+    target.append(card);
+  }
+  if (focusedCandidate) {
+    const box = [...target.querySelectorAll("[data-candidate-id]")].find((item) => item.dataset.candidateRequest === focusedCandidate[0] && item.dataset.candidateId === focusedCandidate[1]);
+    box?.focus({ preventScroll: true });
   }
 }
 
@@ -327,6 +450,8 @@ function runBlockers() {
   const blockers = [];
   if (!Object.keys(product().identifiers || {}).length) blockers.push("Exact identifier required");
   if (!sources().length) blockers.push("Source candidate required");
+  else if (!selectedSourceIds().length) blockers.push("Select at least one source");
+  if (selectedSourceIds().length > 50) blockers.push("Select at most 50 sources");
   return blockers;
 }
 
@@ -337,6 +462,7 @@ function renderRuns() {
   content.hidden = !isConfigured();
   if (!isConfigured()) { emptySetup(empty, "Durable runs"); return; }
   const blockers = runBlockers();
+  byId("run-source-summary").textContent = `${selectedSourceIds().length} of ${sources().length} registered sources selected. Up to 50 sources, 120 seconds, and no external model calls. Change the selection on the Sources page.`;
   const blockerTarget = byId("run-blockers");
   clear(blockerTarget);
   if (!blockers.length) blockerTarget.append(badge("Ready", "success"));
@@ -524,7 +650,15 @@ function toast(message) {
   window.setTimeout(() => item.remove(), 4200);
 }
 
-async function submit(form, task, successMessage) {
+function focusCreatedRequest(result) {
+  const id = String(result?.request?.id || "");
+  const card = [...byId("recommendation-list").querySelectorAll(".recommendation-request")].find((item) => item.dataset.requestId === id);
+  if (!card) return;
+  card.scrollIntoView({ block: "start", behavior: "smooth" });
+  card.querySelector("h4")?.focus({ preventScroll: true });
+}
+
+async function submit(form, task, successMessage, onSuccess) {
   if (form.dataset.pending === "true") return;
   showFormError(form, "");
   setPending(form, true);
@@ -533,6 +667,7 @@ async function submit(form, task, successMessage) {
     if (result?.id && result?.operation) state.selectedJobId = result.id;
     toast(successMessage);
     await loadBootstrap({ quiet: true });
+    if (onSuccess) onSuccess(result);
     if (result?.id && result?.operation) await selectJob(result.id);
   } catch (error) {
     showFormError(form, error.message);
@@ -611,8 +746,62 @@ function installEvents() {
     submit(form, () => api("/api/workspace", { method: "POST", body: { industry: String(data.get("industry")).trim(), product: String(data.get("product")).trim(), market: String(data.get("market")).trim(), locale: "en" } }), "Workspace created.");
   });
   byId("source-form").addEventListener("submit", (event) => {
-    event.preventDefault(); const form = event.currentTarget; const data = new FormData(form); const name = String(data.get("name") || "").trim();
-    submit(form, async () => { await api("/api/sources", { method: "POST", body: { url: String(data.get("url")).trim(), scope: String(data.get("scope")), ...(name ? { name } : {}) } }); form.reset(); }, "Source registered.");
+    event.preventDefault(); const form = event.currentTarget; const data = new FormData(form);
+    const name = String(data.get("name") || "").trim(); const url = String(data.get("url") || "").trim();
+    if (!name && !url) { showFormError(form, "Enter a company name or a source URL."); return; }
+    if (!url && data.get("scope") === "internal") { showFormError(form, "Enter an authorized internal URL to register an internal source."); return; }
+    if (url && !safeWebUrl(url)) { showFormError(form, "Enter a full HTTP or HTTPS source URL."); return; }
+    submit(form, async () => {
+      let result;
+      if (url) result = await api("/api/sources", { method: "POST", body: { url, scope: String(data.get("scope")), ...(name ? { name } : {}) } });
+      else result = await api("/api/recommendations", { method: "POST", body: { query: name, kind: "company" } });
+      form.reset();
+      form.querySelector('button[type="submit"]').textContent = "Register source";
+      return result;
+    }, url ? "Source registered." : "Company recommendation request created.", url ? null : focusCreatedRequest);
+  });
+  byId("source-form").addEventListener("input", () => {
+    const form = byId("source-form");
+    const name = form.elements.namedItem("name").value.trim();
+    const url = form.elements.namedItem("url").value.trim();
+    form.querySelector('button[type="submit"]').textContent = name && !url ? "Create company request" : "Register source";
+  });
+  byId("recommendation-form").addEventListener("submit", (event) => {
+    event.preventDefault(); const form = event.currentTarget; const query = String(new FormData(form).get("query") || "").trim();
+    if (!query) { showFormError(form, "Enter a source keyword."); return; }
+    submit(form, async () => { const result = await api("/api/recommendations", { method: "POST", body: { query, kind: "keyword" } }); form.reset(); return result; }, "Recommendation request created.", focusCreatedRequest);
+  });
+  byId("recommendation-list").addEventListener("change", (event) => {
+    const box = event.target.closest("[data-candidate-id]");
+    if (!box) return;
+    state.candidateSelection.set(candidateKey(box.dataset.candidateRequest, box.dataset.candidateId), box.checked);
+    const card = box.closest(".recommendation-request");
+    const count = [...card.querySelectorAll("[data-candidate-id]")].filter((item) => item.checked && !item.disabled).length;
+    card.querySelector(".recommendation-actions span").textContent = `${count} selected`;
+    card.querySelector("[data-add-request]").disabled = count === 0;
+  });
+  byId("recommendation-list").addEventListener("click", async (event) => {
+    const copy = event.target.closest("[data-copy-request]");
+    if (copy) {
+      const request = recommendationRequests().find((item) => String(item.id) === copy.dataset.copyRequest);
+      if (!request) return;
+      try { await navigator.clipboard.writeText(recommendationHandoff(request)); toast("Request copied."); }
+      catch (_error) { toast("Copy was unavailable. Open View request text to copy it manually."); }
+      return;
+    }
+    const button = event.target.closest("[data-add-request]");
+    if (!button) return;
+    const request = recommendationRequests().find((item) => String(item.id) === button.dataset.addRequest);
+    if (!request) return;
+    const ids = (request.candidates || []).filter((candidate) => !candidate.source_id && state.candidateSelection.get(candidateKey(String(request.id), String(candidate.id))) === true).map((candidate) => String(candidate.id));
+    if (!ids.length) return;
+    button.disabled = true;
+    try {
+      const result = await api("/api/recommendations/select", { method: "POST", body: { request_id: String(request.id), candidate_ids: ids } });
+      for (const id of ids) state.candidateSelection.delete(candidateKey(String(request.id), id));
+      toast(`${result.added_count ?? ids.length} source(s) added to research targets.`);
+      await loadBootstrap({ quiet: true });
+    } catch (error) { toast(error.message); button.disabled = false; }
   });
   byId("identity-form").addEventListener("submit", (event) => {
     event.preventDefault(); const form = event.currentTarget;
@@ -622,13 +811,24 @@ function installEvents() {
     const target = byId(button.dataset.addRow); addKeyValueRow(target, "", "", target.id === "identifier-rows" ? "model" : "specification", target.id === "identifier-rows" ? "Exact value" : "Required value"); target.lastElementChild.querySelector("input").focus();
   }));
   byId("source-filter").addEventListener("input", () => renderSourceList(true));
+  byId("source-list").addEventListener("change", (event) => {
+    const box = event.target.closest("[data-run-source-id]");
+    if (!box) return;
+    state.sourceSelection.set(box.dataset.runSourceId, box.checked);
+    saveSourceSelection();
+    const filter = byId("source-filter").value.trim().toLowerCase();
+    const filtered = sources().filter((source) => `${source.name || ""} ${source.location || ""}`.toLowerCase().includes(filter));
+    state.sourceFingerprint = JSON.stringify([filter, filtered, [...state.sourceSelection]]);
+    byId("source-selection-summary").textContent = `${selectedSourceIds().length} of ${sources().length} registered sources selected for the next guided run${byId("source-filter").value.trim() ? " · Hidden selections remain selected" : ""}.`;
+    renderRuns();
+  });
   byId("source-list").addEventListener("click", (event) => {
     const button = event.target.closest("[data-source-action]"); if (!button) return;
     const operation = button.dataset.sourceAction; button.disabled = true;
     api("/api/jobs", { method: "POST", body: { operation, arguments: operation === "discover" ? { source_id: button.dataset.sourceId, limit: 100 } : { source_id: button.dataset.sourceId, timeout_seconds: 30, max_model_calls: 0 } } })
       .then(() => { toast(`${titleCase(operation)} job queued.`); return loadBootstrap({ quiet: true }); }).catch((error) => toast(error.message)).finally(() => { button.disabled = false; });
   });
-  byId("agent-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; submit(form, () => api("/api/jobs", { method: "POST", body: { operation: "agent", arguments: { max_sources: 3, max_seconds: 120, max_model_calls: 0 } } }), "Research run queued."); });
+  byId("agent-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; const sourceIds = selectedSourceIds(); if (!sourceIds.length || sourceIds.length > 50) { showFormError(form, "Select between 1 and 50 sources on the Sources page."); return; } submit(form, () => api("/api/jobs", { method: "POST", body: { operation: "agent", arguments: { source_ids: sourceIds, max_sources: sourceIds.length, max_seconds: 120, max_model_calls: 0 } } }), "Research run queued."); });
   byId("advanced-operation").addEventListener("change", advancedFields);
   byId("advanced-form").addEventListener("submit", (event) => {
     event.preventDefault();
