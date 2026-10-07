@@ -43,6 +43,8 @@ The core installation is enough for the UI and local-file workflows. Install opt
 
 The browser UI is the primary local starting point in 0.5. It provides four areas:
 
+Choose **English**, **한국어**, or **日本語** from the top-bar **Language** selector (shown as **언어** in Korean and **言語** in Japanese). English is the default; your choice is saved in browser `localStorage` for this local UI origin. Switching language updates labels, status text, and date formatting without reloading or clearing form inputs and checkbox selections. It does not translate stored source content or evidence, prices, model IDs, MCP configuration, research-workspace locale, or report data, and it makes no AI translation or external calls.
+
 - **Overview** — first-run setup, research readiness, and independent-worker controls.
 - **Sources** — exact product identity, direct URL registration, company/keyword recommendation requests, candidate selection, bounded discovery, and extraction proposals.
 - **Runs** — queued-job status, evidence status, paginated observations, and registered XLSX reports.
@@ -235,7 +237,7 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 - No paid MCP service is used by the supported-site collection flow.
 - Agent-Reach informed the doctor/routing design but has no direct runtime integration. ego-lite depends on a macOS app path and is not directly integrated on Windows.
 - Windows service installation and scheduling for continuous operation are not implemented.
-- English is the default for CLI help, errors, and XLSX labels. Korean documentation, setup prompts, and research next actions are available; full Korean interface/report localization is not implemented.
+- The browser UI supports English, Korean, and Japanese. CLI help and errors, and XLSX labels, remain in English. Korean setup prompts and research next actions are available; CLI and report localization are not provided.
 
 ## Before a real deployment
 

@@ -39,7 +39,9 @@ def main() -> int:
         worker_started = False
         try:
             with httpx.Client(base_url=server.url, trust_env=False, timeout=20) as client:
-                for asset, media_type in [("/", "text/html"), ("/app.js", "javascript"),
+                for asset, media_type in [("/", "text/html"), ("/i18n.js", "javascript"),
+                                          ("/static-messages.js", "javascript"), ("/app-messages.js", "javascript"),
+                                          ("/app.js", "javascript"),
                                           ("/styles.css", "text/css"), ("/mark.svg", "image/svg+xml")]:
                     response = client.get(asset)
                     response.raise_for_status()

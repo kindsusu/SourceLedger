@@ -31,6 +31,9 @@ from .recommendation_jobs import latest_recommendation_jobs, queue_generation
 MAX_BODY_BYTES = 256 * 1024
 REQUEST_TIMEOUT_SECONDS = 15
 STATIC_FILES = {
+    "/i18n.js": "i18n.js",
+    "/static-messages.js": "static-messages.js",
+    "/app-messages.js": "app-messages.js",
     "/": "index.html",
     "/index.html": "index.html",
     "/app.js": "app.js",

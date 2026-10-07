@@ -38,6 +38,10 @@ Available options:
 
 The core installation is sufficient for the UI. Run `setup.cmd --browser` when Playwright collection is required and `setup.cmd --mcp` when connecting Codex or Claude. Both options can be combined. See [Installation](INSTALLATION.md) for platform details.
 
+## Language
+
+Use the top-bar **Language** selector to choose **English**, **한국어**, or **日本語**. English is the default. The browser saves the choice in `localStorage` for this local UI origin, so it is retained when you return to the same UI. Switching takes effect without a page reload and preserves current inputs and checkbox selections. It changes UI labels, status text, and localized date formatting only. It does not translate or change stored source content, evidence, prices, model IDs, MCP configuration, research-workspace locale, or report data. The switch performs no AI translation and makes no external calls.
+
 ## First use
 
 1. Open **Overview** and enter the industry, product, and market. SourceLedger does not ask for an analysis purpose.

@@ -8,24 +8,27 @@
   <title>SourceLedger</title>
   <link rel="icon" href="mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
+  <script src="i18n.js" defer></script>
+  <script src="static-messages.js" defer></script>
+  <script src="app-messages.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#main-content">Skip to content</a>
+  <a class="skip-link" href="#main-content" data-i18n="ui.skipContent">Skip to content</a>
   <div class="app-shell">
-    <aside class="sidebar" aria-label="Primary navigation">
-      <a class="brand" href="#overview" aria-label="SourceLedger overview">
+    <aside class="sidebar" aria-label="Primary navigation" data-i18n-aria-label="ui.primaryNavigation">
+      <a class="brand" href="#overview" aria-label="SourceLedger overview" data-i18n-aria-label="ui.brandOverview">
         <img src="mark.svg" alt="" width="40" height="40">
-        <span><strong>SourceLedger</strong><small>Evidence workspace</small></span>
+        <span><strong>SourceLedger</strong><small data-i18n="ui.evidenceWorkspace">Evidence workspace</small></span>
       </a>
       <nav class="primary-nav">
-        <a href="#overview" data-route="overview"><span class="nav-icon" aria-hidden="true">01</span>Overview</a>
-        <a href="#sources" data-route="sources"><span class="nav-icon" aria-hidden="true">02</span>Sources</a>
-        <a href="#runs" data-route="runs"><span class="nav-icon" aria-hidden="true">03</span>Runs</a>
-        <a href="#connections" data-route="connections"><span class="nav-icon" aria-hidden="true">04</span>Connections</a>
+        <a href="#overview" data-route="overview"><span class="nav-icon" aria-hidden="true">01</span><span data-i18n="ui.overview">Overview</span></a>
+        <a href="#sources" data-route="sources"><span class="nav-icon" aria-hidden="true">02</span><span data-i18n="ui.sources">Sources</span></a>
+        <a href="#runs" data-route="runs"><span class="nav-icon" aria-hidden="true">03</span><span data-i18n="ui.runs">Runs</span></a>
+        <a href="#connections" data-route="connections"><span class="nav-icon" aria-hidden="true">04</span><span data-i18n="ui.connections">Connections</span></a>
       </nav>
       <div class="sidebar-meta">
-        <span class="eyebrow">Local workspace</span>
+        <span class="eyebrow" data-i18n="ui.localWorkspace">Local workspace</span>
         <strong id="sidebar-workspace">Loading…</strong>
         <span class="worker-line"><i id="worker-dot" class="status-dot"></i><span id="sidebar-worker">Checking worker</span></span>
       </div>
@@ -34,10 +37,11 @@
     <div class="workspace-shell">
       <header class="topbar">
         <div>
-          <span class="eyebrow" id="page-kicker">Workspace</span>
+          <span class="eyebrow" id="page-kicker" data-i18n="ui.workspace">Workspace</span>
           <h1 id="page-title" tabindex="-1">Overview</h1>
         </div>
         <div class="topbar-actions">
+          <label class="language-control"><span id="language-label" data-i18n="ui.language">Language</span><select id="language-select" aria-labelledby="language-label"><option value="en" lang="en">English</option><option value="ko" lang="ko">한국어</option><option value="ja" lang="ja">日本語</option></select></label>
           <span class="version" id="version-label"></span>
           <button class="button button-secondary worker-button" id="worker-toggle" type="button" disabled>Worker</button>
         </div>
@@ -45,140 +49,140 @@
 
       <main id="main-content" tabindex="-1">
         <div id="global-message" class="notice notice-error" role="alert" hidden>
-          <div><strong>SourceLedger could not load.</strong><p id="global-message-text"></p></div>
-          <button class="button button-secondary" id="retry-button" type="button">Try again</button>
+          <div><strong data-i18n="ui.loadFailed">SourceLedger could not load.</strong><p id="global-message-text"></p></div>
+          <button class="button button-secondary" id="retry-button" type="button" data-i18n="ui.tryAgain">Try again</button>
         </div>
 
-        <section id="loading-view" class="loading-view" aria-label="Loading workspace">
+        <section id="loading-view" class="loading-view" aria-label="Loading workspace" data-i18n-aria-label="ui.loadingWorkspace">
           <div class="skeleton skeleton-title"></div>
           <div class="card-grid">
             <div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div>
           </div>
-          <span class="sr-only">Loading workspace</span>
+          <span class="sr-only" data-i18n="ui.loadingWorkspace">Loading workspace</span>
         </section>
 
         <section id="overview-view" class="view" data-view="overview" hidden>
           <div id="setup-panel" class="setup-panel" hidden>
             <div class="setup-copy">
-              <span class="eyebrow accent">First-run setup</span>
-              <h2>Define the research workspace</h2>
-              <p>SourceLedger keeps every observation tied to its source. Start with the subject you intend to research; nothing is inferred for you.</p>
-              <ol class="setup-steps" aria-label="Onboarding steps">
-                <li class="current"><span>1</span><div><strong>Research subject</strong><small>Industry, product, and market</small></div></li>
-                <li><span>2</span><div><strong>Exact identity</strong><small>Model, SKU, or catalog ID</small></div></li>
-                <li><span>3</span><div><strong>Source candidates</strong><small>Public or authorized internal URLs</small></div></li>
-                <li><span>4</span><div><strong>Bounded run</strong><small>Collect, review, then export</small></div></li>
+              <span class="eyebrow accent" data-i18n="ui.firstRunSetup">First-run setup</span>
+              <h2 data-i18n="ui.defineWorkspace">Define the research workspace</h2>
+              <p data-i18n="ui.setupIntro">SourceLedger keeps every observation tied to its source. Start with the subject you intend to research; nothing is inferred for you.</p>
+              <ol class="setup-steps" aria-label="Onboarding steps" data-i18n-aria-label="ui.onboardingSteps">
+                <li class="current"><span>1</span><div><strong data-i18n="ui.researchSubject">Research subject</strong><small data-i18n="ui.industryProductMarket">Industry, product, and market</small></div></li>
+                <li><span>2</span><div><strong data-i18n="ui.exactIdentity">Exact identity</strong><small data-i18n="ui.modelSkuCatalog">Model, SKU, or catalog ID</small></div></li>
+                <li><span>3</span><div><strong data-i18n="ui.sourceCandidates">Source candidates</strong><small data-i18n="ui.publicInternalUrls">Public or authorized internal URLs</small></div></li>
+                <li><span>4</span><div><strong data-i18n="ui.boundedRun">Bounded run</strong><small data-i18n="ui.collectReviewExport">Collect, review, then export</small></div></li>
               </ol>
             </div>
             <form id="setup-form" class="card form-card" novalidate>
-              <div class="form-heading"><span class="step-number">01</span><div><h3>Research subject</h3><p>All fields are required.</p></div></div>
-              <label>Industry<input name="industry" autocomplete="organization-title" required placeholder="e.g. Industrial automation"></label>
-              <label>Product<input name="product" required placeholder="e.g. Servo motor"></label>
-              <label>Market<input name="market" required placeholder="e.g. South Korea"></label>
+              <div class="form-heading"><span class="step-number">01</span><div><h3 data-i18n="ui.researchSubject">Research subject</h3><p data-i18n="ui.allFieldsRequired">All fields are required.</p></div></div>
+              <label><span data-i18n="ui.industry">Industry</span><input name="industry" autocomplete="organization-title" required placeholder="e.g. Industrial automation" data-i18n-placeholder="ui.industryPlaceholder"></label>
+              <label><span data-i18n="ui.product">Product</span><input name="product" required placeholder="e.g. Servo motor" data-i18n-placeholder="ui.productPlaceholder"></label>
+              <label><span data-i18n="ui.market">Market</span><input name="market" required placeholder="e.g. South Korea" data-i18n-placeholder="ui.marketPlaceholder"></label>
               <p class="form-error" data-form-error role="alert" hidden></p>
-              <button class="button button-primary" type="submit">Create workspace</button>
+              <button class="button button-primary" type="submit" data-i18n="ui.createWorkspace">Create workspace</button>
             </form>
           </div>
 
           <div id="dashboard-panel" hidden>
             <div class="hero-row">
-              <div><span class="eyebrow accent">Research workspace</span><h2 id="workspace-heading">Workspace</h2><p id="workspace-subtitle" class="lede"></p></div>
-              <a class="button button-primary" href="#runs">Start a bounded run</a>
+              <div><span class="eyebrow accent" data-i18n="ui.researchWorkspace">Research workspace</span><h2 id="workspace-heading">Workspace</h2><p id="workspace-subtitle" class="lede"></p></div>
+              <a class="button button-primary" href="#runs" data-i18n="ui.startBoundedRun">Start a bounded run</a>
             </div>
-            <div class="metric-grid" aria-label="Workspace facts">
-              <article class="metric-card"><span>Candidate sources</span><strong id="source-count">0</strong><small>Explicitly registered</small></article>
-              <article class="metric-card"><span>Recent jobs</span><strong id="job-count">0</strong><small>Latest 20 only</small></article>
-              <article class="metric-card"><span>Exact identifiers</span><strong id="identifier-count">0</strong><small>Operator supplied</small></article>
+            <div class="metric-grid" aria-label="Workspace facts" data-i18n-aria-label="ui.workspaceFacts">
+              <article class="metric-card"><span data-i18n="ui.candidateSources">Candidate sources</span><strong id="source-count">0</strong><small data-i18n="ui.explicitlyRegistered">Explicitly registered</small></article>
+              <article class="metric-card"><span data-i18n="ui.recentJobs">Recent jobs</span><strong id="job-count">0</strong><small data-i18n="ui.latest20Only">Latest 20 only</small></article>
+              <article class="metric-card"><span data-i18n="ui.exactIdentifiers">Exact identifiers</span><strong id="identifier-count">0</strong><small data-i18n="ui.operatorSupplied">Operator supplied</small></article>
             </div>
             <div class="overview-grid">
-              <section class="card"><div class="section-heading"><div><span class="eyebrow">Readiness</span><h3>Research path</h3></div></div><div id="readiness-list" class="journey-list"></div></section>
-              <section class="card"><div class="section-heading"><div><span class="eyebrow">Activity</span><h3>Recent runs</h3></div><a href="#runs">View all</a></div><div id="overview-jobs"></div></section>
+              <section class="card"><div class="section-heading"><div><span class="eyebrow" data-i18n="ui.readiness">Readiness</span><h3 data-i18n="ui.researchPath">Research path</h3></div></div><div id="readiness-list" class="journey-list"></div></section>
+              <section class="card"><div class="section-heading"><div><span class="eyebrow" data-i18n="ui.activity">Activity</span><h3 data-i18n="ui.recentRuns">Recent runs</h3></div><a href="#runs" data-i18n="ui.viewAll">View all</a></div><div id="overview-jobs"></div></section>
             </div>
           </div>
         </section>
 
         <section id="sources-view" class="view" data-view="sources" hidden>
-          <div class="hero-row compact"><div><span class="eyebrow accent">Evidence inputs</span><h2>Sources & identity</h2><p class="lede">Choose a company or site, request suggestions, and record exact product identity before collection.</p></div></div>
+          <div class="hero-row compact"><div><span class="eyebrow accent" data-i18n="ui.evidenceInputs">Evidence inputs</span><h2 data-i18n="ui.sourcesIdentity">Sources &amp; identity</h2><p class="lede" data-i18n="ui.sourcesIntro">Choose a company or site, request suggestions, and record exact product identity before collection.</p></div></div>
           <div id="sources-setup-empty" class="empty-state" hidden></div>
           <div id="sources-content" class="source-workflow" hidden>
             <div class="source-entry-grid">
               <form id="source-form" class="card form-card" novalidate>
-                <div class="section-heading"><div><span class="eyebrow">Direct target</span><h3>Company or site</h3></div></div>
-                <label>Company name <span class="optional">Optional when a URL is provided</span><input name="name" placeholder="Supplier name"></label>
-                <label>Source URL <span class="optional">Optional when a company name is provided</span><input type="url" name="url" inputmode="url" placeholder="https://example.com/catalog"></label>
-                <label>Access scope<select name="scope"><option value="public">Public</option><option value="internal">Authorized internal</option></select></label>
-                <p class="hint">A URL registers the site directly. A company name alone creates a request to find its real site; no URL is guessed. Registration makes no network request.</p>
+                <div class="section-heading"><div><span class="eyebrow" data-i18n="ui.directTarget">Direct target</span><h3 data-i18n="ui.companySite">Company or site</h3></div></div>
+                <label><span data-i18n="ui.companyName">Company name</span> <span class="optional" data-i18n="ui.optionalWithUrl">Optional when a URL is provided</span><input name="name" placeholder="Supplier name" data-i18n-placeholder="ui.supplierNamePlaceholder"></label>
+                <label><span data-i18n="ui.sourceUrl">Source URL</span> <span class="optional" data-i18n="ui.optionalWithCompany">Optional when a company name is provided</span><input type="url" name="url" inputmode="url" placeholder="https://example.com/catalog"></label>
+                <label><span data-i18n="ui.accessScope">Access scope</span><select name="scope"><option value="public" data-i18n="ui.public">Public</option><option value="internal" data-i18n="ui.authorizedInternal">Authorized internal</option></select></label>
+                <p class="hint" data-i18n="ui.registerHint">A URL registers the site directly. A company name alone creates a request to find its real site; no URL is guessed. Registration makes no network request.</p>
                 <p class="form-error" data-form-error role="alert" hidden></p>
                 <button class="button button-primary" type="submit">Register source</button>
               </form>
 
               <form id="recommendation-form" class="card form-card" novalidate>
-                <div class="section-heading"><div><span class="eyebrow">AI suggestions</span><h3>Find sources by keyword</h3></div></div>
-                <label>Source keyword<input name="query" placeholder="e.g. servo motor distributors in South Korea" required></label>
-                <p class="hint">Create a request, then run it with a local AI CLI here or use your connected AI app. Review suggestions before adding them. Selection does not verify a source or its prices.</p>
+                <div class="section-heading"><div><span class="eyebrow" data-i18n="ui.aiSuggestions">AI suggestions</span><h3 data-i18n="ui.findSourcesKeyword">Find sources by keyword</h3></div></div>
+                <label><span data-i18n="ui.sourceKeyword">Source keyword</span><input name="query" placeholder="e.g. servo motor distributors in South Korea" data-i18n-placeholder="ui.keywordPlaceholder" required></label>
+                <p class="hint" data-i18n="ui.recommendationHint">Create a request, then run it with a local AI CLI here or use your connected AI app. Review suggestions before adding them. Selection does not verify a source or its prices.</p>
                 <p class="form-error" data-form-error role="alert" hidden></p>
-                <button class="button button-secondary" type="submit">Create recommendation request</button>
+                <button class="button button-secondary" type="submit" data-i18n="ui.createRecommendationRequest">Create recommendation request</button>
               </form>
             </div>
-            <p id="recommendation-empty" class="workflow-hint">Create a company or keyword request to find source suggestions. Requests and unverified suggestions will appear here.</p>
-            <section id="recommendation-register" class="card recommendation-register" hidden><div class="section-heading"><div><span class="eyebrow">Source discovery</span><h3>Recommendation requests</h3></div></div><div id="recommendation-list" class="recommendation-list"></div></section>
-            <section class="card source-register"><div class="section-heading source-heading"><div><span class="eyebrow">Research targets</span><h3>Registered sources</h3></div><label class="filter-label">Filter<span class="sr-only"> sources</span><input id="source-filter" type="search" placeholder="Name or host"></label></div><p id="source-selection-summary" class="hint" aria-live="polite"></p><div id="source-list" class="source-list"></div></section>
+            <p id="recommendation-empty" class="workflow-hint" data-i18n="ui.recommendationEmpty">Create a company or keyword request to find source suggestions. Requests and unverified suggestions will appear here.</p>
+            <section id="recommendation-register" class="card recommendation-register" hidden><div class="section-heading"><div><span class="eyebrow" data-i18n="ui.sourceDiscovery">Source discovery</span><h3 data-i18n="ui.recommendationRequests">Recommendation requests</h3></div></div><div id="recommendation-list" class="recommendation-list"></div></section>
+            <section class="card source-register"><div class="section-heading source-heading"><div><span class="eyebrow" data-i18n="ui.researchTargets">Research targets</span><h3 data-i18n="ui.registeredSources">Registered sources</h3></div><label class="filter-label"><span data-i18n="ui.filter">Filter</span><input id="source-filter" type="search" aria-label="Filter sources" data-i18n-aria-label="ui.filterSources" placeholder="Name or host" data-i18n-placeholder="ui.nameOrHostPlaceholder"></label></div><p id="source-selection-summary" class="hint" aria-live="polite"></p><div id="source-list" class="source-list"></div></section>
             <form id="identity-form" class="card form-card" novalidate>
-                <div class="section-heading"><div><span class="eyebrow">Product identity</span><h3>Exact matching fields</h3></div></div>
-                <p class="hint">Use identifiers printed by the manufacturer or supplied by the operator. Values are never guessed.</p>
-                <fieldset><legend>Identifiers <span>At least one required to run</span></legend><div id="identifier-rows" class="key-value-list"></div><button class="text-button add-row" type="button" data-add-row="identifier-rows">+ Add identifier</button></fieldset>
-                <fieldset><legend>Required specifications <span>Optional</span></legend><div id="spec-rows" class="key-value-list"></div><button class="text-button add-row" type="button" data-add-row="spec-rows">+ Add specification</button></fieldset>
+                <div class="section-heading"><div><span class="eyebrow" data-i18n="ui.productIdentity">Product identity</span><h3 data-i18n="ui.exactMatchingFields">Exact matching fields</h3></div></div>
+                <p class="hint" data-i18n="ui.identifierHint">Use identifiers printed by the manufacturer or supplied by the operator. Values are never guessed.</p>
+                <fieldset><legend><span data-i18n="ui.identifiers">Identifiers</span> <span data-i18n="ui.oneRequired">At least one required to run</span></legend><div id="identifier-rows" class="key-value-list"></div><button class="text-button add-row" type="button" data-add-row="identifier-rows"><span aria-hidden="true">+ </span><span data-i18n="ui.addIdentifier">Add identifier</span></button></fieldset>
+                <fieldset><legend><span data-i18n="ui.requiredSpecifications">Required specifications</span> <span data-i18n="ui.optional">Optional</span></legend><div id="spec-rows" class="key-value-list"></div><button class="text-button add-row" type="button" data-add-row="spec-rows"><span aria-hidden="true">+ </span><span data-i18n="ui.addSpecification">Add specification</span></button></fieldset>
                 <p class="form-error" data-form-error role="alert" hidden></p>
-                <button class="button button-primary" type="submit">Save product identity</button>
+                <button class="button button-primary" type="submit" data-i18n="ui.saveProductIdentity">Save product identity</button>
             </form>
           </div>
         </section>
 
         <section id="runs-view" class="view" data-view="runs" hidden>
-          <div class="hero-row compact"><div><span class="eyebrow accent">Durable execution</span><h2>Runs</h2><p class="lede">Queue bounded work, then inspect execution and evidence as separate outcomes.</p></div></div>
+          <div class="hero-row compact"><div><span class="eyebrow accent" data-i18n="ui.durableExecution">Durable execution</span><h2 data-i18n="ui.runs">Runs</h2><p class="lede" data-i18n="ui.runsIntro">Queue bounded work, then inspect execution and evidence as separate outcomes.</p></div></div>
           <div id="runs-setup-empty" class="empty-state" hidden></div>
           <div id="runs-content" hidden>
             <section class="run-launch card">
-              <div><span class="eyebrow">Guided run</span><h3>Research selected sources</h3><p id="run-source-summary">Select sources on the Sources page. Up to 50 sources, 120 seconds, and no external model calls.</p><div id="run-blockers" class="blocker-list"></div></div>
-              <form id="agent-form"><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-primary" type="submit">Queue research run</button></form>
+              <div><span class="eyebrow" data-i18n="ui.guidedRun">Guided run</span><h3 data-i18n="ui.researchSelectedSources">Research selected sources</h3><p id="run-source-summary">Select sources on the Sources page. Up to 50 sources, 120 seconds, and no external model calls.</p><div id="run-blockers" class="blocker-list"></div></div>
+              <form id="agent-form"><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-primary" type="submit" data-i18n="ui.queueResearchRun">Queue research run</button></form>
             </section>
-            <details class="advanced card"><summary><span>Advanced jobs</span><small>Use explicit paths and bounded options</small></summary>
+            <details class="advanced card"><summary><span data-i18n="ui.advancedJobs">Advanced jobs</span><small data-i18n="ui.advancedHint">Use explicit paths and bounded options</small></summary>
               <form id="advanced-form" class="advanced-form" novalidate>
-                <label>Operation<select name="operation" id="advanced-operation"><option value="collect_sites">Collect supported sites</option><option value="verify">Verify configuration</option><option value="run">Run pinned configuration</option><option value="export">Regenerate XLSX report</option></select></label>
-                <div id="advanced-fields"></div><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-secondary" type="submit">Queue advanced job</button>
+                <label><span data-i18n="ui.operation">Operation</span><select name="operation" id="advanced-operation"><option value="collect_sites" data-i18n="ui.collectSupportedSites">Collect supported sites</option><option value="verify" data-i18n="ui.verifyConfiguration">Verify configuration</option><option value="run" data-i18n="ui.runPinnedConfiguration">Run pinned configuration</option><option value="export" data-i18n="ui.regenerateXlsx">Regenerate XLSX report</option></select></label>
+                <div id="advanced-fields"></div><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-secondary" type="submit" data-i18n="ui.queueAdvancedJob">Queue advanced job</button>
               </form>
             </details>
             <div class="runs-layout">
-              <section class="card job-register"><div class="section-heading"><div><span class="eyebrow">Latest 20</span><h3>Job history</h3></div></div><div id="job-list" class="job-list"></div></section>
-              <section id="job-detail" class="card job-detail" aria-live="polite"><div class="empty-inline"><strong>Select a run</strong><p>Execution details, evidence state, and observations will appear here.</p></div></section>
+              <section class="card job-register"><div class="section-heading"><div><span class="eyebrow" data-i18n="ui.latest20">Latest 20</span><h3 data-i18n="ui.jobHistory">Job history</h3></div></div><div id="job-list" class="job-list"></div></section>
+              <section id="job-detail" class="card job-detail" aria-live="polite"><div class="empty-inline"><strong data-i18n="ui.selectRun">Select a run</strong><p data-i18n="ui.jobDetailHint">Execution details, evidence state, and observations will appear here.</p></div></section>
             </div>
           </div>
         </section>
 
         <section id="connections-view" class="view" data-view="connections" hidden>
-          <div class="hero-row compact"><div><span class="eyebrow accent">Local AI and MCP</span><h2>Connections</h2><p class="lede">Set a local CLI for web recommendations or connect an AI app to this workspace.</p></div></div>
+          <div class="hero-row compact"><div><span class="eyebrow accent" data-i18n="ui.localAiMcp">Local AI and MCP</span><h2 data-i18n="ui.connections">Connections</h2><p class="lede" data-i18n="ui.connectionsIntro">Set a local CLI for web recommendations or connect an AI app to this workspace.</p></div></div>
           <div class="connections-layout">
-            <section class="card ai-settings-card"><div class="section-heading"><div><span class="eyebrow">Web recommendations</span><h3>Workspace AI default</h3></div></div>
-              <p class="hint">Use Codex CLI or Claude Code CLI installed and signed in on this computer. These model settings apply to web recommendations; choose your AI app's model in that app.</p>
+            <section class="card ai-settings-card"><div class="section-heading"><div><span class="eyebrow" data-i18n="ui.webRecommendations">Web recommendations</span><h3 data-i18n="ui.workspaceAiDefault">Workspace AI default</h3></div></div>
+              <p class="hint" data-i18n="ui.aiSettingsHint">Use Codex CLI or Claude Code CLI installed and signed in on this computer. These model settings apply to web recommendations; choose your AI app's model in that app.</p>
               <form id="ai-settings-form" class="form-card" novalidate>
-                <label>Provider<select name="provider" id="ai-provider"></select></label>
+                <label><span data-i18n="ui.provider">Provider</span><select name="provider" id="ai-provider"></select></label>
                 <p id="ai-provider-status" class="hint" role="status"></p>
-                <label>Model<select name="model_choice" id="ai-model-choice"></select></label>
-                <label id="ai-custom-model-label" hidden>Custom model ID<input name="custom_model" id="ai-custom-model" autocomplete="off" placeholder="Exact provider model ID"></label>
-                <details class="ai-advanced"><summary>Advanced timeout</summary><label>Timeout (seconds)<input name="timeout_seconds" id="ai-timeout" type="number" min="30" max="600" step="1" value="180" required></label></details>
+                <label><span data-i18n="ui.model">Model</span><select name="model_choice" id="ai-model-choice"></select></label>
+                <label id="ai-custom-model-label" hidden><span data-i18n="ui.customModelId">Custom model ID</span><input name="custom_model" id="ai-custom-model" autocomplete="off" placeholder="Exact provider model ID" data-i18n-placeholder="ui.exactProviderModelId"></label>
+                <details class="ai-advanced"><summary data-i18n="ui.advancedTimeout">Advanced timeout</summary><label><span data-i18n="ui.timeoutSeconds">Timeout (seconds)</span><input name="timeout_seconds" id="ai-timeout" type="number" min="30" max="600" step="1" value="180" required></label></details>
                 <p class="form-error" data-form-error role="alert" hidden></p>
-                <button class="button button-primary" type="submit">Save AI settings</button>
+                <button class="button button-primary" type="submit" data-i18n="ui.saveAiSettings">Save AI settings</button>
               </form>
             </section>
-            <section class="card"><div class="section-heading"><div><span class="eyebrow">Client configuration</span><h3>Generate a snippet</h3></div></div>
-              <form id="connection-form" class="form-card inline-form"><label>Client<select name="client" id="connection-client"><option value="codex">Codex</option><option value="claude-code">Claude Code</option><option value="claude-desktop">Claude Desktop</option></select></label><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-primary" type="submit">Generate snippet</button></form>
-              <div id="connection-result" hidden><div class="code-heading"><strong>Configuration snippet</strong><button id="copy-snippet" class="button button-secondary" type="button">Copy</button></div><pre tabindex="0"><code id="connection-snippet"></code></pre></div>
+            <section class="card"><div class="section-heading"><div><span class="eyebrow" data-i18n="ui.clientConfiguration">Client configuration</span><h3 data-i18n="ui.generateSnippet">Generate a snippet</h3></div></div>
+              <form id="connection-form" class="form-card inline-form"><label><span data-i18n="ui.client">Client</span><select name="client" id="connection-client"><option value="codex">Codex</option><option value="claude-code">Claude Code</option><option value="claude-desktop">Claude Desktop</option></select></label><p class="form-error" data-form-error role="alert" hidden></p><button class="button button-primary" type="submit" data-i18n="ui.generateSnippetAction">Generate snippet</button></form>
+              <div id="connection-result" hidden><div class="code-heading"><strong data-i18n="ui.configurationSnippet">Configuration snippet</strong><button id="copy-snippet" class="button button-secondary" type="button" data-i18n="ui.copy">Copy</button></div><pre tabindex="0"><code id="connection-snippet"></code></pre></div>
             </section>
-            <section class="card"><div class="section-heading"><div><span class="eyebrow">Setup path</span><h3>Use the local server</h3></div></div><ol class="instruction-list"><li><span>1</span><div><strong>Install MCP support if needed</strong><p id="mcp-install-note">Windows: <code>setup.cmd --mcp</code><br>macOS/Linux: <code>bash setup.sh --mcp</code></p></div></li><li><span>2</span><div><strong>Merge the generated settings</strong><p>Add the snippet without replacing existing servers. Target: <code id="client-config-target">CODEX_HOME/config.toml</code></p></div></li><li><span>3</span><div><strong>Refresh the client</strong><p>Restart or reload the MCP connections so the server is discovered.</p></div></li><li><span>4</span><div><strong>Start the worker</strong><p>Queued jobs only execute while this workspace worker is running.</p></div></li></ol><div class="context-note"><strong>Workspace scope</strong><p id="connection-workspace">The connection remains bound to this local workspace.</p></div></section>
+            <section class="card"><div class="section-heading"><div><span class="eyebrow" data-i18n="ui.setupPath">Setup path</span><h3 data-i18n="ui.useLocalServer">Use the local server</h3></div></div><ol class="instruction-list"><li><span>1</span><div><strong data-i18n="ui.installMcp">Install MCP support if needed</strong><p id="mcp-install-note">Windows: <code>setup.cmd --mcp</code><br>macOS/Linux: <code>bash setup.sh --mcp</code></p></div></li><li><span>2</span><div><strong data-i18n="ui.mergeSettings">Merge the generated settings</strong><p><span data-i18n="ui.addSnippetTarget">Add the snippet without replacing existing servers. Target:</span> <code id="client-config-target">CODEX_HOME/config.toml</code></p></div></li><li><span>3</span><div><strong data-i18n="ui.refreshClient">Refresh the client</strong><p data-i18n="ui.refreshClientHint">Restart or reload the MCP connections so the server is discovered.</p></div></li><li><span>4</span><div><strong data-i18n="ui.startWorker">Start the worker</strong><p data-i18n="ui.workerHint">Queued jobs only execute while this workspace worker is running.</p></div></li></ol><div class="context-note"><strong data-i18n="ui.workspaceScope">Workspace scope</strong><p id="connection-workspace">The connection remains bound to this local workspace.</p></div></section>
           </div>
         </section>
       </main>
-      <footer><span>SourceLedger</span><span>SQLite system of record · XLSX human-readable reports</span></footer>
+      <footer><span>SourceLedger</span><span data-i18n="ui.footer">SQLite system of record · XLSX human-readable reports</span></footer>
     </div>
   </div>
   <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
