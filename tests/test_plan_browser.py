@@ -175,3 +175,68 @@ def test_plan_preserves_detailed_request_and_confirms_before_start(tmp_path):
             assert errors == []
         finally:
             browser.close()
+
+
+def test_plan_create_waits_for_bootstrap_and_shows_create_error(tmp_path):
+    playwright = pytest.importorskip("playwright.sync_api")
+    with running_server(tmp_path) as server, playwright.sync_playwright() as driver:
+        browser = launch_browser(driver)
+        page = browser.new_page(viewport={"width": 1100, "height": 800})
+        page.set_default_timeout(8000)
+        held = []
+        held_create = []
+        posts = []
+        hold_bootstrap = True
+        data = {
+            "csrf_token": "ready-token", "status": "unconfigured", "version": "test",
+            "workspace_root": str(tmp_path), "worker": {"status": "stopped"},
+            "jobs": [], "plan_jobs": [], "research_plans": {"plans": []},
+            "recommendation_jobs": [], "recommendations": {"requests": []},
+            "mcp_available": True,
+            "ai": {"settings": {"provider": "codex", "model": "", "timeout_seconds": 180},
+                   "providers": [{"id": "codex", "label": "Codex", "available": False,
+                                  "models": [], "message": ""}]},
+        }
+
+        def route_api(route):
+            path = route.request.url.split("/api/", 1)[1]
+            if route.request.method == "GET" and path == "bootstrap":
+                if hold_bootstrap:
+                    held.append(route)
+                else:
+                    route.fulfill(json=copy.deepcopy(data))
+                return
+            posts.append(path)
+            if path == "plans":
+                held_create.append(route)
+            else:
+                route.fulfill(status=403, json={"error": "Fixture create denied"})
+
+        try:
+            page.route("**/api/**", route_api)
+            page.goto(server.url)
+            playwright.expect(page.locator("#plan-view")).to_be_visible()
+            playwright.expect(page.locator("#plan-create")).to_be_disabled()
+            page.locator("#plan-request-text").fill("Research portable meters")
+            page.evaluate("document.getElementById('plan-request-form').requestSubmit()")
+            playwright.expect(page.locator("#plan-request-error")).to_contain_text("still loading")
+            assert posts == []
+            assert held
+            hold_bootstrap = False
+            for route in held:
+                route.fulfill(json=copy.deepcopy(data))
+            playwright.expect(page.locator("#plan-create")).to_be_enabled()
+            playwright.expect(page.locator("#plan-request-text")).to_have_value("Research portable meters")
+            page.locator("#plan-create").click()
+            playwright.expect(page.locator("#plan-create")).to_be_disabled()
+            page.evaluate("loadBootstrap({quiet: true})")
+            playwright.expect(page.locator("#plan-create")).to_be_disabled()
+            assert held_create
+            held_create[0].fulfill(status=403, json={"error": "Fixture create denied"})
+            playwright.expect(page.locator("#plan-request-error")).to_be_visible()
+            playwright.expect(page.locator("#plan-request-error")).to_contain_text("Fixture create denied")
+            playwright.expect(page.locator("#plan-workspace")).to_be_hidden()
+            playwright.expect(page.locator("#plan-create")).to_be_enabled()
+            assert posts == ["plans"]
+        finally:
+            browser.close()

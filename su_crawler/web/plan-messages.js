@@ -58,6 +58,7 @@
     ["select", "Include in research", "조사에 포함", "調査に含める"], ["remove", "Remove", "제외", "削除"],
     ["evidence", "Evidence link", "근거 링크", "根拠リンク"], ["sourceLink", "Source link", "출처 링크", "情報源リンク"],
     ["noRequest", "Describe what you want to research first.", "먼저 조사할 내용을 적어 주세요.", "まず調査したい内容を記入してください。"],
+    ["notReady", "The workspace is still loading. Wait for the connection, then try again.", "작업 공간을 불러오는 중입니다. 연결이 완료되면 다시 시도하세요.", "ワークスペースを読み込み中です。接続後に再試行してください。"],
     ["needTopic", "Industry, product, and market are required before starting.", "시작 전에 업종, 제품, 시장을 모두 입력해야 합니다.", "開始前に業界、製品、市場をすべて入力してください。"],
     ["needCandidate", "Select or add at least one real source URL before starting.", "시작 전에 실제 출처 URL을 하나 이상 선택하거나 추가하세요.", "開始前に実際の情報源URLを1件以上選択または追加してください。"],
     ["tooManyCandidates", "Select no more than 50 source URLs for one research run.", "한 번의 조사에 출처 URL을 50개 이하로 선택하세요.", "1回の調査で選択できる情報源URLは50件までです。"],

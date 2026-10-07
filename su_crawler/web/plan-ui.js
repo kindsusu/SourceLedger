@@ -14,10 +14,21 @@
     target.textContent = message;
     target.hidden = !message;
   }
+  function requestError(message) {
+    const target = $("plan-request-error");
+    target.textContent = message;
+    target.hidden = !message;
+  }
   function status(message) { ui.feedback = message || ""; $("plan-status").textContent = ui.feedback; }
+  function ready() { return typeof ui.bootstrap?.csrf_token === "string" && ui.bootstrap.csrf_token.length > 0; }
+  function syncControls() {
+    const disabled = ui.busy || !ready();
+    for (const id of ["plan-create", "plan-save", "plan-preview", "plan-change", "plan-start", "plan-copy", "plan-new-request", "plan-history"]) $(id).disabled = disabled;
+    $("plan-add-form").querySelector('button[type="submit"]').disabled = disabled;
+  }
   function setBusy(value) {
     ui.busy = value;
-    for (const id of ["plan-create", "plan-save", "plan-preview", "plan-change", "plan-start", "plan-new-request", "plan-history"]) $(id).disabled = value;
+    syncControls();
   }
   function applyPlan(plan) {
     ui.plan = plan;
@@ -108,6 +119,7 @@
     renderHistory(plans);
     ui.previewJob = planJobs(bootstrap).find(job => job.operation === "plan_preview" && (job.arguments?.plan_id === ui.plan?.id || job.plan_id === ui.plan?.id)) || null;
     renderPlan();
+    syncControls();
   }
   function el(tag, className, text) {
     const element = document.createElement(tag);
@@ -259,14 +271,20 @@
     status(tr("queued"));
     await loadBootstrap({ quiet: true });
   }
-  async function act(task) {
+  async function act(task, { request = false } = {}) {
     if (ui.busy) return;
     error("");
+    requestError("");
+    if (!ready()) {
+      if (request || !ui.plan) requestError(tr("notReady")); else error(tr("notReady"));
+      return;
+    }
     setBusy(true);
     try { await task(); }
     catch (failure) {
       if (failure.status === 409 || /revision|stale|plan changed|changed while/i.test(failure.rawMessage || "")) ui.stale = true;
-      error(ui.stale ? tr("stale") : failure.message);
+      const message = ui.stale ? tr("stale") : failure.message;
+      if (request || !ui.plan) requestError(message); else error(message);
     } finally { setBusy(false); }
   }
   function validateTopicAndTargets() {
@@ -296,8 +314,8 @@
     $("plan-request-form").addEventListener("submit", event => {
       event.preventDefault();
       const request = $("plan-request-text").value.trim();
-      if (!request) { $("plan-request-error").textContent = tr("noRequest"); $("plan-request-error").hidden = false; return; }
-      $("plan-request-error").hidden = true;
+      if (!request) { requestError(tr("noRequest")); return; }
+      requestError("");
       act(async () => {
         if (ui.plan && !ui.newRequestMode) {
           await saveIncludingRequest();
@@ -308,7 +326,7 @@
           await loadBootstrap({ quiet: true });
         }
         await preview();
-      });
+      }, { request: true });
     });
     $("plan-workspace").addEventListener("input", event => {
       if (event.target.matches("[data-plan-edit]")) ui.dirty = true;
@@ -390,5 +408,6 @@
     // Static labels are translated by the shared i18n layer; inputs are intentionally untouched.
   }
   install();
+  syncControls();
   window.SourceLedgerPlanUI = Object.freeze({ render, languageChanged });
 })();
