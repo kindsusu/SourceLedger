@@ -9,7 +9,9 @@ import importlib.util
 import json
 import math
 import mimetypes
+import os
 import secrets
+import socket
 import webbrowser
 
 from . import __version__
@@ -41,7 +43,9 @@ class WebHTTPServer(ThreadingHTTPServer):
     """Threaded server carrying immutable workspace and browser security state."""
 
     daemon_threads = True
-    allow_reuse_address = True
+    # On Windows SO_REUSEADDR can bind over a still-running UI and leave clients
+    # talking to the old process. Reserve this endpoint for one server instead.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(self, root: Path, port: int):
         self.workspace = root
@@ -49,6 +53,11 @@ class WebHTTPServer(ThreadingHTTPServer):
         self.static_root = Path(__file__).with_name("web")
         super().__init__(("127.0.0.1", port), SourceLedgerHandler)
         self.url = f"http://127.0.0.1:{self.server_port}"
+
+    def server_bind(self) -> None:
+        if os.name == "nt":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 class SourceLedgerHandler(BaseHTTPRequestHandler):
@@ -422,6 +431,8 @@ def build_web_server(root: str | Path, *, port: int = 8765) -> WebHTTPServer:
     except OSError as exc:
         if getattr(exc, "winerror", None) == 10048 or getattr(exc, "errno", None) in {48, 98}:
             raise OSError(f"Port {port} is already in use; choose another port with --port") from exc
+        if getattr(exc, "winerror", None) == 10013:
+            raise OSError(f"Port {port} could not be opened; stop any existing UI server, choose another --port, or check local network permissions") from exc
         raise
 
 

@@ -79,6 +79,14 @@ def test_bootstrap_and_onboarding_round_trip(tmp_path):
         assert state["research"]["candidate_source_count"] == 1
 
 
+def test_active_ui_port_cannot_be_reused_by_another_server(tmp_path):
+    with running_server(tmp_path / "first") as server:
+        with pytest.raises(OSError):
+            web_server.build_web_server(tmp_path / "second", port=server.server_port)
+        status, state = json_response(request(server, "GET", "/api/bootstrap"))
+        assert status == 200 and state["workspace_root"] == str((tmp_path / "first").resolve())
+
+
 def test_job_submission_prepares_before_publishing(tmp_path, monkeypatch):
     published = []
 
