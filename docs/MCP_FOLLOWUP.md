@@ -2,7 +2,11 @@
 
 Start in a connected AI app. Use its available search/browser tools to propose a research plan, show the scope to the user, and collect only after confirmation. No subordinate models or paid scraping service are required by this workflow. Browser availability and model usage remain controlled by the host app.
 
-After `start_research_plan` finishes:
+`start_research_plan` collects only selected URLs by default (`follow_links=false`). Enable `follow_links=true` only for user-approved bounded same-host discovery. Product lists belong to their respective company/source; do not apply one company's requested models to every selected source.
+
+Use `wait_for_job(job_id, timeout_seconds=20)` after starting collection. Each call waits asynchronously for at most 30 seconds and returns compact status. If it is still running, wait again; a timeout is not a failed job. Successful execution does not establish price completeness.
+
+After collection finishes:
 
 1. Call `get_research_gaps(job_id, offset=0, limit=50)` to inspect failures, unprocessed pages and unresolved conditions. This does not browse or call a model. A visited page is not necessarily a verified offer.
 2. For retryable failures, call `retry_research_pages(job_id, urls, max_seconds=120)`. Only recorded unresolved URLs from the same confirmed revision are accepted. Authentication/policy denials and already extracted review-only prices are not blind-retry targets. This explicitly starts a new budget of one page per URL, up to 50 pages and 600 seconds, and does not discover new links. Completed page captures are reused in a combined report; each attempt has a separate run history.
@@ -19,6 +23,10 @@ Coverage remains limited to selected/visited pages. Jetcar discovery follows veh
 
 ## Clear results and supporting evidence
 
-`get_job_observations.rows` now contains collection results, not an extra price row for each browser capture. Each result includes `field_status`, `missing_conditions`, `supporting_evidence` and `conflicts`. Result and evidence counts are separate. A unique matching source URL, product name and supplied option identifiers (including contract term) can associate a capture; ambiguous or mismatched captures remain in `evidence_submissions`. Association does not verify a price. Differing supported prices remain visible and disable direct comparison in the result view. Source values are never overwritten or filled from a supplemental capture.
+`get_job_observations` returns compact rows by default. Use `offset`/`limit` for results and `evidence_offset`/`evidence_limit` for separate submissions (default 20, maximum 50 per MCP page). Request `detail=true` only when original evidence details are needed. The web UI retains detailed result rows.
 
-The first XLSX sheet, **Results**, shows prices, recorded conditions, missing conditions and supporting-evidence counts. **Supporting Evidence** identifies the linked observation, or shows why a capture is unlinked. **Rental Quotes** contains collection results only. **Observation History** and **Source Evidence** retain every original record for audit. The web UI shows the same result counts, expandable evidence and per-field recorded/missing/conflict labels in English, Korean and Japanese. “Recorded” means a value was collected, not that a final commercial quote was verified.
+A unique matching source URL, product name and supplied option identifiers (including contract term) can associate a browser capture with an existing result without adding a duplicate price row. Unmatched price candidates can appear in Results with review status; ambiguous matches remain separate evidence. Captures are retained in `evidence_submissions` and audit sheets. Association never verifies a price, and conflicts disable comparison. Source values are never overwritten from a supplemental capture.
+
+Submit literal values with canonical keys: `name`, `price`, `currency`, `price_basis`, `term_months`, `deposit_amount`, `deposit_percent`, `annual_mileage_km`, `options`, `insurance`, and `tax`, only when present. Keep `월 290,000원~` intact instead of converting it in the submission. Supported numeric interpretations are derived separately, preserving the starting-price qualifier and original text. “Missing” means not recorded or unconfirmed, not necessarily absent from the source page.
+
+The first XLSX sheet, **Results**, shows prices, recorded conditions, missing conditions and supporting-evidence counts, including eligible browser candidates clearly marked for review. **Supporting Evidence** identifies the linked observation, or shows why a capture is unlinked. **Observation History** and **Source Evidence** retain every original record for audit. The web UI shows result counts, source price text and review notices in English, Korean and Japanese. “Recorded” means a value was collected, not that a final commercial quote was verified.

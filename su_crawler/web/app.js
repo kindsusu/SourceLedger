@@ -801,6 +801,7 @@ function renderObservations(target) {
     const estimated = row.value_origin === "calculator_estimate" ? (row.derived_amount ?? row.derived_values?.estimated_price ?? null) : null;
     const evidenceStatus = row.result_status === "conflict" ? i18n.t("plan.resultConflict") : row.verification_level || row.status || "unknown";
     const fields = row.raw_fields && typeof row.raw_fields === "object" ? row.raw_fields : {};
+    const browserCandidate = row.extraction_method === "host_browser_submission";
     const productName = fields.name || row.product_name || row.product_id;
     const attributes = Object.entries(fields).filter(([key, value]) => key !== "name" && key !== "price" && key !== "currency" && value !== null && value !== "").map(([key, value]) => `${key}: ${displayValue(value)}`).join(" · ");
     const attributeCell = node("td");
@@ -813,12 +814,13 @@ function renderObservations(target) {
     attributeCell.append(allFields);
     const detailCell = node("td");
     detailCell.append(node("p", { text: displayValue(row.locator || row.evidence_path) }));
+    if (browserCandidate) detailCell.append(node("p", { text: i18n.t("plan.browserCandidate") }));
     if (row.missing_conditions?.length) detailCell.append(node("p", { text: `${i18n.t("plan.resultMissing")}: ${row.missing_conditions.map(key => i18n.t(`plan.field.${key}`)).join(", ")}` }));
     if (row.field_status) {
       const details = node("details");
       details.append(node("summary", { text: i18n.t("plan.resultFields") }));
       for (const [key, field] of Object.entries(row.field_status)) {
-        const label = field.status === "missing" ? "resultMissing" : field.status === "conflict" ? "resultConflict" : "resultRecorded";
+        const label = field.status === "missing" ? "resultMissing" : field.status === "conflict" ? "resultConflict" : field.status === "derived" ? "resultDerived" : "resultRecorded";
         details.append(node("p", { text: `${i18n.t(`plan.field.${key}`)}: ${field.value == null ? "—" : displayValue(field.value)} · ${i18n.t(`plan.${label}`)}` }));
       }
       detailCell.append(details);
@@ -832,7 +834,8 @@ function renderObservations(target) {
       }
       detailCell.append(proof);
     }
-    const displayPrice = observed == null ? "—" : String(observed).replace(/^(-?\d+)(\.\d+)?$/, (_, integer, fraction = "") => integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + fraction);
+    let displayPrice = browserCandidate ? displayValue(fields.price) : observed == null ? "—" : String(observed).replace(/^(-?\d+)(\.\d+)?$/, (_, integer, fraction = "") => integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + fraction);
+    if (!browserCandidate && observed != null && (row.price_kind || row.derived_values?.price_kind) === "from") displayPrice = i18n.t("plan.startingPrice", { price: displayPrice });
     body.append(node("tr", {}, [node("td", { text: displayValue(productName) }), attributeCell, sourceCell, node("td", { text: displayPrice }), node("td", { text: displayValue(estimated) }), node("td", { text: displayValue(row.currency) }), node("td", { text: statusText(row.value_origin) }), node("td", {}, badge(evidenceStatus)), detailCell, node("td", { text: formatDate(row.collected_at) })]));
   }
   table.append(body);

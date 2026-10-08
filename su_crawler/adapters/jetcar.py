@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, Tag
@@ -95,11 +96,16 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
             row_fields["deposit_amount"] = won(deposit.group())
             row_proofs["deposit_amount"] = evidence(f"table:rent/tr:{index}", row_fields["deposit_amount"], deposit.group(), raw)
         annual = re.search(r"연\s*([\d,.]+)\s*(만)?\s*[Kk][Mm]", raw)
+        review_flags: list[str] = []
         if annual:
-            row_fields["annual_mileage_km"] = decimal_string(annual.group(1), multiplier=10_000 if annual.group(2) else 1)
-            row_proofs["annual_mileage_km"] = evidence(f"table:rent/tr:{index}", row_fields["annual_mileage_km"], annual.group(), raw)
+            normalized = decimal_string(annual.group(1), multiplier=10_000 if annual.group(2) else 1)
+            if normalized is not None and Decimal(normalized) == Decimal(normalized).to_integral_value():
+                row_fields["annual_mileage_km"] = str(int(Decimal(normalized)))
+                row_proofs["annual_mileage_km"] = evidence(f"table:rent/tr:{index}", row_fields["annual_mileage_km"], annual.group(), raw)
+            else:
+                review_flags.append("annual_mileage_not_integer")
         annotate_evidence(row_proofs, mode, source_identity={"item_id"}, displayed_fields=set(row_proofs) - {"item_id"})
-        rows.append(Candidate(fields=row_fields, evidence=row_proofs, locator=f"jetcar:{item_id}:rent-row:{index}", extraction_method="jetcar_visible_html", value_origin="observed", source_visibility=visibility, evidence_mode=mode))
+        rows.append(Candidate(fields=row_fields, evidence=row_proofs, locator=f"jetcar:{item_id}:rent-row:{index}", extraction_method="jetcar_visible_html", value_origin="observed", source_visibility=visibility, review_flags=review_flags, evidence_mode=mode))
     if rows:
         return rows
     proofs["price"] = evidence("table:rent", None, visible_text(rent_table) or "No displayed monthly price row")

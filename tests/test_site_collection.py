@@ -4,7 +4,7 @@ import pytest
 
 from su_crawler.models import FetchResult
 from su_crawler.research import init_workspace
-from su_crawler.site_collection import collect_sites
+from su_crawler.site_collection import _ready_recipe, collect_sites
 from su_crawler.storage import Store
 
 
@@ -18,6 +18,7 @@ FILES = {
     URLS["jetcar"]: "jetcar_detail.html",
     URLS["gongcar"]: "gongcar_rendered.html",
     URLS["funrent"]: "funrent_rendered.html",
+    "https://gongcar.kr/rentpass": "gongcar_rentpass.html",
 }
 
 
@@ -62,6 +63,53 @@ def test_three_adapters_flow_to_sqlite_and_xlsx_with_estimate_separation(tmp_pat
     estimates = [row for row in rows if row["value_origin"] == "calculator_estimate"]
     assert estimates and all(row["amount"] is None and row["derived_amount"] for row in estimates)
     assert all(not row["comparable"] and row["status"] != "verified" for row in estimates)
+
+
+def test_gongcar_current_host_flows_to_reviewable_report_without_promo_mixing(tmp_path):
+    url = "https://gongcar.kr/rentpass"
+    output = tmp_path / "prices"
+
+    class CheckingCollector(FixtureCollector):
+        def __call__(self, source, base, backend, *, validators=None):
+            if backend == "playwright":
+                assert source.recipe == _ready_recipe("gongcar")
+                assert "인기 차량" in source.recipe[0]["selector"]
+            return super().__call__(source, base, backend, validators=validators)
+
+    collector = CheckingCollector(fail_http_for={url})
+    result = collect_sites(workspace(tmp_path), urls=[url], output_dir=output, collector=collector)
+    assert result["coverage"][0]["items"] == 3
+    assert not result["coverage"][0]["coverage_gap"]
+    assert Path(result["report_path"]).is_file()
+    store = Store(output)
+    rows = store.observations(result["id"])
+    store.close()
+    assert {row["raw_fields"]["name"] for row in rows} == {"더 뉴 모닝", "더 뉴 레이", "캐스퍼"}
+    assert {row["amount"] for row in rows} == {"290000", "310000"}
+    assert all(row["status"] == "review" and not row["comparable"] for row in rows)
+    assert all(row["rental_conditions"]["term_months"] == 48 for row in rows)
+    assert all(row["rental_conditions"]["deposit_percent"] == "30" for row in rows)
+    assert all(row["derived_values"]["price_kind"] == "from" for row in rows)
+    assert all("deposit_amount" not in row["raw_fields"] for row in rows)
+
+
+def test_jetcar_fractional_man_km_survives_collection_validation(tmp_path):
+    class AnnualMileageCollector(FixtureCollector):
+        def __call__(self, source, base, backend, *, validators=None):
+            result = super().__call__(source, base, backend, validators=validators)
+            result.content = result.content.replace("12개월".encode("utf-8"), "12개월 / 연 2.5만KM".encode("utf-8"), 1)
+            return result
+
+    output = tmp_path / "prices"
+    result = collect_sites(workspace(tmp_path), urls=[URLS["jetcar"]], output_dir=output,
+                           collector=AnnualMileageCollector())
+    store = Store(output)
+    rows = store.observations(result["id"])
+    store.close()
+    annual = next(row for row in rows if row["rental_conditions"].get("term_months") == 12)
+    assert annual["raw_fields"]["annual_mileage_km"] == "25000"
+    assert annual["rental_conditions"]["annual_mileage_km"] == 25000
+    assert "positive integer: annual_mileage_km" not in annual["reason"]
 
 
 def test_no_identifier_becomes_explicit_coverage_gap(tmp_path):

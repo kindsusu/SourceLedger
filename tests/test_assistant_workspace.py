@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from su_crawler.assistant_workspace import (
-    execute_job, prepare_job_args, result_report, validate_config, workspace_root,
+    _compact_observation, execute_job, prepare_job_args, result_observations, result_report,
+    validate_config, workspace_root,
 )
 from su_crawler.research import init_workspace
 
@@ -88,6 +89,64 @@ def test_report_metadata_is_hashed_and_size_bounded(tmp_path, monkeypatch):
     monkeypatch.setattr("su_crawler.assistant_workspace.MAX_REPORT_BYTES", 3)
     with pytest.raises(ValueError, match="exceeds"):
         result_report(tmp_path, job)
+
+
+def test_observation_pages_bound_primary_and_browser_evidence_independently(tmp_path):
+    from su_crawler.storage import Store
+
+    output = tmp_path / "output"
+    store = Store(output)
+    try:
+        store.db.execute("INSERT INTO runs(id,config_hash,status,started_at,demo) VALUES(?,?,?,?,?)",
+                         ("run-1", "hash", "succeeded", "2026-01-01T00:00:00+00:00", 0))
+        store.db.execute("INSERT INTO tasks(id,run_id,source_id,product_id,status,updated_at) VALUES(?,?,?,?,?,?)",
+                         ("task-1", "run-1", "source", "product", "succeeded", "2026-01-01T00:00:00+00:00"))
+        for index in range(3):
+            offer = {"id": f"offer-{index}", "source_url": "https://example.test/a", "price_profile": "rental",
+                     "amount": "290000", "status": "review", "raw_fields": {"name": f"Car {index}", "price": "290000"},
+                     "source_excerpt": "x" * 50_000}
+            store.db.execute("INSERT INTO observations(id,run_id,task_id,data) VALUES(?,?,?,?)",
+                             (offer["id"], "run-1", "task-1", json.dumps(offer)))
+            evidence = {"id": f"capture-{index}", "source_url": "https://example.test/a",
+                        "extraction_method": "host_browser_submission", "raw_fields": {"name": f"Different {index}"},
+                        "source_excerpt": "y" * 50_000}
+            store.db.execute("INSERT INTO browser_submissions(id,run_id,data) VALUES(?,?,?)",
+                             (evidence["id"], "run-1", json.dumps(evidence)))
+        store.db.commit()
+    finally:
+        store.close()
+    job = {"result": {"run_id": "run-1", "output_dir": str(output)}}
+    page = result_observations(tmp_path, job, offset=1, limit=1, evidence_offset=2, evidence_limit=1,
+                               detail=False)
+    assert page["total"] == 3 and page["unlinked_evidence_count"] == 3
+    assert len(page["rows"]) == 1 and page["rows"][0]["id"] == "offer-1"
+    assert len(page["evidence_submissions"]) == 1 and page["evidence_submissions"][0]["id"] == "capture-2"
+    assert "source_excerpt" not in str(page)
+    full = result_observations(tmp_path, job, offset=1, limit=1, evidence_offset=2, evidence_limit=1)
+    assert full["rows"][0]["source_excerpt"] == "x" * 50_000
+    assert len(full["evidence_submissions"]) == 1
+    with pytest.raises(ValueError, match="evidence_offset"):
+        result_observations(tmp_path, job, evidence_offset=-1)
+
+
+def test_compact_browser_candidate_keeps_price_qualifier_and_provenance():
+    row = {"id": "browser-1", "source_url": "https://gongcar.kr/rentpass", "amount": "290000",
+           "verification_level": "review", "primary_candidate": True, "price_kind": "from",
+           "collected_at": "2026-01-01T00:00:00+00:00", "evidence_path": "browser-1.json",
+           "raw_fields": {"name": "Car", "price": "290,000원~", "contract_term": "48개월",
+                          "deposit": "30%", "options": "x" * 500},
+           "derived_values": {"price_kind": "from", "literal_interpretations": {
+               "price": "290000", "term_months": "48", "deposit_percent": "30"},
+               "source_excerpt": "hidden" * 10000},
+           "source_excerpt": "hidden" * 10000}
+    compact = _compact_observation(row)
+    assert compact["verification_level"] == "review" and compact["primary_candidate"]
+    assert compact["price_kind"] == "from"
+    assert compact["raw_fields"]["contract_term"] == "48개월"
+    assert compact["raw_fields"]["deposit"] == "30%"
+    assert compact["interpretation"]["literal_interpretations"]["deposit_percent"] == "30"
+    assert compact["raw_fields"]["options"].endswith("[truncated; request detail=true]")
+    assert "source_excerpt" not in str(compact)
 
 
 def test_changed_config_is_rejected_at_execution(tmp_path):

@@ -45,6 +45,24 @@ def fake(pages, calls):
     return collector
 
 
+def test_selected_urls_only_never_queues_navigation(tmp_path):
+    url = "https://shop.example/product"
+    calls = []
+    payload = html_product("Shirt", price="10", currency="USD",
+                           links='<a href="/another">Another</a><a href="/privacy">Privacy</a>')
+    result = collect_plan(tmp_path, plan([url]), output_dir=tmp_path / "results", max_pages=4,
+                          follow_links=False, collector=fake({(url, "http"): payload}, calls))
+    assert {call[0] for call in calls} == {url}
+    assert {page["url"] for page in result["coverage"]} == {url}
+
+
+@pytest.mark.parametrize("value", ["false", 0, None])
+def test_follow_links_requires_boolean(tmp_path, value):
+    with pytest.raises(ValueError, match="follow_links"):
+        collect_plan(tmp_path, plan(["https://shop.example/product"]),
+                     output_dir=tmp_path / "results", follow_links=value)
+
+
 def rows(output, run_id):
     store = Store(Path(output))
     try:

@@ -15,7 +15,7 @@ from .research import _locked, init_workspace
 
 def _validate(args: dict, operation: str, *, prepared: bool = False) -> dict:
     allowed = {"plan_id", "expected_revision"}
-    allowed |= {"provider", "model", "timeout_seconds"} if operation == "plan_preview" else {"max_pages", "max_seconds", "retry_of", "retry_urls"}
+    allowed |= {"provider", "model", "timeout_seconds"} if operation == "plan_preview" else {"max_pages", "max_seconds", "retry_of", "retry_urls", "follow_links"}
     if prepared:
         allowed |= {"plan_fingerprint", "_resume", "_attempt"}
     if not isinstance(args, dict) or set(args) - allowed:
@@ -37,6 +37,10 @@ def _validate(args: dict, operation: str, *, prepared: bool = False) -> dict:
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or not 1 <= seconds <= 600:
             raise ValueError("max_seconds must be between 1 and 600")
         clean.update(max_pages=pages, max_seconds=seconds)
+        if "follow_links" in args:
+            if not isinstance(args["follow_links"], bool):
+                raise ValueError("follow_links must be a boolean")
+            clean["follow_links"] = args["follow_links"]
         if "retry_of" in args or "retry_urls" in args:
             parent, urls = args.get("retry_of"), args.get("retry_urls")
             if not isinstance(parent, str) or not re.fullmatch(r"[0-9a-f]{32}", parent):
@@ -151,7 +155,8 @@ def execute_plan_job(root: str | Path, operation: str, args: dict, *, job_id: st
         from .research_followup import validate_retry
         validate_retry(base, clean)
     result = collect_plan(base, snapshot, output_dir=output, max_pages=clean["max_pages"], max_seconds=clean["max_seconds"],
-                          checkpoint_id=job_id, retry_urls=clean.get("retry_urls"), parent_checkpoint_id=clean.get("retry_of"))
+                          checkpoint_id=job_id, retry_urls=clean.get("retry_urls"), parent_checkpoint_id=clean.get("retry_of"),
+                          follow_links=clean.get("follow_links", True))
     result["retry_of"] = clean.get("retry_of")
     return {"operation": operation, "execution_status": "succeeded", "evidence_status": result.get("status", "needs_review"),
             "plan_id": clean["plan_id"], "plan_revision": clean["expected_revision"],

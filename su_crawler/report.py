@@ -199,13 +199,18 @@ def export_report(
         }
         fmts['number']['scientific'] = wb.add_format({'num_format': '0.##############E+00', 'valign': 'top'})
 
-        # The default reading surface counts offers, never supporting captures.
+        # Show collected offers and distinct browser-only review candidates.
         headers = ["Product", "Source", "Recorded Price (not a final quote)", "Currency", "Result Status",
                    "Recorded Conditions", "Missing Conditions", "Supporting Evidence Count", "Conflicting Values", "Source URL", "Observation ID"]
         ws = wb.add_worksheet("Results"); row = _setup_sheet(ws, headers, fmts, demo)
         for obs in presentation["rows"]:
             fields = obs.get("raw_fields") or {}
-            recorded = "\n".join(f'{item["label"]}: {item["value"]}' for key, item in obs["field_status"].items() if key not in {"price", "currency"} and item["status"] != "missing")
+            recorded = "\n".join(f'{item["label"]}: {item["value"]}' + (" (normalized from browser text)" if item["status"] == "derived" else "")
+                                  for key, item in obs["field_status"].items() if key not in {"price", "currency"} and item["status"] != "missing")
+            if obs.get("primary_candidate") and fields.get("price"):
+                recorded = f'Displayed price text (review required): {fields["price"]}' + ("\n" + recorded if recorded else "")
+            if obs.get("price_kind") == "from":
+                recorded = "Displayed price: starting at (source uses ~); exact quote unknown" + ("\n" + recorded if recorded else "")
             values = [fields.get("name") or obs.get("product_id"), obs.get("source_name"),
                       _observed_amount(obs, include_review=True), obs.get("currency"), obs["result_status"],
                       recorded, "\n".join(FIELD_LABELS.get(key, key) for key in obs["missing_conditions"]), len(obs["supporting_evidence"]),

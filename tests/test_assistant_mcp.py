@@ -48,7 +48,7 @@ def test_server_tool_contract_and_registered_report_resource(tmp_path):
     assert {
         "get_workspace_status", "initialize_workspace", "set_product_identity", "add_source_candidate",
         "queue_source_discovery", "queue_source_proposal", "queue_research_agent", "queue_supported_sites",
-        "queue_verification", "queue_collection", "queue_report_export", "get_job_status",
+        "queue_verification", "queue_collection", "queue_report_export", "get_job_status", "wait_for_job",
         "list_recent_jobs", "resume_job_execution", "get_job_observations", "get_job_report",
         "list_source_recommendation_requests", "request_source_recommendations", "submit_source_recommendations",
         "list_research_plans", "get_research_plan", "create_research_plan", "submit_research_preview",
@@ -57,6 +57,51 @@ def test_server_tool_contract_and_registered_report_resource(tmp_path):
     } == tools
     resources = asyncio.run(server.list_resource_templates())
     assert any(str(item.uriTemplate) == "sourceledger://reports/{job_id}" for item in resources)
+
+
+def test_wait_for_job_returns_small_terminal_status_and_times_out(tmp_path, monkeypatch):
+    calls = 0
+
+    def fake_get_job(_root, _job_id):
+        nonlocal calls
+        calls += 1
+        status = "succeeded" if calls >= 2 else "running"
+        return {"id": "a" * 32, "operation": "research_plan", "status": status,
+                "updated_at": "2026-01-01T00:00:00+00:00", "attempt": 1,
+                "result": {"execution_status": "succeeded", "evidence_status": "needs_review",
+                           "report_path": "/ignored/report.xlsx",
+                           "result": {"observation_count": 3, "source_excerpt": "x" * 100_000}}}
+
+    monkeypatch.setattr("su_crawler.assistant_runtime.get_job", fake_get_job)
+    server = build_assistant_server(tmp_path)
+    waited = _call(server, "wait_for_job", {"job_id": "a" * 32, "timeout_seconds": 2})
+    assert waited["completed"] and waited["status"] == "succeeded"
+    assert waited["evidence_status"] == "needs_review" and waited["has_report"]
+    assert waited["result_summary"] == {"observation_count": 3}
+    assert len(json.dumps(waited)) < 1000
+    monkeypatch.setattr("su_crawler.assistant_runtime.get_job", lambda *_: {
+        "id": "a" * 32, "operation": "research_plan", "status": "running", "attempt": 1})
+    running_server = build_assistant_server(tmp_path)
+    timed_out = _call(running_server, "wait_for_job", {"job_id": "a" * 32, "timeout_seconds": 0.05})
+    assert timed_out["status"] == "running" and not timed_out["completed"]
+    with pytest.raises(Exception, match="timeout_seconds"):
+        _call(running_server, "wait_for_job", {"job_id": "a" * 32, "timeout_seconds": 31})
+
+
+def test_start_research_plan_limits_collection_to_approved_urls_by_default(tmp_path, monkeypatch):
+    submitted = []
+
+    def fake_start(_root, operation, arguments):
+        submitted.append((operation, arguments))
+        return {"status": "queued"}
+
+    monkeypatch.setattr("su_crawler.plan_jobs.start_plan_job", fake_start)
+    server = build_assistant_server(tmp_path)
+    _call(server, "start_research_plan", {"plan_id": "plan-1", "expected_revision": 1})
+    _call(server, "start_research_plan", {"plan_id": "plan-1", "expected_revision": 1,
+                                           "follow_links": True})
+    assert submitted[0][1]["follow_links"] is False
+    assert submitted[1][1]["follow_links"] is True
 
 
 def test_assistant_stages_recommendations_without_registering_or_collecting(tmp_path):

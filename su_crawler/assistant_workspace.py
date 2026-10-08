@@ -430,10 +430,55 @@ def _result_metadata(root: Path, operation: str, args: dict[str, Any], result: d
     return metadata
 
 
-def result_observations(root: str | Path, job: dict[str, Any], *, offset: int = 0, limit: int = 50) -> dict[str, Any]:
+def _compact_observation(row: dict[str, Any]) -> dict[str, Any]:
+    """Keep MCP pages readable without duplicating source text and snapshots."""
+    keys = ("id", "source_url", "source_id", "product_id", "amount", "currency", "price_profile",
+            "status", "result_status", "verification_level", "comparable", "comparison_key",
+            "association_status", "target_observation_id", "primary_candidate", "price_kind",
+            "collected_at", "evidence_path", "missing_conditions", "conflicts")
+    value = {key: row[key] for key in keys if key in row}
+    fields = row.get("raw_fields")
+    if isinstance(fields, dict):
+        permitted = ("name", "price", "currency", "price_basis", "price_type", "term_months",
+                     "contract_term_months", "contract_term", "term", "terms", "deposit_amount",
+                     "deposit_percent", "deposit", "annual_mileage_km", "annual_mileage", "trim",
+                     "options", "option", "insurance", "tax", "unit", "pack_quantity")
+        value["raw_fields"] = {key: fields[key][:400] + "… [truncated; request detail=true]"
+                               if isinstance(fields[key], str) and len(fields[key]) > 400 else fields[key]
+                               for key in permitted if key in fields}
+    derived = row.get("derived_values")
+    if isinstance(derived, dict):
+        value["interpretation"] = {key: derived[key] for key in ("literal_interpretations", "price_kind",
+                                   "currency_from_price_marker") if key in derived}
+        if isinstance(derived.get("scope_assessment"), dict):
+            value["scope_status"] = derived["scope_assessment"].get("status")
+    if isinstance(row.get("field_status"), dict):
+        value["field_status"] = {key: item.get("status") for key, item in row["field_status"].items()
+                                  if isinstance(item, dict)}
+    if isinstance(row.get("review_flags"), list):
+        value["review_flags"] = [str(item)[:400] for item in row["review_flags"][:5]]
+    if isinstance(row.get("supporting_evidence"), list):
+        value["supporting_evidence_count"] = len(row["supporting_evidence"])
+        value["supporting_evidence_ids"] = [item.get("id") for item in row["supporting_evidence"][:20]]
+    return value
+
+
+def result_observations(root: str | Path, job: dict[str, Any], *, offset: int = 0, limit: int = 50,
+                        evidence_offset: int = 0, evidence_limit: int = 20,
+                        detail: bool = True) -> dict[str, Any]:
+    """Page primary rows and unmatched browser evidence independently.
+
+    The web UI keeps its detailed row shape by default. MCP callers request the
+    compact projection, and can opt into full detail for a bounded page.
+    """
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("offset must be a non-negative integer")
+    if isinstance(evidence_offset, bool) or not isinstance(evidence_offset, int) or evidence_offset < 0:
+        raise ValueError("evidence_offset must be a non-negative integer")
     _bounded_int(limit, "limit", 200)
+    _bounded_int(evidence_limit, "evidence_limit", 200)
+    if not isinstance(detail, bool):
+        raise ValueError("detail must be boolean")
     result = job.get("result")
     if not isinstance(result, dict) or not result.get("run_id") or not result.get("output_dir"):
         raise ValueError("Completed job has no collection observations")
@@ -450,8 +495,15 @@ def result_observations(root: str | Path, job: dict[str, Any], *, offset: int = 
         store.close()
     from .result_view import build_result_view
     presentation = build_result_view(rows)
+    page = presentation["rows"][offset:offset + limit]
+    evidence_page = presentation["evidence_submissions"][evidence_offset:evidence_offset + evidence_limit]
+    if not detail:
+        page = [_compact_observation(row) for row in page]
+        evidence_page = [_compact_observation(row) for row in evidence_page]
     return {**presentation, "total": len(presentation["rows"]), "offset": offset, "limit": limit,
-            "rows": presentation["rows"][offset:offset + limit], "total_records": len(rows)}
+            "rows": page, "evidence_submissions": evidence_page,
+            "evidence_offset": evidence_offset, "evidence_limit": evidence_limit,
+            "total_records": len(rows)}
 
 
 def result_report(root: str | Path, job: dict[str, Any]) -> dict[str, Any]:

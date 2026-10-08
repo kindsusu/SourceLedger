@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 from pathlib import Path
+import re
 from urllib.parse import urlsplit
 
 from . import assistant_runtime as runtime
@@ -77,6 +79,62 @@ def _config(output, run_id, root):
                             demo=raw.get("demo", False), max_run_seconds=raw.get("max_run_seconds", 60))
 
 
+def _literal_interpretations(fields):
+    """Interpret bounded, explicit display syntax without replacing source text."""
+    normalized = {}
+    price_kind = None
+    currency_marker = None
+    price = fields.get("price", "").strip()
+    match = re.fullmatch(r"(?:월\s*)?(?:₩\s*)?([\d,]+)\s*(원|KRW)?\s*(~|～|부터)?", price, re.IGNORECASE)
+    if match and re.fullmatch(r"\d{1,3}(?:,\d{3})+|\d+", match[1]):
+        normalized["price"] = match[1].replace(",", "")
+        price_kind = "from" if match[3] else "listed"
+        if price.startswith("월"):
+            normalized["price_basis"] = "monthly"
+        if (match[2] and match[2].upper() == "KRW") or "₩" in price or match[2] == "원":
+            currency_marker = "KRW"
+    for alias in ("term_months", "contract_term_months", "contract_term", "term", "terms"):
+        literal = fields.get(alias, "").strip()
+        match = re.fullmatch(r"([1-9]\d*)\s*(?:개월|months?)?", literal, re.IGNORECASE)
+        if match:
+            normalized["term_months"] = match[1]
+            break
+    for alias in ("deposit_percent", "deposit"):
+        literal = fields.get(alias, "").strip()
+        match = re.fullmatch(r"(?:보증금\s*)?(\d+(?:\.\d+)?)\s*%", literal)
+        if match:
+            normalized["deposit_percent"] = match[1]
+            break
+    for alias in ("deposit_amount", "deposit"):
+        literal = fields.get(alias, "").strip()
+        match = re.fullmatch(r"(?:보증금\s*)?([\d,]+(?:\.\d+)?)\s*(만)?\s*(?:원|KRW)?", literal, re.IGNORECASE)
+        if match and re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?", match[1]):
+            try:
+                number = Decimal(match[1].replace(",", "")) * (10000 if match[2] else 1)
+            except InvalidOperation:
+                continue
+            normalized["deposit_amount"] = format(number, "f")
+            break
+    for alias in ("terms", "contract_term"):
+        literal = fields.get(alias, "").strip()
+        combined = re.fullmatch(r"([1-9]\d*)\s*개월\s*/\s*보증금\s*(\d+(?:\.\d+)?)\s*%\s*기준", literal)
+        if combined and normalized.get("term_months") in (None, combined[1]) and normalized.get("deposit_percent") in (None, combined[2]):
+            normalized["term_months"] = combined[1]
+            normalized["deposit_percent"] = combined[2]
+    return normalized, price_kind, currency_marker
+
+
+def _browser_price_profile(config, source, normalized):
+    if source.adapter:
+        return "rental"
+    profiles = {product.price_profile for product in config.products}
+    if profiles == {"rental"}:
+        return "rental"
+    has_term = "term_months" in normalized
+    has_contract_condition = any(key in normalized for key in ("deposit_percent", "deposit_amount", "price_basis"))
+    return "rental" if has_term and has_contract_condition else "unit"
+
+
 def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields, locator,
                             screenshot_path=None):
     """Validate literal field support; never promote host assertions to verified prices."""
@@ -133,14 +191,21 @@ def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields
                 evidence_path.write_bytes(content)
                 proof = {key: {"raw": value, "location": locator, "display_state": "unconfirmed",
                                "proof_kind": "assistant_supplied_text"} for key, value in fields.items()}
+                normalized, price_kind, currency_marker = _literal_interpretations(fields)
                 candidate = Candidate(dict(fields), proof, locator, "host_browser_submission",
                                       review_flags=["Browser text and field association supplied by host AI; independent verification pending"],
                                       evidence_mode="document_text")
                 candidate.derived_values["scope_assessment"] = assess_conditions(candidate, snapshot.get("conditions", []))
+                candidate.derived_values["literal_interpretations"] = normalized
+                if price_kind:
+                    candidate.derived_values["price_kind"] = price_kind
+                if currency_marker:
+                    candidate.derived_values["currency_from_price_marker"] = currency_marker
                 host = urlsplit(url).hostname
                 source = Source("catalog_source_" + stable_id(url), host, "web", url, [], adapter=HOST_ADAPTERS.get(host))
+                config = _config(output, result["run_id"], root)
                 product = Product("browser_product_" + stable_id(url, fields["name"], locator), fields["name"],
-                                  identifiers={"name": fields["name"]}, price_profile="rental" if source.adapter else "unit")
+                                  identifiers={"name": fields["name"]}, price_profile=_browser_price_profile(config, source, normalized))
                 from .validation import validate
                 observation = validate(candidate, product, source, run_id=result["run_id"], task_id=submission_id,
                                        evidence_path=str(evidence_path), evidence_sha256=hashlib.sha256(content).hexdigest(),
@@ -148,6 +213,11 @@ def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields
                 row = observation.to_dict()
                 row.update(id=submission_id, status="review", verification_level="review", comparable=False,
                            comparison_key=None)
+                if "price" in normalized:
+                    row["amount"] = normalized["price"]
+                    row["reason"] = row["reason"].replace("price is not one valid non-negative decimal", "displayed amount normalized for review")
+                    if price_kind == "from":
+                        row["reason"] += "; displayed starting price, not a final quote"
                 if screenshot:
                     screen_path = artifacts / f"{submission_id}.png"
                     screen_path.write_bytes(screenshot)

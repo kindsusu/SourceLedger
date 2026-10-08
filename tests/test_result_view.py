@@ -14,6 +14,26 @@ def evidence(**fields):
             "raw_fields": {"name": "Car", "price": "680,000 원", **fields}}
 
 
+def test_starting_price_keeps_percentage_condition_visible():
+    row = offer("48", deposit_percent="30")
+    row["raw_fields"].pop("deposit_amount")
+    row["derived_values"] = {"price_kind": "from"}
+    result = build_result_view([row])["rows"][0]
+    assert result["price_kind"] == "from"
+    assert result["field_status"]["deposit_percent"]["value"] == "30"
+    assert result["field_status"]["deposit_amount"]["status"] == "missing"
+
+
+def test_equal_price_different_deposit_is_not_duplicate_browser_capture():
+    first = evidence(name="New car", term_months="48", deposit_percent="30")
+    second = evidence(name="New car", term_months="48", deposit_percent="0")
+    second["id"] = "other-proof"
+    view = build_result_view([first, second])
+    assert view["linked_evidence_count"] == 0
+    assert view["unlinked_evidence_count"] == 2
+    assert all(not row.get("comparable") for row in view["rows"])
+
+
 def test_three_terms_one_supporting_capture_no_inferred_values():
     rows = [offer("36"), offer("48"), offer("60"), evidence(term_months="60 개월", deposit="68 만원")]
     original = deepcopy(rows)
@@ -27,8 +47,10 @@ def test_three_terms_one_supporting_capture_no_inferred_values():
 
 
 def test_ambiguous_option_and_wrong_product_never_merge():
-    assert build_result_view([offer("36"), offer("60"), evidence()])["unlinked_evidence_count"] == 1
-    assert build_result_view([offer("60", options="A"), evidence(term_months="60", option="B")])["unlinked_evidence_count"] == 1
+    ambiguous = build_result_view([offer("36"), offer("60"), evidence()])
+    assert ambiguous["unlinked_evidence_count"] == 1 and ambiguous["result_count"] == 2
+    variant = build_result_view([offer("60", options="A"), evidence(term_months="60", option="B")])
+    assert variant["unlinked_evidence_count"] == 1 and variant["result_count"] == 1
     assert build_result_view([offer("60"), evidence(name="Other")])["unlinked_evidence_count"] == 1
 
 

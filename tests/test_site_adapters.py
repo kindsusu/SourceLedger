@@ -24,7 +24,7 @@ def assert_complete_evidence(candidate):
 
 def test_registry_has_versioned_render_requirements():
     metadata = available_adapters()
-    assert ADAPTER_VERSION == "1"
+    assert ADAPTER_VERSION == "2"
     assert set(metadata) == {"jetcar", "gongcar", "funrent"}
     assert metadata["jetcar"]["requires_rendered_html"] is False
     assert metadata["gongcar"]["requires_rendered_html"] is True
@@ -61,6 +61,18 @@ def test_jetcar_static_html_does_not_claim_computed_visibility():
     assert all(value.evidence["price"]["display_state"] == "unconfirmed" for value in values)
 
 
+def test_jetcar_normalizes_fractional_man_km_without_losing_precision():
+    html = (FIXTURES / "jetcar_detail.html").read_text(encoding="utf-8")
+    html = html.replace("12개월", "12개월 / 연 2.5만KM", 1)
+    value = extract(
+        FetchResult("s", "fetched", "playwright", html.encode("utf-8"), final_url="https://www.jetcar.kr/sub0301/5874"),
+        Source("s", "jetcar", "web", "https://www.jetcar.kr/sub0301/5874", ["p"], adapter="jetcar"),
+    )[0]
+    assert value.fields["annual_mileage_km"] == "25000"
+    assert value.evidence["annual_mileage_km"]["source_text"] == "연 2.5만KM"
+    assert "annual_mileage_not_integer" not in value.review_flags
+
+
 def test_gongcar_expands_rowspan_and_excludes_hidden_or_script_quotes():
     values = run("gongcar", "gongcar_rendered.html", "https://gongcarrent.kr/detail-quote")
     assert len(values) == 2
@@ -68,6 +80,38 @@ def test_gongcar_expands_rowspan_and_excludes_hidden_or_script_quotes():
     assert values[1].fields["options"] == "기본 옵션"
     assert all("UNSAFE" not in v.fields["item_id"] for v in values)
     assert_complete_evidence(values[1])
+
+
+def test_gongcar_rentpass_popular_starting_prices_keep_own_basis():
+    values = run("gongcar", "gongcar_rentpass.html", "https://gongcar.kr/rentpass")
+    assert len(values) == 3
+    assert [value.fields["name"] for value in values] == ["더 뉴 모닝", "더 뉴 레이", "캐스퍼"]
+    assert [value.fields["price"] for value in values] == ["290000", "310000", "310000"]
+    assert all(value.fields["term_months"] == "48" for value in values)
+    assert all(value.fields["deposit_percent"] == "30" for value in values)
+    assert all("deposit_amount" not in value.fields for value in values)
+    assert all(value.derived_values["price_kind"] == "from" for value in values)
+    assert all("starting_price_not_fixed_quote" in value.review_flags for value in values)
+    assert all("아르카나" not in value.fields["name"] for value in values)
+    assert_complete_evidence(values[0])
+    observation = validate(
+        values[0], Product("p", "더 뉴 모닝", price_profile="rental"),
+        Source("s", "gongcar", "web", "https://gongcar.kr/rentpass", ["p"], adapter="gongcar"),
+        run_id="r", task_id="t", evidence_path="e", evidence_sha256="h",
+        collected_at="2026-10-08T00:00:00Z", source_url="https://gongcar.kr/rentpass",
+    )
+    assert observation.amount == "290000"
+    assert observation.status == "review" and not observation.comparable
+    assert observation.rental_conditions["term_months"] == 48
+    assert observation.rental_conditions["deposit_percent"] == "30"
+
+
+def test_gongcar_rentpass_missing_popular_basis_fails_closed():
+    html = (FIXTURES / "gongcar_rentpass.html").read_text(encoding="utf-8").replace("보증금 30%", "보증금 상담")
+    url = "https://gongcar.kr/rentpass"
+    source = Source("s", "gongcar", "web", url, ["p"], adapter="gongcar")
+    result = FetchResult("s", "fetched", "playwright", html.encode("utf-8"), final_url=url)
+    assert extract(result, source) == []
 
 
 def test_gongcar_public_layout_uses_external_headers_and_expands_rowspans():

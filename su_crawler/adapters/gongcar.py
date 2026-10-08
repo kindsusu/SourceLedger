@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 from bs4 import NavigableString, Tag
 
 from ..models import Candidate, FetchResult, Source, stable_id
-from .common import annotate_evidence, decimal_string, evidence, evidence_mode, html_soup, is_visible, text, won
+from .common import annotate_evidence, decimal_string, evidence, evidence_mode, html_soup, is_visible, text, visible_text, won
 
 
 def _expanded_rows(table: Tag) -> list[list[tuple[Tag, str]]]:
@@ -145,10 +146,89 @@ def _public_candidates(table: Tag, table_index: int, visibility: str, mode: str)
     return candidates
 
 
+def _rentpass_candidates(soup, visibility: str, mode: str) -> list[Candidate]:
+    """Read only the current popular-car cards and their own shared footnote.
+
+    The zero-deposit promotion is a separate section with a different basis;
+    its cars and conditions must never be paired with these starting prices.
+    """
+    heading = next((node for node in soup.select("h2")
+                    if is_visible(node) and re.search(r"인기\s*차량\s*한눈에\s*보기", visible_text(node) or "")), None)
+    section = heading.find_parent("section") if heading else None
+    if section is None:
+        return []
+    grids = [node for node in section.select("div.grid")
+             if is_visible(node) and node.find_all("button", recursive=False)]
+    if len(grids) != 1:
+        return []
+    footnotes = [node for node in section.select("p")
+                 if is_visible(node) and "보증금" in (visible_text(node) or "") and "개월" in (visible_text(node) or "")]
+    if len(footnotes) != 1:
+        return []
+    footnote = visible_text(footnotes[0]) or ""
+    basis = re.search(r"(\d+)\s*개월\s*/\s*보증금\s*(\d+(?:\.\d+)?)\s*%\s*기준", footnote)
+    if not basis:
+        return []
+    term, deposit_percent = basis.group(1), basis.group(2)
+    candidates: list[Candidate] = []
+    for index, card in enumerate(grids[0].find_all("button", recursive=False), start=1):
+        if not is_visible(card):
+            continue
+        image = card.select_one("img[alt]")
+        image_name = str(image.get("alt", "")).strip() if image else ""
+        name_nodes = [node for node in card.select("span")
+                      if is_visible(node) and visible_text(node) == image_name]
+        if not image_name or len(name_nodes) != 1:
+            continue
+        name_node = name_nodes[0]
+        option_node = name_node.find_next_sibling("span")
+        option = visible_text(option_node) if option_node and is_visible(option_node) else None
+        amounts = [(node, re.fullmatch(r"월\s*([\d,]+)\s*원\s*~", visible_text(node) or ""))
+                   for node in card.select("span") if is_visible(node)]
+        amounts = [(node, match) for node, match in amounts if match]
+        if len(amounts) != 1:
+            continue
+        amount_node, amount_match = amounts[0]
+        price_raw = visible_text(amount_node) or ""
+        price = decimal_string(amount_match.group(1))
+        if price is None:
+            continue
+        item_id = "gongcar-rentpass-" + stable_id(image_name, option or "", term, deposit_percent)
+        card_text = visible_text(card) or ""
+        locator = f"gongcar:rentpass:popular:card:{index}"
+        fields = {
+            "item_id": item_id, "name": image_name, "price": price,
+            "currency": "KRW", "price_basis": "monthly",
+            "term_months": term, "deposit_percent": deposit_percent,
+        }
+        proofs = {
+            "item_id": evidence(locator, item_id, card_text, footnote),
+            "name": evidence(f"{locator}/name", image_name, visible_text(name_node), card_text),
+            "price": evidence(f"{locator}/price", price, price_raw, card_text),
+            "currency": evidence(f"{locator}/price", "KRW", price_raw, card_text),
+            "price_basis": evidence(f"{locator}/price", "monthly", price_raw, card_text),
+            "term_months": evidence("gongcar:rentpass:popular:footnote", term, footnote),
+            "deposit_percent": evidence("gongcar:rentpass:popular:footnote", deposit_percent, footnote),
+        }
+        if option:
+            fields["options"] = option
+            proofs["options"] = evidence(f"{locator}/option", option, visible_text(option_node), card_text)
+        annotate_evidence(proofs, mode, source_identity={"item_id"}, displayed_fields=set(proofs) - {"item_id"})
+        candidates.append(Candidate(
+            fields=fields, evidence=proofs, locator=locator,
+            extraction_method="gongcar_rentpass_popular_cards", value_origin="observed",
+            source_visibility=visibility, derived_values={"price_kind": "from"},
+            review_flags=["starting_price_not_fixed_quote"], evidence_mode=mode,
+        ))
+    return candidates
+
+
 def extract(result: FetchResult, source: Source) -> list[Candidate]:
     soup = html_soup(result.content)
     mode = evidence_mode(result)
     visibility = "visible" if mode == "rendered_dom" else "unconfirmed"
+    if urlparse(result.final_url or source.location).path.rstrip("/") == "/rentpass":
+        return _rentpass_candidates(soup, visibility, mode)
     candidates: list[Candidate] = []
     for table_index, table in enumerate(soup.select("table"), start=1):
         if not is_visible(table):

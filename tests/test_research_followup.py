@@ -42,9 +42,12 @@ def test_browser_submission_mcp_is_review_idempotent_and_in_xlsx(tmp_path, monke
     assert first["submission_id"] == second["submission_id"]
     assert first["observation"]["status"] == "review" and not first["observation"]["comparable"]
     assert first["observation"]["amount"] == "12.30"
-    presentation = asyncio.run(server.call_tool("get_job_observations", {"job_id": job["id"]}))[1]
+    presentation = asyncio.run(server.call_tool("get_job_observations", {"job_id": job["id"], "detail": True}))[1]
     assert presentation["evidence_count"] == 1 and presentation["unlinked_evidence_count"] == 1
-    assert all(r["extraction_method"] != "host_browser_submission" for r in presentation["rows"])
+    assert presentation["result_count"] == 1
+    assert presentation["rows"][0]["id"] == first["submission_id"]
+    assert presentation["rows"][0]["primary_candidate"] is True
+    assert presentation["rows"][0]["status"] == "review"
     from openpyxl import load_workbook
     wb = load_workbook(result["report_path"], read_only=True, data_only=True)
     try:
@@ -60,6 +63,80 @@ def test_browser_submission_mcp_is_review_idempotent_and_in_xlsx(tmp_path, monke
         submit_browser_evidence(tmp_path, **{**payload, "captured_at": "2026-01-01T00:00:00"})
     missing = submit_browser_evidence(tmp_path, **{**payload, "page_text": "Widget price on request", "fields": {"name": "Widget"}})
     assert missing["observation"]["amount"] is None and missing["observation"]["currency"] is None
+
+
+def test_browser_rental_starting_price_is_review_candidate_with_literal_proof(tmp_path, monkeypatch):
+    url = "https://gongcar.kr/rentpass"
+    monkeypatch.setattr(catalog_collection, "collect", lambda s, b, backend: FetchResult(s.id, "fetched", backend, content=b"<html>No metadata</html>", final_url=s.location))
+    job, result = completed_job(tmp_path, monkeypatch, [url])
+    page_text = "더 뉴 모닝 월 290,000원~ 48개월 / 보증금 30%"
+    response = submit_browser_evidence(
+        tmp_path, job["id"], url=url, captured_at=utc_now(), page_text=page_text,
+        fields={"name": "더 뉴 모닝", "price": "월 290,000원~", "contract_term": "48개월", "deposit": "보증금 30%"},
+        locator="더 뉴 모닝 card",
+    )
+    raw = response["observation"]
+    assert raw["raw_fields"]["price"] == "월 290,000원~"
+    assert raw["evidence"]["price"]["raw"] == "월 290,000원~"
+    assert raw["amount"] == "290000" and raw["derived_values"]["price_kind"] == "from"
+    assert raw["derived_values"]["literal_interpretations"]["term_months"] == "48"
+    assert raw["derived_values"]["literal_interpretations"]["deposit_percent"] == "30"
+    assert raw["derived_values"]["currency_from_price_marker"] == "KRW"
+    assert raw["currency"] is None
+    assert "deposit_amount" not in raw["derived_values"]["literal_interpretations"]
+    assert raw["price_profile"] == "rental" and raw["status"] == "review" and not raw["comparable"]
+    from su_crawler.assistant_workspace import result_observations
+    view = result_observations(tmp_path, runtime.get_job(tmp_path, job["id"]))
+    assert view["result_count"] == 1 and view["rows"][0]["primary_candidate"]
+    assert view["rows"][0]["field_status"]["term_months"]["value"] == "48"
+    assert view["rows"][0]["field_status"]["term_months"]["status"] == "derived"
+    assert view["rows"][0]["field_status"]["deposit_percent"]["value"] == "30"
+    assert "deposit_amount" in view["rows"][0]["missing_conditions"]
+    from openpyxl import load_workbook
+    wb = load_workbook(result["report_path"], read_only=True, data_only=True)
+    try:
+        result_rows = list(wb["Results"].values)
+        assert len(result_rows) == 2
+        assert result_rows[1][2] == 290000
+        assert "starting at" in result_rows[1][5]
+        assert "월 290,000원~" in result_rows[1][5]
+    finally:
+        wb.close()
+
+
+def test_combined_contract_text_and_repeated_capture_make_one_review_row(tmp_path, monkeypatch):
+    url = "https://gongcar.kr/rentpass"
+    monkeypatch.setattr(catalog_collection, "collect", lambda s, b, backend: FetchResult(s.id, "fetched", backend, content=b"<html>No metadata</html>", final_url=s.location))
+    job, _ = completed_job(tmp_path, monkeypatch, [url])
+    fields = {"name": "더 뉴 레이", "price": "월 310,000원~", "terms": "48개월 / 보증금 30% 기준"}
+    args = dict(url=url, page_text="더 뉴 레이 월 310,000원~ 48개월 / 보증금 30% 기준", fields=fields, locator="레이 card")
+    first = submit_browser_evidence(tmp_path, job["id"], captured_at=utc_now(), **args)
+    second = submit_browser_evidence(tmp_path, job["id"], captured_at=utc_now(), **args)
+    assert first["submission_id"] != second["submission_id"]
+    parsed = first["observation"]["derived_values"]["literal_interpretations"]
+    assert parsed["term_months"] == "48"
+    assert parsed["deposit_percent"] == "30"
+    assert parsed["price_basis"] == "monthly"
+    from su_crawler.assistant_workspace import result_observations
+    view = result_observations(tmp_path, runtime.get_job(tmp_path, job["id"]))
+    assert view["result_count"] == 1 and view["evidence_count"] == 2
+    assert view["linked_evidence_count"] == 1 and view["unlinked_evidence_count"] == 1
+    assert view["rows"][0]["price_profile"] == "rental"
+    assert view["rows"][0]["field_status"]["price_basis"]["status"] == "derived"
+
+
+def test_generic_terms_and_insurance_do_not_turn_food_into_rental(tmp_path, monkeypatch):
+    url = "https://shop.example/food"
+    monkeypatch.setattr(catalog_collection, "collect", lambda s, b, backend: FetchResult(s.id, "fetched", backend, content=b"<html>No metadata</html>", final_url=s.location))
+    job, _ = completed_job(tmp_path, monkeypatch, [url])
+    result = submit_browser_evidence(
+        tmp_path, job["id"], url=url, captured_at=utc_now(),
+        page_text="Apple 20,000원 delivery terms shipping insurance",
+        fields={"name": "Apple", "price": "20,000원", "terms": "delivery terms", "insurance": "shipping insurance"},
+        locator="Apple card",
+    )
+    assert result["observation"]["price_profile"] == "unit"
+    assert "term_months" not in result["observation"]["derived_values"]["literal_interpretations"]
 
 
 def test_resume_keeps_completed_pages_and_charges_interrupted_page(tmp_path):

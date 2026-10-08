@@ -183,7 +183,7 @@ def _products_for(source: Source, candidates: list[Candidate], fallback_name: st
 def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                  max_pages: int = 10, max_seconds: float = 120, collector=None,
                  checkpoint_id: str | None = None, retry_urls: list[str] | None = None,
-                 parent_checkpoint_id: str | None = None) -> dict:
+                 parent_checkpoint_id: str | None = None, follow_links: bool = True) -> dict:
     """Collect selected pages and at most ``max_pages`` same-host pages total.
 
     The returned coverage is page-scoped, never a claim about whole-site coverage.
@@ -195,6 +195,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         raise ValueError("Plan topic requires industry, product, and market")
     if not isinstance(max_pages, int) or isinstance(max_pages, bool) or not 1 <= max_pages <= 50:
         raise ValueError("max_pages must be between 1 and 50")
+    if not isinstance(follow_links, bool):
+        raise ValueError("follow_links must be a boolean")
     if not isinstance(max_seconds, (int, float)) or isinstance(max_seconds, bool) or not math.isfinite(max_seconds) or max_seconds <= 0:
         raise ValueError("max_seconds must be a positive finite number")
     includes = snapshot.get("include_terms", [])
@@ -240,6 +242,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         if url in excluded_urls:
             coverage.append({"url": url, "status": "excluded", "reason": "excluded_urls", "candidate_id": item.get("id")})
     binding = stable_id(snapshot, max_pages, max_seconds, retry_urls, parent_checkpoint_id)
+    if not follow_links:
+        binding = stable_id(binding, "selected_urls_only")
     state = read_checkpoint(destination, checkpoint_id) if checkpoint_id else None
     if state and state["binding"] != binding:
         raise ValueError("Collection checkpoint scope or budget changed")
@@ -376,7 +380,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                          "scope_counts": scope_counts, "scope_assessments": chosen_assessments[:100],
                          "scope_assessments_truncated": max(0, len(chosen_assessments) - 100),
                          "reason": result.message or ("No supported structured product data or no products satisfying the explicit scope" if not candidates and status == "no_data" else "")})
-        if result.status == "fetched" and retry_urls is None:
+        if result.status == "fetched" and retry_urls is None and follow_links:
             for link in _links(result, result.final_url or url, host, excluded_urls):
                 if link not in visited and link not in queued and urlsplit(link).hostname in allowed_hosts:
                     queue.append((link, "discovered"))

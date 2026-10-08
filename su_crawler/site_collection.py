@@ -22,12 +22,17 @@ HOST_ADAPTERS = {
     'jetcar.co.kr': 'jetcar', 'www.jetcar.co.kr': 'jetcar',
     'jetcar2.co.kr': 'jetcar', 'www.jetcar2.co.kr': 'jetcar',
     'gongcarrent.kr': 'gongcar', 'www.gongcarrent.kr': 'gongcar',
+    'gongcar.kr': 'gongcar', 'www.gongcar.kr': 'gongcar',
     'go.funrentcar.com': 'funrent',
 }
 
 
 def _ready_recipe(adapter: str) -> list[dict]:
-    selectors = {'gongcar': 'table tbody tr td', 'funrent': '#estCar'}
+    selectors = {
+        'gongcar': ('table tbody tr td:visible, '
+                    'section:has(h2:has-text("인기 차량")) > div > div.grid > button:visible'),
+        'funrent': '#estCar',
+    }
     return [{'action': 'wait_for', 'selector': selectors[adapter], 'state': 'visible'}] if adapter in selectors else []
 
 

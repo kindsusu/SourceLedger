@@ -115,7 +115,8 @@ def test_browser_onboarding_job_and_report(tmp_path):
         thread.join(timeout=5)
 
 
-def test_observed_amount_stays_separate_from_calculator_estimate(tmp_path):
+@pytest.mark.parametrize("price_case", ["estimate", "browser", "starting"])
+def test_observed_amount_stays_separate_from_calculator_estimate(tmp_path, price_case):
     playwright = pytest.importorskip("playwright.sync_api")
     workspace = tmp_path / "workspace"
     server = build_web_server(workspace, port=0)
@@ -147,6 +148,14 @@ def test_observed_amount_stays_separate_from_calculator_estimate(tmp_path):
             "collected_at": "2026-01-01T00:00:30Z",
         }],
     }
+    if price_case == "browser":
+        observations["rows"][0].update(
+            extraction_method="host_browser_submission", value_origin="observed", amount="290000",
+            raw_fields={"name": "Browser candidate", "price": "월 290,000원~"},
+            field_status={"term_months": {"status": "derived", "value": "48"}},
+            primary_candidate=True, price_kind="from")
+    elif price_case == "starting":
+        observations["rows"][0].update(value_origin="observed", amount="290000", price_kind="from")
     try:
         with playwright.sync_playwright() as driver:
             browser = launch_browser(driver)
@@ -162,9 +171,19 @@ def test_observed_amount_stays_separate_from_calculator_estimate(tmp_path):
             cells = row.locator("td").all_text_contents()
             observed = cells[headers.index("Observed amount")]
             estimate = cells[headers.index("Estimated amount")]
-            assert observed == "—"
-            assert estimate == "123"
-            assert observed not in {"Call for quote", "123"}
+            if price_case == "browser":
+                assert observed == "월 290,000원~"
+                assert estimate == "—"
+                assert "Browser-supplied candidate" in row.inner_text()
+                row.get_by_text("Recorded values and missing conditions", exact=True).click()
+                assert "Derived from source text; review required" in row.inner_text()
+            elif price_case == "starting":
+                assert observed == "From 290,000"
+                assert estimate == "—"
+            else:
+                assert observed == "—"
+                assert estimate == "123"
+                assert observed not in {"Call for quote", "123"}
             browser.close()
     finally:
         server.shutdown()

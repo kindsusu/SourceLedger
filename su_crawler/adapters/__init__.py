@@ -6,7 +6,7 @@ from typing import Callable
 from ..models import Candidate, FetchResult, Source
 from . import funrent, gongcar, jetcar
 
-ADAPTER_VERSION = "1"
+ADAPTER_VERSION = "2"
 _ADAPTERS: dict[str, Callable[[FetchResult, Source], list[Candidate]]] = {
     "jetcar": jetcar.extract,
     "gongcar": gongcar.extract,
@@ -14,7 +14,7 @@ _ADAPTERS: dict[str, Callable[[FetchResult, Source], list[Candidate]]] = {
 }
 _METADATA = {
     "jetcar": {"version": ADAPTER_VERSION, "requires_rendered_html": False, "hosts": ["jetcar.kr", "www.jetcar.kr"]},
-    "gongcar": {"version": ADAPTER_VERSION, "requires_rendered_html": True, "hosts": ["gongcarrent.kr", "www.gongcarrent.kr"]},
+    "gongcar": {"version": ADAPTER_VERSION, "requires_rendered_html": True, "hosts": ["gongcarrent.kr", "www.gongcarrent.kr", "gongcar.kr", "www.gongcar.kr"]},
     "funrent": {"version": ADAPTER_VERSION, "requires_rendered_html": True, "hosts": ["go.funrentcar.com"]},
 }
 
