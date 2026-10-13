@@ -19,7 +19,7 @@ RENTAL_COMPARISON_FIELDS = (
 RENTAL_CONDITION_FIELDS = frozenset({
     *RENTAL_COMPARISON_FIELDS, "upfront_deposit_amount", "deposit_installment_amount",
     "deposit_installment_months", "deposit_percent", "deposit_percent_basis", "vehicle_value",
-    "driver_age_condition", "price_age_basis",
+    "driver_age_condition", "price_age_basis", "advance_percent",
 })
 
 
@@ -162,7 +162,7 @@ def _rental_conditions(candidate: Candidate, separator: str) -> tuple[dict[str, 
     flags: list[str] = []
     decimal_fields = {
         "deposit_amount", "advance_amount", "upfront_deposit_amount", "deposit_installment_amount",
-        "vehicle_value", "deposit_percent",
+        "vehicle_value", "deposit_percent", "advance_percent",
     }
     integer_fields = {"term_months", "deposit_installment_months", "annual_mileage_km"}
     normalized: dict[str, object] = {}
@@ -175,8 +175,8 @@ def _rental_conditions(candidate: Candidate, separator: str) -> tuple[dict[str, 
             elif name == "vehicle_value" and number <= 0:
                 problems.append("rental condition must be positive: vehicle_value")
                 normalized[name] = str(number)
-            elif name == "deposit_percent" and not Decimal("0") <= number <= Decimal("100"):
-                problems.append("rental condition out of range: deposit_percent")
+            elif name in {"deposit_percent", "advance_percent"} and not Decimal("0") <= number <= Decimal("100"):
+                problems.append(f"rental condition out of range: {name}")
                 normalized[name] = str(number)
             else:
                 normalized[name] = str(number)

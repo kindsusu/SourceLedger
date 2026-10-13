@@ -115,12 +115,15 @@ def test_observation_pages_bound_primary_and_browser_evidence_independently(tmp_
         store.db.commit()
     finally:
         store.close()
-    job = {"result": {"run_id": "run-1", "output_dir": str(output)}}
+    sections = [{"url": "https://example.test/a", "sections": [
+        {"section": "popular", "status": "partial", "observed_count": 3, "price_count": 2}]}]
+    job = {"result": {"run_id": "run-1", "output_dir": str(output), "result": {"coverage": sections}}}
     page = result_observations(tmp_path, job, offset=1, limit=1, evidence_offset=2, evidence_limit=1,
                                detail=False)
     assert page["total"] == 3 and page["unlinked_evidence_count"] == 3
     assert len(page["rows"]) == 1 and page["rows"][0]["id"] == "offer-1"
     assert len(page["evidence_submissions"]) == 1 and page["evidence_submissions"][0]["id"] == "capture-2"
+    assert page["coverage"] == sections and page["section_gaps"][0]["status"] == "partial"
     assert "source_excerpt" not in str(page)
     full = result_observations(tmp_path, job, offset=1, limit=1, evidence_offset=2, evidence_limit=1)
     assert full["rows"][0]["source_excerpt"] == "x" * 50_000
@@ -133,7 +136,7 @@ def test_compact_browser_candidate_keeps_price_qualifier_and_provenance():
     row = {"id": "browser-1", "source_url": "https://gongcar.kr/rentpass", "amount": "290000",
            "verification_level": "review", "primary_candidate": True, "price_kind": "from",
            "collected_at": "2026-01-01T00:00:00+00:00", "evidence_path": "browser-1.json",
-           "raw_fields": {"name": "Car", "price": "290,000원~", "contract_term": "48개월",
+           "raw_fields": {"name": "Car", "price": "290,000원~", "reference_price": "310000", "advance_percent": "20", "contract_term": "48개월",
                           "deposit": "30%", "options": "x" * 500},
            "derived_values": {"price_kind": "from", "literal_interpretations": {
                "price": "290000", "term_months": "48", "deposit_percent": "30"},
@@ -144,6 +147,8 @@ def test_compact_browser_candidate_keeps_price_qualifier_and_provenance():
     assert compact["price_kind"] == "from"
     assert compact["raw_fields"]["contract_term"] == "48개월"
     assert compact["raw_fields"]["deposit"] == "30%"
+    assert compact["raw_fields"]["reference_price"] == "310000"
+    assert compact["raw_fields"]["advance_percent"] == "20"
     assert compact["interpretation"]["literal_interpretations"]["deposit_percent"] == "30"
     assert compact["raw_fields"]["options"].endswith("[truncated; request detail=true]")
     assert "source_excerpt" not in str(compact)

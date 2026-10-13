@@ -19,6 +19,7 @@ from .scope_conditions import normalize_conditions
 
 MAX_REQUEST = 12000
 MAX_ITEMS = 100
+MAX_CANDIDATES = 1000  # Explicitly reviewed full-site URL inventories; AI previews stay at 100.
 MAX_DOCUMENT_BYTES = 256 * 1024
 _PREVIEW_KEYS = {"summary", "topic", "categories", "candidates", "note", "include_terms", "exclude_terms", "conditions"}
 _EDIT_KEYS = {"request_text", "include_terms", "exclude_terms", "topic", "summary", "categories",
@@ -44,9 +45,9 @@ def _text(value: Any, label: str, maximum: int, *, required: bool = False) -> st
     return value.strip()
 
 
-def _strings(value: Any, label: str, maximum: int = 160) -> list[str]:
-    if not isinstance(value, list) or len(value) > MAX_ITEMS:
-        raise ValueError(f"{label} must be a list of at most {MAX_ITEMS} strings")
+def _strings(value: Any, label: str, maximum: int = 160, *, limit: int = MAX_ITEMS) -> list[str]:
+    if not isinstance(value, list) or len(value) > limit:
+        raise ValueError(f"{label} must be a list of at most {limit} strings")
     result: list[str] = []
     seen: set[str] = set()
     for item in value:
@@ -249,13 +250,13 @@ def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes:
         candidates = [dict(item) for item in plan["candidates"]]
         ids = {item["id"] for item in candidates}
         if "selected_candidate_ids" in edit:
-            selected = set(_strings(edit["selected_candidate_ids"], "selected_candidate_ids", 100))
+            selected = set(_strings(edit["selected_candidate_ids"], "selected_candidate_ids", 100, limit=MAX_CANDIDATES))
             if selected - ids:
                 raise ValueError("Unknown selected candidate ID")
             for item in candidates:
                 item["selected"] = item["id"] in selected
         if "removed_candidate_ids" in edit:
-            removed = set(_strings(edit["removed_candidate_ids"], "removed_candidate_ids", 100))
+            removed = set(_strings(edit["removed_candidate_ids"], "removed_candidate_ids", 100, limit=MAX_CANDIDATES))
             if removed - ids:
                 raise ValueError("Unknown removed candidate ID")
             plan["excluded_urls"] = list(dict.fromkeys(plan["excluded_urls"] +
@@ -263,7 +264,7 @@ def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes:
             candidates = [item for item in candidates if item["id"] not in removed]
         if "added_candidates" in edit:
             additions = edit["added_candidates"]
-            if not isinstance(additions, list) or len(additions) > MAX_ITEMS:
+            if not isinstance(additions, list) or len(additions) > MAX_CANDIDATES:
                 raise ValueError("added_candidates must be a bounded list")
             for raw in additions:
                 item = _candidate(raw, "user")
@@ -271,7 +272,7 @@ def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes:
                     plan["excluded_urls"].remove(item["url"])
                 candidates = [existing for existing in candidates if existing["id"] != item["id"]]
                 candidates.append(item)
-        if len(candidates) > MAX_ITEMS:
+        if len(candidates) > MAX_CANDIDATES:
             raise ValueError("Too many candidates")
         plan["candidates"] = candidates
         plan["state"] = "preview" if candidates else "draft"

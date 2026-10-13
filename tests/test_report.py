@@ -3,7 +3,24 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from su_crawler.models import CollectionConfig, Product, Source
-from su_crawler.report import SHEETS, export_report
+from su_crawler.report import SHEETS, append_section_coverage, export_report
+
+
+def test_catalog_coverage_sheet_replaces_rows_and_preserves_evidence(tmp_path):
+    cfg = _config(tmp_path)
+    path = export_report(cfg, {"id": "r"}, [], [], tmp_path / "sections.xlsx")
+    coverage = [{"url": "https://example.test/rentpass", "sections": [{
+        "section": "popular", "status": "partial", "observed_count": 8,
+        "extracted_count": 7, "price_count": 6, "unparsed_count": 1,
+        "click_count": 2, "reason": "more control stalled", "evidence_ref": "evidence/popular.html",
+    }]}]
+    assert append_section_coverage(path, coverage) == path
+    append_section_coverage(path, coverage)
+    wb = load_workbook(path, read_only=True)
+    assert wb.sheetnames.count("Catalog coverage") == 1
+    values = list(wb["Catalog coverage"].values)
+    assert values[1] == ("https://example.test/rentpass", "popular", "partial", 8, 7, 6, 1, 2,
+                         "more control stalled", "evidence/popular.html", None)
 
 
 def _config(tmp_path):
@@ -60,8 +77,9 @@ def test_rental_report_separates_estimates_unknowns_and_deposit_kinds(tmp_path):
             "currency": "KRW", "price_profile": "rental", "value_origin": "observed", "source_visibility": "visible",
             "verification_level": "evidence_validated", "freshness": "observed", "comparable": True,
             "comparison_key": "synthetic", "collected_at": "2026-01-01T00:00:00Z",
-            "raw_fields": {"price": "590000"}, "rental_conditions": {
+            "raw_fields": {"price": "590000", "reference_price": "650000"}, "rental_conditions": {
                 "price_basis": "monthly", "term_months": 36, "deposit_amount": "0", "advance_amount": "2000000",
+                "advance_percent": "20",
                 "upfront_deposit_amount": "1000000", "deposit_installment_amount": "3000000", "deposit_installment_months": 12}}
     observations = [dict(base, id="observed"),
         dict(base, id="estimate", value_origin="calculator_estimate", derived_amount="612345", status="review", amount=None,
@@ -82,6 +100,8 @@ def test_rental_report_separates_estimates_unknowns_and_deposit_kinds(tmp_path):
     assert data[0]["Estimated Monthly Price (not observed)"] is None
     assert data[0]["Deposit Amount"] == 0
     assert data[0]["Advance Amount"] == 2000000
+    assert data[0]["Reference Price (observed)"] == "650000"
+    assert data[0]["Advance Percent (observed)"] == "20"
     assert data[0]["Upfront Deposit Amount"] == 1000000
     assert data[0]["Deposit Installment Amount"] == 3000000
     assert data[0]["Deposit Installment Months"] == 12

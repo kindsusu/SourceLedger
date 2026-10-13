@@ -20,6 +20,16 @@ from .site_collection import HOST_ADAPTERS
 RETRYABLE = {"no_data", "blocked", "failed", "timeout", "tool_unavailable", "budget_exhausted", "unprocessed", "interrupted"}
 
 
+def _incomplete_sections(page):
+    return [section for section in page.get("sections", [])
+            if isinstance(section, dict) and section.get("status") != "complete"]
+
+
+def _retryable_page(page):
+    return page.get("status") in RETRYABLE or (
+        page.get("status") in {"visited", "no_data"} and bool(_incomplete_sections(page)))
+
+
 def completed(root, job_id):
     job = runtime.get_job(root, job_id)
     result = job.get("result")
@@ -46,11 +56,14 @@ def research_gaps(root, job_id, *, offset=0, limit=50):
         page_rows = [row for row in rows if row["source_url"] == page["url"]]
         displayed = build_result_view(page_rows)
         unresolved = [row for row in displayed["rows"] if row["status"] != "verified" or not row.get("comparable")]
-        if page["status"] == "excluded" or (page["status"] == "visited" and not unresolved):
+        incomplete = _incomplete_sections(page)
+        if page["status"] == "excluded" or (page["status"] == "visited" and not unresolved and not incomplete):
             continue
-        status = page["status"] if page["status"] != "visited" else "needs_review"
+        status = "partial" if incomplete and page["status"] in {"visited", "no_data"} else (
+            page["status"] if page["status"] != "visited" else "needs_review")
         items.append({"url": page["url"], "status": status, "reason": page.get("reason", ""),
-                      "retryable": status in RETRYABLE,
+                      "sections": page.get("sections", []),
+                      "retryable": _retryable_page(page),
                       "next_action": "review_conditions" if status == "needs_review" else
                                      "resolve_access" if status in {"policy_denied", "needs_auth"} else "retry_or_browser_evidence",
                       "review_count": len(unresolved),
@@ -67,16 +80,29 @@ def validate_retry(root, args):
     for key in ("plan_id", "expected_revision", "plan_fingerprint"):
         if job["arguments"].get(key) != args.get(key):
             raise ValueError("Retry must use the same confirmed plan revision")
-    allowed = {page["url"] for page in result["result"]["coverage"] if page["status"] in RETRYABLE}
+    allowed = {page["url"] for page in result["result"]["coverage"] if _retryable_page(page)}
     if not set(args["retry_urls"]) <= allowed:
         raise ValueError("Retry only unresolved pages reported by this job; review-only prices need evidence, not blind retries")
 
 
 def _config(output, run_id, root):
     raw = json.loads((output / f"collection-{run_id}.json").read_text(encoding="utf-8"))
-    return CollectionConfig(raw["name"], [Product(**p) for p in raw["products"]],
+    config = CollectionConfig(raw["name"], [Product(**p) for p in raw["products"]],
                             [Source(**s) for s in raw["sources"]], str(output), str(workspace_root(root)),
                             demo=raw.get("demo", False), max_run_seconds=raw.get("max_run_seconds", 60))
+    # Old catalogs used the workspace root; portable exported catalogs use
+    # their own directory. Accept only an exact match to the recorded run.
+    from .config import config_fingerprint
+    store = Store(output)
+    try:
+        expected = store.run(run_id)['config_hash']
+    finally:
+        store.close()
+    if config_fingerprint(config) != expected:
+        config.base_dir = str(output)
+    if config_fingerprint(config) != expected:
+        raise ValueError('Configuration does not match the original run')
+    return config
 
 
 def _literal_interpretations(fields):

@@ -146,89 +146,257 @@ def _public_candidates(table: Tag, table_index: int, visibility: str, mode: str)
     return candidates
 
 
-def _rentpass_candidates(soup, visibility: str, mode: str) -> list[Candidate]:
-    """Read only the current popular-car cards and their own shared footnote.
+_POPULAR_HEADING = re.compile(r"인기\s*차량\s*한눈에\s*보기")
+_PRICE = re.compile(r"^월\s*([\d,]+)\s*원\s*(~)?$")
+_FOOTNOTE = re.compile(r"(\d+)\s*개월\s*/\s*(보증금|선납금)\s*(\d+(?:\.\d+)?)\s*(%|원)\s*기준")
 
-    The zero-deposit promotion is a separate section with a different basis;
-    its cars and conditions must never be paired with these starting prices.
-    """
-    heading = next((node for node in soup.select("h2")
-                    if is_visible(node) and re.search(r"인기\s*차량\s*한눈에\s*보기", visible_text(node) or "")), None)
-    section = heading.find_parent("section") if heading else None
+
+def _section(soup, kind: str) -> Tag | None:
+    headings = [node for node in soup.select("h2,button > span") if is_visible(node) and
+                (_POPULAR_HEADING.search(visible_text(node) or "") if kind == "popular"
+                 else "특가" in (visible_text(node) or "") and
+                 not _POPULAR_HEADING.search(visible_text(node) or ""))]
+    sections = [node.find_parent("section") for node in headings]
+    sections = [node for node in sections if node is not None]
+    # The title sometimes lives in a nested hero. Pick the deepest section
+    # that actually contains promotional vehicle cards.
+    sections = [node for node in sections if _cards(node, kind)]
+    unique = list(dict.fromkeys(id(node) for node in sections))
+    return next((node for node in sections if id(node) == unique[0]), None) if len(unique) == 1 else None
+
+
+def _cards(section: Tag | None, kind: str) -> list[Tag]:
     if section is None:
         return []
-    grids = [node for node in section.select("div.grid")
-             if is_visible(node) and node.find_all("button", recursive=False)]
-    if len(grids) != 1:
-        return []
-    footnotes = [node for node in section.select("p")
-                 if is_visible(node) and "보증금" in (visible_text(node) or "") and "개월" in (visible_text(node) or "")]
-    if len(footnotes) != 1:
-        return []
-    footnote = visible_text(footnotes[0]) or ""
-    basis = re.search(r"(\d+)\s*개월\s*/\s*보증금\s*(\d+(?:\.\d+)?)\s*%\s*기준", footnote)
-    if not basis:
-        return []
-    term, deposit_percent = basis.group(1), basis.group(2)
-    candidates: list[Candidate] = []
-    for index, card in enumerate(grids[0].find_all("button", recursive=False), start=1):
-        if not is_visible(card):
+    if kind == "popular":
+        grids = [node for node in section.select("div.grid") if is_visible(node)
+                 and node.find_all("button", recursive=False)]
+        return grids[0].find_all("button", recursive=False) if len(grids) == 1 else []
+    # Product grids identify promotional cards even when lazy images are absent.
+    # The older layout has no grid, so retain its image-marked card fallback.
+    grids = [node for node in section.select("div.grid") if is_visible(node)
+             and node.find_all("button", recursive=False)]
+    if grids:
+        return [card for grid in grids for card in grid.find_all("button", recursive=False)]
+    return [node for node in section.select("button") if node.select_one("img[alt]")]
+
+
+def _basis(section: Tag | None) -> tuple[str, str, str, str] | None:
+    if section is None:
+        return None
+    matches = []
+    for node in section.select("p"):
+        raw = visible_text(node)
+        match = _FOOTNOTE.search(raw or "") if is_visible(node) else None
+        if match:
+            matches.append((match.group(1), match.group(2), match.group(3), match.group(4), raw))
+    return matches[0] if len(matches) == 1 else None
+
+
+def _price_nodes(card: Tag) -> list[tuple[Tag, str, bool]]:
+    amounts = []
+    for node in card.select("span,del,s"):
+        if not is_visible(node):
             continue
-        image = card.select_one("img[alt]")
-        image_name = str(image.get("alt", "")).strip() if image else ""
-        name_nodes = [node for node in card.select("span")
-                      if is_visible(node) and visible_text(node) == image_name]
-        if not image_name or len(name_nodes) != 1:
+        raw = visible_text(node) or ""
+        if _PRICE.fullmatch(raw):
+            if any(_PRICE.fullmatch(visible_text(parent) or "") for parent in node.parents
+                   if isinstance(parent, Tag) and parent.name in {"span", "del", "s"} and parent is not card):
+                continue
+            struck = (node.name in {"del", "s"} or "line-through" in node.get("class", [])
+                      or "line-through" in str(node.get("style", "")))
+            amounts.append((node, raw, struck))
+    return amounts
+
+
+def _card_candidate(card: Tag, path: str, kind: str, index: int,
+                    basis: tuple[str, str, str, str, str], visibility: str, mode: str) -> Candidate | None:
+    image = card.select_one("img[alt]")
+    image_name = re.sub(r"\s+", " ", str(image.get("alt", "")).strip()) if image else ""
+    labelled = [node for node in card.select("span,p") if is_visible(node)
+                and "truncate" in node.get("class", []) and not _PRICE.fullmatch(visible_text(node) or "")]
+    if len(labelled) == 1:
+        name_nodes = labelled
+    else:
+        name_nodes = [node for node in card.select("span,p") if is_visible(node)
+                      and visible_text(node) == image_name]
+    if len(name_nodes) != 1:
+        return None
+    name_node = name_nodes[0]
+    name = visible_text(name_node) or ""
+    if not name:
+        return None
+    amounts = _price_nodes(card)
+    current = [(node, raw) for node, raw, struck in amounts if not struck]
+    original = [(node, raw) for node, raw, struck in amounts if struck]
+    ambiguous_prices = len(current) > 1 or len(original) > 1
+    if ambiguous_prices:
+        current, original = [], []
+    term, condition, percentage, unit, footnote = basis
+    if kind == "popular" and unit != "%":
+        return None
+    if kind == "promotion" and condition == "보증금" and unit == "원" and percentage != "0":
+        return None
+    locator = f"gongcar:{path}:{kind}:card:{index}"
+    card_text = visible_text(card) or ""
+    public_id_attribute = "data-car-id" if card.get("data-car-id") else "data-item-id"
+    public_id = card.get(public_id_attribute)
+    item_id = "local-observation-gongcar-" + stable_id(path, kind, str(index), card_text, footnote)
+    fields = {"item_id": item_id, "name": name, "currency": "KRW",
+              "price_basis": "monthly", "term_months": term, "section": f"{path}_{kind}"}
+    proofs = {"item_id": evidence(locator, item_id, card_text, proof_kind="local_observation"),
+              "name": evidence(f"{locator}/name", name, visible_text(name_node), card_text),
+              "section": evidence(locator, fields["section"], card_text),
+              "term_months": evidence(f"gongcar:{path}:{kind}:footnote", term, footnote)}
+    if public_id:
+        fields["observed_source_id"] = str(public_id)
+        proofs["observed_source_id"] = evidence(f"{locator}/{public_id_attribute}", str(public_id), str(public_id),
+                                                 card_text, proof_kind="source_identity")
+    if condition == "보증금":
+        field = "deposit_percent" if unit == "%" else "deposit_amount"
+    else:
+        field = "advance_percent" if unit == "%" else "advance_amount"
+    fields[field] = percentage
+    proofs[field] = evidence(f"gongcar:{path}:{kind}:footnote", percentage, footnote)
+    if current:
+        node, raw = current[0]
+        match = _PRICE.fullmatch(raw)
+        if match:
+            fields["price"] = decimal_string(match.group(1))
+            proofs["price"] = evidence(f"{locator}/price", fields["price"], raw, card_text)
+            proofs["currency"] = evidence(f"{locator}/price", "KRW", raw, card_text)
+            proofs["price_basis"] = evidence(f"{locator}/price", "monthly", raw, card_text)
+    if original:
+        node, raw = original[0]
+        match = _PRICE.fullmatch(raw)
+        if match:
+            fields["reference_price"] = decimal_string(match.group(1))
+            proofs["reference_price"] = evidence(f"{locator}/reference_price", fields["reference_price"], raw, card_text)
+    if "currency" not in proofs:
+        fields.pop("currency")
+        fields.pop("price_basis")
+    option_node = name_node.find_next_sibling("span") if kind == "popular" else None
+    option = visible_text(option_node) if option_node and is_visible(option_node) else None
+    if option and not _PRICE.fullmatch(option):
+        fields["options"] = option
+        proofs["options"] = evidence(f"{locator}/option", option, option, card_text)
+    derived = {"identity_scope": "local_observation"}
+    flags = ["cross_run_identity_uncertain"]
+    if current and _PRICE.fullmatch(current[0][1]).group(2):
+        derived["price_kind"] = "from"
+        flags.append("starting_price_not_fixed_quote")
+    if not current:
+        flags.append("current_price_role_unresolved")
+    if ambiguous_prices:
+        flags.append("multiple_unresolved_price_nodes")
+    if original and not current:
+        flags.append("reference_price_without_current_price")
+    if kind == "promotion" and current and not original:
+        flags.append("promotion_price_role_unconfirmed")
+    update_nodes = [node for node in card.find_parent("section").select("p")
+                    if is_visible(node) and "최근 업데이트" in (visible_text(node) or "")]
+    if len(update_nodes) == 1:
+        update_raw = visible_text(update_nodes[0]) or ""
+        update_match = re.search(r"최근 업데이트\s*:\s*([^|]+)", update_raw)
+        if update_match:
+            fields["update_text"] = update_match.group(1).strip()
+            proofs["update_text"] = evidence(f"gongcar:{path}:{kind}:footnote", fields["update_text"], update_raw)
+    annotate_evidence(proofs, mode, source_identity={"item_id", "section", "observed_source_id"},
+                      displayed_fields=set(proofs) - {"item_id", "section", "observed_source_id"})
+    return Candidate(fields=fields, evidence=proofs, locator=locator,
+                     extraction_method=f"gongcar_{path}_{kind}_cards", value_origin="observed",
+                     source_visibility=visibility, derived_values=derived, review_flags=flags, evidence_mode=mode)
+
+
+def _catalog_candidates(soup, path: str, visibility: str, mode: str) -> list[Candidate]:
+    candidates = []
+    for kind in ("popular", "promotion"):
+        section = _section(soup, kind)
+        basis = _basis(section)
+        if basis is None:
             continue
-        name_node = name_nodes[0]
-        option_node = name_node.find_next_sibling("span")
-        option = visible_text(option_node) if option_node and is_visible(option_node) else None
-        amounts = [(node, re.fullmatch(r"월\s*([\d,]+)\s*원\s*~", visible_text(node) or ""))
-                   for node in card.select("span") if is_visible(node)]
-        amounts = [(node, match) for node, match in amounts if match]
-        if len(amounts) != 1:
-            continue
-        amount_node, amount_match = amounts[0]
-        price_raw = visible_text(amount_node) or ""
-        price = decimal_string(amount_match.group(1))
-        if price is None:
-            continue
-        item_id = "gongcar-rentpass-" + stable_id(image_name, option or "", term, deposit_percent)
-        card_text = visible_text(card) or ""
-        locator = f"gongcar:rentpass:popular:card:{index}"
-        fields = {
-            "item_id": item_id, "name": image_name, "price": price,
-            "currency": "KRW", "price_basis": "monthly",
-            "term_months": term, "deposit_percent": deposit_percent,
-        }
-        proofs = {
-            "item_id": evidence(locator, item_id, card_text, footnote),
-            "name": evidence(f"{locator}/name", image_name, visible_text(name_node), card_text),
-            "price": evidence(f"{locator}/price", price, price_raw, card_text),
-            "currency": evidence(f"{locator}/price", "KRW", price_raw, card_text),
-            "price_basis": evidence(f"{locator}/price", "monthly", price_raw, card_text),
-            "term_months": evidence("gongcar:rentpass:popular:footnote", term, footnote),
-            "deposit_percent": evidence("gongcar:rentpass:popular:footnote", deposit_percent, footnote),
-        }
-        if option:
-            fields["options"] = option
-            proofs["options"] = evidence(f"{locator}/option", option, visible_text(option_node), card_text)
-        annotate_evidence(proofs, mode, source_identity={"item_id"}, displayed_fields=set(proofs) - {"item_id"})
-        candidates.append(Candidate(
-            fields=fields, evidence=proofs, locator=locator,
-            extraction_method="gongcar_rentpass_popular_cards", value_origin="observed",
-            source_visibility=visibility, derived_values={"price_kind": "from"},
-            review_flags=["starting_price_not_fixed_quote"], evidence_mode=mode,
-        ))
+        for index, card in enumerate(_cards(section, kind), start=1):
+            if not is_visible(card):
+                continue
+            candidate = _card_candidate(card, path, kind, index, basis, visibility, mode)
+            if candidate:
+                candidates.append(candidate)
     return candidates
+
+
+def section_coverage(result: FetchResult, candidates: list[Candidate]) -> list[dict[str, object]]:
+    """Report discovery separately from extraction and browser list completion."""
+    soup = html_soup(result.content)
+    path = urlparse(result.final_url).path.rstrip("/").lstrip("/")
+    if path in {"monthly-rent", "daily-rent"}:
+        from .gongcar_short_rental import section_coverage as short_coverage
+        return short_coverage(result, candidates, path)
+    if re.fullmatch(r"(?:monthly-rent|daily-rent)/[^/]+", path):
+        from .gongcar_short_rental import detail_coverage
+        return detail_coverage(result, candidates, path)
+    if path not in {"rentpass", "longterm"}:
+        return []
+    coverage = []
+    for kind in ("popular", "promotion"):
+        key = f"{path}_{kind}"
+        section = _section(soup, kind)
+        cards = [card for card in _cards(section, kind) if is_visible(card)]
+        observed = len(cards)
+        extracted = [candidate for candidate in candidates if candidate.fields.get("section") == key]
+        price_count = sum(candidate.fields.get("price") is not None for candidate in extracted)
+        unparsed = max(0, observed - len(extracted))
+        status, reason = "unknown", "section_not_discovered"
+        click_count = None
+        if section is not None:
+            status, reason = "partial", "section_discovered"
+            if not observed:
+                status, reason = "unknown", "cards_not_observed"
+            elif unparsed:
+                reason = "unparsed_cards"
+            elif kind == "promotion":
+                events = [event for event in result.trace if event.get("event") in {"promotion_inspection", "list_expansion"}
+                          and event.get("section") in {"promotion", key}]
+                event = events[-1] if events else None
+                click_count = event.get("click_count") if event else None
+                if (result.backend == "playwright" and event and event.get("status") == "complete"
+                        and event.get("observed_count") == observed):
+                    status, reason = "complete", str(event.get("reason") or "overflow_inspected")
+                else:
+                    reason = "promotion_overflow_unconfirmed"
+            else:
+                events = [event for event in result.trace if event.get("event") == "list_expansion"
+                          and event.get("section") == "popular"]
+                event = events[-1] if events else None
+                click_count = event.get("click_count") if event else None
+                if (result.backend == "playwright" and event and event.get("status") == "complete"
+                        and event.get("observed_count") == observed):
+                    status, reason = "complete", str(event.get("reason") or "list_expansion_complete")
+                else:
+                    reason = str(event.get("reason") or "list_expansion_unconfirmed") if event else "list_expansion_unconfirmed"
+        coverage.append({"section": key, "observed_count": observed, "extracted_count": len(extracted),
+                         "price_count": price_count, "unparsed_count": unparsed,
+                         "status": status, "reason": reason, "click_count": click_count})
+    return coverage
 
 
 def extract(result: FetchResult, source: Source) -> list[Candidate]:
     soup = html_soup(result.content)
     mode = evidence_mode(result)
     visibility = "visible" if mode == "rendered_dom" else "unconfirmed"
-    if urlparse(result.final_url or source.location).path.rstrip("/") == "/rentpass":
-        return _rentpass_candidates(soup, visibility, mode)
+    path = urlparse(result.final_url or source.location).path.rstrip("/").lstrip("/")
+    if re.fullmatch(r"monthly-rent/[^/]+", path):
+        from .gongcar_short_rental import extract_monthly_detail
+        return extract_monthly_detail(result, path, mode, visibility)
+    if re.fullmatch(r"daily-rent/[^/]+", path):
+        from .gongcar_short_rental import extract_daily_detail
+        return extract_daily_detail(result, path, mode, visibility)
+    if path in {"monthly-rent", "daily-rent"}:
+        from .gongcar_short_rental import extract as short_extract
+        return short_extract(result, path, mode, visibility)
+    if path in {"rentpass", "longterm"}:
+        catalog = _catalog_candidates(soup, path, visibility, mode)
+        if catalog:
+            return catalog
     candidates: list[Candidate] = []
     for table_index, table in enumerate(soup.select("table"), start=1):
         if not is_visible(table):

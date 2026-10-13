@@ -39,6 +39,8 @@ def test_assistant_mcp_onboarding_and_offline_queue(tmp_path):
     assert queued["worker"]["status"] == "stopped"
     assert queued["arguments"]["max_model_calls"] == 0
     assert _call(server, "get_job_status", {"job_id": queued["id"]})["status"] == "queued"
+    progress = _call(server, "get_research_progress", {"job_id": queued["id"]})
+    assert progress["status"] == "queued" and progress["page_counts"] is None
     assert _call(server, "list_recent_jobs", {})["jobs"][0]["id"] == queued["id"]
 
 
@@ -48,11 +50,14 @@ def test_server_tool_contract_and_registered_report_resource(tmp_path):
     assert {
         "get_workspace_status", "initialize_workspace", "set_product_identity", "add_source_candidate",
         "queue_source_discovery", "queue_source_proposal", "queue_research_agent", "queue_supported_sites",
-        "queue_verification", "queue_collection", "queue_report_export", "get_job_status", "wait_for_job",
+        "queue_verification", "queue_collection", "queue_report_export", "get_job_status", "get_research_progress", "wait_for_job",
         "list_recent_jobs", "resume_job_execution", "get_job_observations", "get_job_report",
         "list_source_recommendation_requests", "request_source_recommendations", "submit_source_recommendations",
         "list_research_plans", "get_research_plan", "create_research_plan", "submit_research_preview",
         "update_research_plan", "confirm_research_plan", "start_research_plan", "generate_research_preview",
+        "get_research_execution_plan", "prepare_external_discovery",
+        "get_research_batch_execution_plan", "start_research_batch_run",
+        "get_research_batch_progress", "get_research_batch_reports",
         "get_research_gaps", "retry_research_pages", "submit_browser_evidence",
     } == tools
     resources = asyncio.run(server.list_resource_templates())

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import ExitStack
+import hashlib
 import importlib.util
 import ipaddress
 import mimetypes
@@ -282,7 +283,7 @@ def _conditional_headers(validators: dict[str, str] | None) -> dict[str, str]:
 
 def _http_metadata(response: httpx.Response) -> dict[str, str]:
     metadata: dict[str, str] = {}
-    for response_name, key in (("etag", "etag"), ("last-modified", "last_modified")):
+    for response_name, key in (("etag", "etag"), ("last-modified", "last_modified"), ("retry-after", "retry_after")):
         if value := _safe_validator(response.headers.get(response_name)):
             metadata[key] = value
     return metadata
@@ -325,7 +326,7 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
             if response.status_code >= 400:
                 status = response.status_code
                 response.close()
-                return _result(source, "http", "failed", final_url=final_url, message=f"HTTP {status}", trace=trace)
+                return _result(source, "http", "failed", final_url=final_url, message=f"HTTP {status}", trace=trace, http_metadata=metadata)
             content = _read_limited(response)
             media = response.headers.get("content-type", "").split(";", 1)[0] or _media_type(final_url)
             if media in {"text/html", "application/xhtml+xml"}:
@@ -342,12 +343,220 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
 
 def _safe_step(step: dict[str, Any]) -> tuple[str, str]:
     action = str(step.get("action", ""))
-    if action not in {"click", "select", "fill", "wait_for", "assert_text"}:
+    if action not in {"click", "select", "fill", "wait_for", "assert_text", "expand_list"}:
         raise _policy_error("browser_action_denied", "Browser action is not allowed")
     selector = step.get("selector")
     if not isinstance(selector, str) or not selector.strip():
         raise _policy_error("invalid_recipe", "Browser action requires a selector")
     return action, selector
+
+
+def _expand_options(step: dict[str, Any]) -> tuple[str, str, int, int, str | None, str | None, float, float]:
+    """Validate an expansion recipe before interacting with the page."""
+    item = step.get("item_selector")
+    button = step.get("button_selector")
+    if not isinstance(step.get("trigger", "click"), str) or step.get("trigger", "click") not in {"click", "scroll"}:
+        raise _policy_error("invalid_recipe", "List expansion trigger must be click or scroll")
+    if not isinstance(item, str) or not item.strip() or not isinstance(button, str) or not button.strip():
+        raise _policy_error("invalid_recipe", "List expansion requires item and button selectors")
+    for key, default, maximum in (("max_clicks", 100, 100), ("max_items", 1000, 1000)):
+        value = step.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+            raise _policy_error("invalid_recipe", f"{key} must be between 1 and {maximum}")
+    empty = step.get("empty_selector")
+    all_selector = step.get("all_selector")
+    all_value = step.get("all_value")
+    if empty is not None and (not isinstance(empty, str) or not empty.strip()):
+        raise _policy_error("invalid_recipe", "empty_selector must be a nonempty selector")
+    if all_selector is not None and (not isinstance(all_selector, str) or not all_selector.strip()):
+        raise _policy_error("invalid_recipe", "all_selector must be a nonempty selector")
+    if all_value is not None and not isinstance(all_value, str):
+        raise _policy_error("invalid_recipe", "all_value must be a string")
+    if (all_selector is None) != (all_value is None):
+        raise _policy_error("invalid_recipe", "All selection requires both selector and value")
+    section = step.get("section", "popular")
+    if not isinstance(section, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,31}", section):
+        raise _policy_error("invalid_recipe", "section must be a short identifier")
+    for key, default, maximum in (("initial_wait_seconds", 8, 30), ("progress_wait_seconds", 5, 30)):
+        value = step.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= maximum:
+            raise _policy_error("invalid_recipe", f"{key} must be between 0 and {maximum}")
+    return (item, button, step.get("max_clicks", 100), step.get("max_items", 1000), empty, all_selector,
+            float(step.get("initial_wait_seconds", 8)), float(step.get("progress_wait_seconds", 5)))
+
+
+def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list[dict[str, Any]]) -> None:
+    """Expand one scoped, append-only list; record incomplete or replaced lists honestly."""
+    item_selector, button_selector, max_clicks, max_items, empty_selector, all_selector, initial_wait, progress_wait = _expand_options(step)
+    section = step.get("section", "popular")
+    container = page.locator(step["selector"])
+    count = 0
+    clicks = 0
+    reason = "unknown"
+    status = "unknown"
+    observed: dict[str, dict[str, Any]] = {}
+    prior: list[str] = []
+    replaced = False
+    start_url = page.url
+    current: list[str] = []
+
+    def scoped_one(selector: str, kind: str) -> Any:
+        matches = container.locator(selector)
+        if matches.count() != 1:
+            raise ValueError(f"ambiguous_{kind}")
+        return matches
+
+    def visible_count(selector: str) -> int:
+        return container.locator(selector + ":visible").count()
+
+    def observe() -> list[str]:
+        nonlocal count, replaced
+        cards = container.locator(item_selector + ":visible")
+        # A fixed script only reads rendered card evidence; recipe data is a selector.
+        batch = cards.evaluate_all("els => els.slice(0, 1001).map(el => ({text: (el.innerText || '').trim(), html: el.outerHTML}))")
+        if len(batch) > max_items:
+            raise ValueError("item_budget")
+        identities: list[str] = []
+        for index, card in enumerate(batch):
+            html = str(card.get("html", ""))[:16384]
+            card_text = str(card.get("text", ""))[:4096]
+            # Position disambiguates repeated offers within a batch; text is stable
+            # across harmless class changes and supplies a reproducible observation.
+            identity = hashlib.sha256(f"{index}\0{card_text}".encode("utf-8")).hexdigest()
+            identities.append(identity)
+            if identity not in observed:
+                observed[identity] = {"index": index, "text": card_text, "html": html}
+        if prior and (len(identities) < len(prior) or identities[:len(prior)] != prior):
+            replaced = True
+        count = max(count, len(observed))
+        trace.append({"event": "list_expansion_count", "section": section, "observed_count": count,
+                      "visible_count": len(batch), "click_count": clicks, "button_count": visible_count(button_selector), "at": utc_now()})
+        prior[:] = identities
+        return identities
+
+    def terminal_confirmed() -> bool:
+        """Confirm the button and cards stay unchanged for the recipe's progress window."""
+        if (remaining_ms() - 1500) / 1000 < progress_wait:
+            return False
+        stable_since = time.monotonic()
+        baseline = prior.copy()
+        while True:
+            if page.url != start_url or visible_count(button_selector):
+                return False
+            if observe() != baseline:
+                baseline = prior.copy()
+                stable_since = time.monotonic()
+            if replaced:
+                return False
+            elapsed = time.monotonic() - stable_since
+            if elapsed >= progress_wait:
+                return page.url == start_url and visible_count(button_selector) == 0
+            available_ms = remaining_ms() - 1500
+            if available_ms <= 0:
+                return False
+            page.wait_for_timeout(min(200, max(1, (progress_wait - elapsed) * 1000), available_ms))
+
+    try:
+        if container.count() != 1:
+            reason = "ambiguous_container"
+            return
+        if all_selector:
+            control = scoped_one(all_selector, "all_control")
+            desired = step["all_value"]
+            if control.input_value(timeout=remaining_ms()) != desired:
+                control.select_option(desired, timeout=remaining_ms())
+                trace.append({"event": "list_expansion_filter", "section": section, "selected": True, "at": utc_now()})
+            else:
+                trace.append({"event": "list_expansion_filter", "section": section, "selected": False, "at": utc_now()})
+        # The heading may appear before cards. A missing list is not an empty list.
+        ready_until = time.monotonic() + min(initial_wait, max(0.0, (remaining_ms() - 1500) / 1000))
+        while True:
+            if page.url != start_url:
+                reason = "unexpected_navigation"
+                status = "partial" if count else "unknown"
+                break
+            current = observe()
+            if current:
+                break
+            if empty_selector and visible_count(empty_selector) == 1:
+                status, reason = "complete", "explicit_empty"
+                break
+            if time.monotonic() >= ready_until:
+                reason = "initial_cards_timeout"
+                break
+            page.wait_for_timeout(min(200, max(1, (ready_until - time.monotonic()) * 1000)))
+        while current and status == "unknown":
+            if replaced:
+                status, reason = "partial", "list_replaced"
+                break
+            buttons = visible_count(button_selector)
+            if buttons == 0:
+                if terminal_confirmed():
+                    status, reason = "complete", "button_absent"
+                    break
+                if replaced:
+                    status, reason = "partial", "list_replaced"
+                    break
+                if page.url != start_url:
+                    status, reason = "partial", "unexpected_navigation"
+                    break
+                if visible_count(button_selector) == 0:
+                    status, reason = "partial", "completion_unconfirmed"
+                    break
+                current = prior.copy()
+                continue
+            if buttons != 1:
+                status, reason = "partial", "ambiguous_button"
+                break
+            if clicks >= max_clicks or count >= max_items:
+                status, reason = "partial", "click_budget" if clicks >= max_clicks else "item_budget"
+                break
+            control = scoped_one(button_selector + ":visible", "button")
+            if step.get("trigger", "click") == "scroll":
+                control.scroll_into_view_if_needed(timeout=remaining_ms())
+            else:
+                control.click(timeout=remaining_ms())
+            clicks += 1
+            before = current
+            progressed = False
+            progress_until = time.monotonic() + min(progress_wait, max(0.0, (remaining_ms() - 1500) / 1000))
+            while time.monotonic() < progress_until:
+                if page.url != start_url:
+                    break
+                current = observe()
+                if current != before:
+                    progressed = True
+                    break
+                page.wait_for_timeout(min(200, max(1, (progress_until - time.monotonic()) * 1000)))
+            if not progressed:
+                if page.url != start_url:
+                    status, reason = "partial", "unexpected_navigation"
+                elif visible_count(button_selector) == 0:
+                    if terminal_confirmed():
+                        status, reason = "complete", "button_absent"
+                    elif page.url != start_url:
+                        status, reason = "partial", "unexpected_navigation"
+                    elif replaced:
+                        status, reason = "partial", "list_replaced"
+                    elif visible_count(button_selector) == 1:
+                        current = prior.copy()
+                        continue
+                    else:
+                        status, reason = "partial", "completion_unconfirmed"
+                else:
+                    status, reason = "partial", "no_progress"
+                break
+    except ValueError as exc:
+        reason = str(exc)
+        status = "partial" if count else "unknown"
+    except Exception as exc:
+        # Preserve a page snapshot even when a browser action itself times out.
+        reason = "action_timeout" if type(exc).__name__.endswith("TimeoutError") else "browser_error"
+        status = "partial" if count else "unknown"
+    finally:
+        trace.append({"event": "list_expansion", "section": section, "status": status,
+                      "reason": reason, "observed_count": count, "click_count": clicks,
+                      "replaced": replaced, "observed_cards": list(observed.values()), "at": utc_now()})
 
 
 def _selected_control_states(page: Any, timeout_ms: float) -> list[dict[str, Any]]:
@@ -551,6 +760,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                     actual = locator.inner_text(timeout=timeout_ms)
                     if expected not in actual:
                         raise AssertionError("Browser text assertion failed")
+                elif action == "expand_list":
+                    _expand_list(page, step, remaining_ms, trace)
                 # Inputs and expected text are deliberately excluded from trace.
                 trace.append({"event": "recipe_step", "index": index, "action": action, "selector": _safe_selector(selector), "url": _safe_url(page.url), "at": utc_now()})
                 _check_url(source, page.url)
@@ -565,10 +776,18 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             html = _evidence_html_snapshot(page)
             if _is_auth_page(html):
                 return _result(source, "playwright", "needs_auth", content=html, media_type="text/html", final_url=page.url, message="Login page detected", trace=trace)
-            screenshot = page.screenshot(full_page=True, timeout=remaining_ms())
+            try:
+                screenshot = page.screenshot(full_page=True, timeout=remaining_ms())
+            except PlaywrightTimeoutError:
+                screenshot = None
+                trace.append({"event": "screenshot_unavailable", "reason": "deadline", "at": utc_now()})
             final_url = page.url
             _check_url(source, final_url)
-            trace.append({"event": "selected_control_states", "controls": _selected_control_states(page, remaining_ms()), "at": utc_now()})
+            try:
+                controls = _selected_control_states(page, remaining_ms())
+                trace.append({"event": "selected_control_states", "controls": controls, "at": utc_now()})
+            except PlaywrightTimeoutError:
+                trace.append({"event": "selected_control_states_unavailable", "reason": "deadline", "at": utc_now()})
             return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url, screenshot=screenshot, trace=trace)
     except PlaywrightTimeoutError:
         return _result(source, "playwright", "timeout", message="Browser action timed out", trace=trace)

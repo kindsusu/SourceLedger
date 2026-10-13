@@ -90,7 +90,26 @@ def test_plan_preserves_detailed_request_and_confirms_before_start(tmp_path):
                 data["status"] = "configured"
                 data["workspace"] = {"industry": "Devices", "market": "Japan", "product": {"name": "Test instruments", "identifiers": {}, "required_specs": {}}, "sources": []}
                 route.fulfill(json={"plan": copy.deepcopy(plan)})
+            elif path == "plans/execution-preview":
+                assert body["expected_revision"] == plan["revision"]
+                assert plan["candidates"][0]["selected"] is True
+                assert body["provider"] == "codex"
+                assert body["model"] == ""
+                assert body["concurrency"] == 3
+                route.fulfill(json={"execution_plan": {
+                    "plan_id": plan["id"], "plan_revision": plan["revision"],
+                    "provider": "codex", "model": {"selected_model": ""},
+                    "model_recommendations": {
+                        "codex": {"recommended_model": "gpt-6.1-sol", "recommended_label": "Sol"},
+                        "claude": {"recommended_model": "opus", "recommended_label": "Opus"}},
+                    "selected_sites": ["example.invalid"],
+                    "selected_targets": [{"name": "Sample product", "url": "https://example.invalid/product"}],
+                    "selected_target_count": 1, "within_page_budget": True,
+                    "page_budget_shortfall": 0, "max_pages": 10, "max_seconds": 120,
+                    "execution": {"current_concurrency": body["concurrency"], "per_host_concurrency": 2, "browser_concurrency": 1},
+                }})
             elif path == "plans/start":
+                assert body["concurrency"] == 3
                 assert plan["state"] == "confirmed"
                 assert body["expected_revision"] == plan["revision"]
                 job = {"id": "job-1", "operation": "research_plan", "status": "queued", "arguments": body,
@@ -140,9 +159,17 @@ def test_plan_preserves_detailed_request_and_confirms_before_start(tmp_path):
             page.locator("#language-select").select_option("ko")
             playwright.expect(page.locator("#plan-categories")).to_have_value("Bench instruments\nPortable instruments")
             playwright.expect(page.locator("#plan-candidates [data-plan-select]")).to_be_checked()
+            playwright.expect(page.locator("#plan-concurrency")).to_have_value("2")
+            page.locator("#plan-concurrency").select_option("3")
+            page.locator("#plan-start").click()
+            playwright.expect(page.locator("#plan-execution-preview")).to_be_visible()
+            playwright.expect(page.locator("#plan-execution-preview")).to_contain_text("Sol")
+            playwright.expect(page.locator("#plan-execution-preview")).to_contain_text("Opus")
+            playwright.expect(page.locator("#plan-execution-preview")).to_contain_text("example.invalid/product")
+            assert [path for path, _ in calls] == ["plans", "plans/preview", "plans/edit", "plans/execution-preview"]
             page.locator("#plan-start").click()
             playwright.expect(page.locator("#job-detail")).to_contain_text("job-1")
-            assert [path for path, _ in calls] == ["plans", "plans/preview", "plans/edit", "plans/confirm", "plans/start"]
+            assert [path for path, _ in calls] == ["plans", "plans/preview", "plans/edit", "plans/execution-preview", "plans/confirm", "plans/start"]
             assert calls[2][1]["changes"]["categories"] == ["Bench instruments", "Portable instruments"]
             assert calls[2][1]["changes"]["conditions"] == [{"field": "condition", "operator": "equals", "value": "new"}]
             page.goto(f"{server.url}/#plan")

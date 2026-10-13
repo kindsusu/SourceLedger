@@ -84,16 +84,23 @@ def test_gongcar_expands_rowspan_and_excludes_hidden_or_script_quotes():
 
 def test_gongcar_rentpass_popular_starting_prices_keep_own_basis():
     values = run("gongcar", "gongcar_rentpass.html", "https://gongcar.kr/rentpass")
-    assert len(values) == 3
-    assert [value.fields["name"] for value in values] == ["더 뉴 모닝", "더 뉴 레이", "캐스퍼"]
-    assert [value.fields["price"] for value in values] == ["290000", "310000", "310000"]
+    assert len(values) == 4
+    popular = [value for value in values if value.fields["section"] == "rentpass_popular"]
+    promotion = [value for value in values if value.fields["section"] == "rentpass_promotion"]
+    assert [value.fields["name"] for value in popular] == ["더 뉴 모닝", "더 뉴 레이", "캐스퍼"]
+    assert [value.fields["price"] for value in popular] == ["290000", "310000", "310000"]
     assert all(value.fields["term_months"] == "48" for value in values)
-    assert all(value.fields["deposit_percent"] == "30" for value in values)
-    assert all("deposit_amount" not in value.fields for value in values)
-    assert all(value.derived_values["price_kind"] == "from" for value in values)
-    assert all("starting_price_not_fixed_quote" in value.review_flags for value in values)
-    assert all("아르카나" not in value.fields["name"] for value in values)
+    assert all(value.fields["deposit_percent"] == "30" for value in popular)
+    assert all("deposit_amount" not in value.fields for value in popular)
+    assert all(value.derived_values["price_kind"] == "from" for value in popular)
+    assert all("starting_price_not_fixed_quote" in value.review_flags for value in popular)
+    assert len(promotion) == 1 and promotion[0].fields["name"] == "아르카나"
+    assert promotion[0].fields["price"] == "460000"
+    assert promotion[0].fields["deposit_amount"] == "0"
+    assert "deposit_percent" not in promotion[0].fields
+    assert "price_kind" not in promotion[0].derived_values
     assert_complete_evidence(values[0])
+    assert_complete_evidence(promotion[0])
     observation = validate(
         values[0], Product("p", "더 뉴 모닝", price_profile="rental"),
         Source("s", "gongcar", "web", "https://gongcar.kr/rentpass", ["p"], adapter="gongcar"),
@@ -111,7 +118,10 @@ def test_gongcar_rentpass_missing_popular_basis_fails_closed():
     url = "https://gongcar.kr/rentpass"
     source = Source("s", "gongcar", "web", url, ["p"], adapter="gongcar")
     result = FetchResult("s", "fetched", "playwright", html.encode("utf-8"), final_url=url)
-    assert extract(result, source) == []
+    values = extract(result, source)
+    assert len(values) == 1
+    assert values[0].fields["section"] == "rentpass_promotion"
+    assert values[0].fields["deposit_amount"] == "0"
 
 
 def test_gongcar_public_layout_uses_external_headers_and_expands_rowspans():

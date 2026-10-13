@@ -112,6 +112,7 @@ def test_http_plan_without_onboarding_then_explicit_start(tmp_path, monkeypatch)
         status, value = json_response(authorized(server, "POST", "/api/plans/start", {"plan_id": plan["id"], "expected_revision": plan["revision"]}))
         assert status == 200 and value["worker"]["status"] == "idle"
         assert value["job"]["operation"] == "research_plan"
+        assert value["job"]["arguments"]["follow_links"] is False
         assert len(json_response(request(server, "GET", "/api/plans"))[1]["plans"]) == 1
 
 

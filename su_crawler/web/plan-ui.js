@@ -3,7 +3,7 @@
   "use strict";
   const $ = id => document.getElementById(id);
   const tr = (key, args = {}) => window.SourceLedgerI18n.t(`plan.${key}`, args);
-  const ui = { plan: null, newRequestMode: false, dirty: false, requestDirty: false, changeDirty: false, removed: new Set(), selection: new Map(), candidateFingerprint: null, historyFingerprint: null, busy: false, stale: false, bootstrap: null, previewJob: null, queuedPreviewId: null, feedback: "" };
+  const ui = { plan: null, newRequestMode: false, dirty: false, requestDirty: false, changeDirty: false, removed: new Set(), selection: new Map(), candidateFingerprint: null, historyFingerprint: null, busy: false, stale: false, bootstrap: null, previewJob: null, queuedPreviewId: null, feedback: "", executionPreview: null, executionSignature: null };
   const lineValues = value => String(value || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   const writeLines = value => Array.isArray(value) ? value.join("\n") : "";
   const apiCall = (path, body) => api(path, { method: "POST", body });
@@ -24,14 +24,16 @@
   function status(message) { ui.feedback = message || ""; renderStatus(); }
   function ready() { return typeof ui.bootstrap?.csrf_token === "string" && ui.bootstrap.csrf_token.length > 0; }
   function syncControls() {
+    if (ui.executionPreview && ui.executionSignature !== executionSignature()) invalidateExecutionPreview();
     const disabled = ui.busy || !ready();
-    for (const id of ["plan-create", "plan-save", "plan-preview", "plan-change", "plan-start", "plan-copy", "plan-new-request", "plan-history"]) $(id).disabled = disabled;
+    for (const id of ["plan-create", "plan-save", "plan-preview", "plan-change", "plan-start", "plan-copy", "plan-new-request", "plan-history", "plan-concurrency"]) $(id).disabled = disabled;
     $("plan-add-form").querySelector('button[type="submit"]').disabled = disabled || !safeLink($("plan-add-form").elements.url.value.trim());
     $("plan-change").disabled = disabled || !$("plan-change-text").value.trim();
     $("plan-condition-add").disabled = disabled || conditionRows().length >= 20;
     for (const button of document.querySelectorAll("[data-condition-remove]")) button.disabled = disabled;
     const reasons = readinessReasons();
     $("plan-start").disabled = disabled || reasons.length > 0;
+    $("plan-start").textContent = tr(ui.executionPreview ? "executionConfirm" : "executionReview");
     $("plan-readiness").textContent = ui.plan ? (reasons.length ? tr("readinessMissing", { fields: reasons.join("; ") }) : tr("readinessReady")) : "";
     for (const field of ["industry", "product", "market"]) {
       const input = $(`plan-${field}`);
@@ -116,6 +118,7 @@
     syncControls();
   }
   function applyPlan(plan) {
+    invalidateExecutionPreview();
     ui.plan = plan;
     ui.newRequestMode = false;
     ui.dirty = false;
@@ -161,6 +164,7 @@
     target.value = selected;
   }
   function resetForNewRequest() {
+    invalidateExecutionPreview();
     ui.plan = null;
     ui.newRequestMode = true;
     ui.dirty = false;
@@ -286,10 +290,77 @@
     const count = [...ui.selection].filter(([id, selected]) => selected && !ui.removed.has(id)).length;
     $("plan-budget").textContent = tr("budget", { count, pages: Math.min(50, Math.max(10, count)) });
   }
+  function executionBudget() {
+    const count = [...ui.selection].filter(([id, selected]) => selected && !ui.removed.has(id)).length;
+    return Math.min(50, Math.max(10, count));
+  }
+  function executionSignature() {
+    const settings = aiSettings();
+    return JSON.stringify([ui.plan?.id, ui.plan?.revision, ui.plan?.state,
+      [...ui.selection].filter(([id, selected]) => selected && !ui.removed.has(id)).map(([id]) => id).sort(),
+      $("plan-ai-path").value, settings.provider, settings.model, executionBudget(), 120, Number($("plan-concurrency").value),
+      $("plan-summary").value, ...["industry", "product", "market"].map(field => $(`plan-${field}`).value),
+      $("plan-categories").value, $("plan-include").value, $("plan-exclude").value,
+      conditionRows(), $("plan-request-text").value, $("plan-change-text").value,
+      [...$("plan-add-form").querySelectorAll("input")].map(input => input.value)]);
+  }
+  function executionPanel() {
+    let panel = $("plan-execution-preview");
+    if (panel) return panel;
+    panel = el("section", "card plan-execution-preview");
+    panel.id = "plan-execution-preview";
+    panel.setAttribute("aria-live", "polite");
+    panel.hidden = true;
+    $("plan-start").closest(".plan-start").before(panel);
+    return panel;
+  }
+  function invalidateExecutionPreview() {
+    ui.executionPreview = null;
+    ui.executionSignature = null;
+    const panel = $("plan-execution-preview");
+    if (panel) { panel.hidden = true; panel.replaceChildren(); }
+  }
+  function renderExecutionPreview() {
+    const panel = executionPanel();
+    const brief = ui.executionPreview;
+    panel.replaceChildren();
+    panel.hidden = !brief;
+    if (!brief) return;
+    panel.append(el("h3", "", tr("executionTitle")));
+    const provider = brief.provider;
+    const selected = brief.model?.selected_model;
+    const recommendation = brief.model_recommendations?.[provider];
+    const modelText = provider === "connected" ? tr("executionConnectedModel")
+      : selected ? `${selected} (${tr("executionRequested")})`
+        : tr("executionHostDefault");
+    panel.append(el("p", "", tr("executionModel", { provider: provider === "connected" ? tr("executionConnectedProvider") : provider, model: modelText })));
+    panel.append(el("p", "", tr("executionRecommendation", {
+      codex: brief.model_recommendations?.codex?.recommended_label || "Sol",
+      claude: brief.model_recommendations?.claude?.recommended_label || "Opus",
+    })));
+    if (recommendation && selected && selected !== recommendation.recommended_model) panel.append(el("p", "hint", tr("executionCustomChoice")));
+    panel.append(el("p", "", tr("executionSites", { count: brief.selected_sites?.length || 0, targets: brief.selected_target_count || 0 })));
+    const list = el("ul", "plan-execution-sites");
+    for (const target of brief.selected_targets || []) {
+      const row = el("li", "");
+      row.append(link(target.url, `${target.name} · ${target.url}`));
+      list.append(row);
+    }
+    panel.append(list);
+    panel.append(el("p", "", tr("executionBudget", { pages: brief.max_pages, seconds: brief.max_seconds })));
+    if (!brief.within_page_budget) panel.append(el("p", "plan-readiness", tr("executionBudgetShortfall", { count: brief.page_budget_shortfall })));
+    panel.append(el("p", "", tr("executionCheckpoint")));
+    panel.append(el("p", "hint", tr("executionCollectorModel")));
+    panel.append(el("p", "", tr("executionCurrentMode", { count: brief.execution?.current_concurrency || 1 })));
+    panel.append(el("p", "hint", brief.execution?.current_concurrency > 1
+      ? tr("executionLimits", { host: brief.execution.per_host_concurrency || 1, browser: brief.execution.browser_concurrency || 1 })
+      : tr("executionSequentialLimits")));
+    panel.append(el("p", "hint", tr("executionReviewHint")));
+  }
   function handoffText() {
     const plan = ui.plan;
     if (!plan) return "";
-    return `Use SourceLedger host tools to prepare a research preview for plan ${plan.id} at revision ${plan.revision}. First call get_research_plan(plan_id=${plan.id}) and read its current revision, request, edited topic, summary, categories, structured conditions, text filters, selected and manually added candidates, and excluded_urls. Respect all of those choices. Search or browse for real product and source URLs only after the research region is specified; if the region is blank, return an empty candidate list and ask the user to supply it. Preserve the full research request and its detailed conditions. Conditions describe one individual product requirement at a time. Keep geographic scope and competitor relationships in topic, summary, and note; never encode a comparison group or disjunction as a single manufacturer, brand, or seller. Distinguish reference entities from research targets: for competitors of A, exclude A's own products and prices unless explicitly requested; for compare A and its competitors, include both. State targets and exclusions in summary and note, not literal text filters. Never copy unrelated workspace defaults. If the relationship is ambiguous, leave candidates empty and explain the alternatives for review. Never invent URLs, identifiers, prices, currencies, or commercial terms. Never reintroduce an excluded URL. Submit only unverified suggestions; do not start research. Call submit_research_preview with plan_id=${plan.id}, expected_revision=${plan.revision}, and preview {summary, topic:{industry,product,market}, categories, conditions:[{field,operator,value}], include_terms, exclude_terms, candidates:[{name,url,evidence_url,reason,kind}], note}. If the current server revision differs from ${plan.revision}, stop and ask the user to review the updated plan. The user must review and explicitly confirm before start_research_plan. Include/exclude terms are literal text filters, not proof that detailed requirements are met.\n\nResearch request:\n${plan.request_text}\n\nCurrent topic: ${JSON.stringify(plan.topic || {})}\nCurrent summary: ${plan.summary || ""}\nCurrent categories: ${JSON.stringify(plan.categories || [])}\nCurrent structured conditions: ${JSON.stringify(plan.conditions || [])}\nCurrent include text: ${JSON.stringify(plan.include_terms || [])}\nCurrent exclude text: ${JSON.stringify(plan.exclude_terms || [])}\nSelected source URLs: ${JSON.stringify((plan.candidates || []).filter(item => item.selected).map(item => item.url))}\nManually added candidates: ${JSON.stringify((plan.candidates || []).filter(item => item.origin === "user").map(item => ({ name: item.name, url: item.url, selected: item.selected })))}\nRemoved source URLs: ${JSON.stringify(plan.excluded_urls || [])}`;
+    return `Use SourceLedger host tools to prepare a research preview for plan ${plan.id} at revision ${plan.revision}. First call get_research_plan(plan_id=${plan.id}) and read its current revision, request, edited topic, summary, categories, structured conditions, text filters, selected and manually added candidates, and excluded_urls. Respect all of those choices. Search or browse for real product and source URLs only after the research region is specified; if the region is blank, return an empty candidate list and ask the user to supply it. Preserve the full research request and its detailed conditions. Conditions describe one individual product requirement at a time. Keep geographic scope and competitor relationships in topic, summary, and note; never encode a comparison group or disjunction as a single manufacturer, brand, or seller. Distinguish reference entities from research targets: for competitors of A, exclude A's own products and prices unless explicitly requested; for compare A and its competitors, include both. State targets and exclusions in summary and note, not literal text filters. Never copy unrelated workspace defaults. If the relationship is ambiguous, leave candidates empty and explain the alternatives for review. Never invent URLs, identifiers, prices, currencies, or commercial terms. Never reintroduce an excluded URL. Submit only unverified suggestions; do not start research. Call submit_research_preview with plan_id=${plan.id}, expected_revision=${plan.revision}, and preview {summary, topic:{industry,product,market}, categories, conditions:[{field,operator,value}], include_terms, exclude_terms, candidates:[{name,url,evidence_url,reason,kind}], note}. If the current server revision differs from ${plan.revision}, stop and ask the user to review the updated plan. Before any collection, call get_research_execution_plan for the current revision and show the user the proposed model (Codex Sol or Claude Opus by default, while preserving any explicit selection), selected sites and URLs, page/time limits, checkpoints, and actual execution mode. Recommend bounded concurrency 2 and preserve any user-selected concurrency. Explain per-host pacing, browser concurrency 1 and bounded transient retries. Use the same concurrency in execution preview and start. The connected app controls its own model, and the collector itself does not invoke an AI model. The user must review and explicitly confirm before start_research_plan. Include/exclude terms are literal text filters, not proof that detailed requirements are met.\n\nResearch request:\n${plan.request_text}\n\nCurrent topic: ${JSON.stringify(plan.topic || {})}\nCurrent summary: ${plan.summary || ""}\nCurrent categories: ${JSON.stringify(plan.categories || [])}\nCurrent structured conditions: ${JSON.stringify(plan.conditions || [])}\nCurrent include text: ${JSON.stringify(plan.include_terms || [])}\nCurrent exclude text: ${JSON.stringify(plan.exclude_terms || [])}\nSelected source URLs: ${JSON.stringify((plan.candidates || []).filter(item => item.selected).map(item => item.url))}\nManually added candidates: ${JSON.stringify((plan.candidates || []).filter(item => item.origin === "user").map(item => ({ name: item.name, url: item.url, selected: item.selected })))}\nRemoved source URLs: ${JSON.stringify(plan.excluded_urls || [])}`;
   }
   function renderAiPath() {
     const local = $("plan-ai-path").value === "local";
@@ -337,6 +408,8 @@
     if (!ui.dirty && !ui.stale) renderStatus();
     renderCandidates();
     updateBudget();
+    if (ui.executionPreview && ui.executionSignature !== executionSignature()) invalidateExecutionPreview();
+    renderExecutionPreview();
     $("plan-copy-text").textContent = handoffText();
     syncControls();
   }
@@ -467,20 +540,23 @@
     });
     $("plan-workspace").addEventListener("input", event => {
       if (event.target.matches("[data-plan-edit]")) {
+        invalidateExecutionPreview();
         ui.dirty = true;
         if (event.target.id === "plan-market") renderStatus();
         syncControls();
       }
     });
     $("plan-workspace").addEventListener("change", event => {
-      if (event.target.matches("[data-plan-edit]")) { ui.dirty = true; syncControls(); }
+      if (event.target.id === "plan-concurrency") { invalidateExecutionPreview(); syncControls(); }
+      if (event.target.matches("[data-plan-edit]")) { invalidateExecutionPreview(); ui.dirty = true; syncControls(); }
     });
     $("plan-candidates").addEventListener("change", event => {
-      if (event.target.matches("[data-plan-select]")) { ui.selection.set(event.target.dataset.planSelect, event.target.checked); ui.dirty = true; ui.candidateFingerprint = null; updateBudget(); syncControls(); }
+      if (event.target.matches("[data-plan-select]")) { invalidateExecutionPreview(); ui.selection.set(event.target.dataset.planSelect, event.target.checked); ui.dirty = true; ui.candidateFingerprint = null; updateBudget(); syncControls(); }
     });
     $("plan-candidates").addEventListener("click", event => {
       const button = event.target.closest("[data-plan-remove]");
       if (!button) return;
+      invalidateExecutionPreview();
       ui.removed.add(button.dataset.planRemove);
       ui.dirty = true;
       renderCandidates();
@@ -531,13 +607,31 @@
       if ($("plan-change-text").value.trim() || [...$("plan-add-form").querySelectorAll("input")].some(input => input.value.trim())) throw new Error(tr("unsavedChange"));
       validateTopicAndTargets();
       let plan = await save();
+      const signature = executionSignature();
+      if (!ui.executionPreview || ui.executionSignature !== signature) {
+        const settings = aiSettings();
+        const result = await apiCall("/api/plans/execution-preview", {
+          plan_id: plan.id, expected_revision: plan.revision,
+          provider: $("plan-ai-path").value === "local" ? settings.provider : "connected",
+          model: $("plan-ai-path").value === "local" ? settings.model || "" : "",
+          max_pages: executionBudget(), max_seconds: 120, follow_links: false, concurrency: Number($("plan-concurrency").value),
+        });
+        ui.executionPreview = result.execution_plan;
+        ui.executionSignature = signature;
+        renderExecutionPreview();
+        syncControls();
+        $("plan-execution-preview").scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+      if (!ui.executionPreview.within_page_budget) throw new Error(tr("executionBudgetShortfall", { count: ui.executionPreview.page_budget_shortfall }));
+      invalidateExecutionPreview();
       if (plan.state !== "confirmed") {
         const confirmed = await apiCall("/api/plans/confirm", { plan_id: plan.id, expected_revision: plan.revision, user_confirmed: true });
         plan = confirmed.plan;
         applyPlan(plan);
       }
       const selectedCount = plan.candidates.filter(candidate => candidate.selected).length;
-      const started = await apiCall("/api/plans/start", { plan_id: plan.id, expected_revision: plan.revision, max_pages: Math.min(50, Math.max(10, selectedCount)), max_seconds: 120 });
+      const started = await apiCall("/api/plans/start", { plan_id: plan.id, expected_revision: plan.revision, max_pages: Math.min(50, Math.max(10, selectedCount)), max_seconds: 120, follow_links: false, concurrency: Number($("plan-concurrency").value) });
       status(tr("started"));
       await loadBootstrap({ quiet: true });
       if (started.job?.id) {
@@ -551,6 +645,7 @@
     ui.historyFingerprint = null;
     renderHistory(plansFromBootstrap(ui.bootstrap));
     renderPlan();
+    renderExecutionPreview();
     translateConditionRows();
     if (ui.plan) renderStatus();
     // Static labels are translated by the shared i18n layer; inputs are intentionally untouched.

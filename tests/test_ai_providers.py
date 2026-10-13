@@ -46,8 +46,14 @@ def test_settings_defaults_validation_and_persistence(tmp_path, monkeypatch):
     monkeypatch.setattr(ai, "_codex_command", lambda: None)
     monkeypatch.setattr(ai, "_claude_command", lambda: None)
     assert ai.get_ai_configuration(tmp_path)["settings"] == {"provider": "codex", "model": "", "timeout_seconds": 180}
+    recommendation = ai.get_ai_configuration(tmp_path)["recommendation"]
+    assert recommendation["recommended_model"] == "gpt-6.1-sol"
+    assert recommendation["selection_source"] == "host_default"
     saved = ai.save_ai_settings(tmp_path, {"provider": "claude", "model": "sonnet", "timeout_seconds": 210})
     assert saved["settings"] == ai.get_ai_configuration(tmp_path)["settings"]
+    assert saved["recommendation"]["recommended_model"] == "opus"
+    assert saved["recommendation"]["selected_model"] == "sonnet"
+    assert saved["recommendation"]["selection_source"] == "user"
     assert json.loads((tmp_path / "ai-settings.json").read_text(encoding="utf-8")) == saved["settings"]
     for bad in ({"provider": "other"}, {"model": "-unsafe"}, {"model": "bad name"},
                 {"model": "a" * 201}, {"timeout_seconds": True}, {"timeout_seconds": 29},

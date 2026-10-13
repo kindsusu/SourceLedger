@@ -17,7 +17,7 @@ from .models import utc_now
 from .research import _atomic_write, _locked
 
 
-OPERATIONS = frozenset({"discover", "propose", "agent", "collect_sites", "verify", "run", "export", "recommend", "plan_preview", "research_plan"})
+OPERATIONS = frozenset({"discover", "propose", "agent", "collect_sites", "verify", "run", "export", "recommend", "plan_preview", "research_plan", "research_batch"})
 JOB_STATES = frozenset({"queued", "running", "succeeded", "failed", "interrupted"})
 MAX_ARGUMENT_BYTES = 256 * 1024
 MAX_JOBS_LIMIT = 100
@@ -283,12 +283,20 @@ def resume_job(root: str | Path, job_id: str) -> dict[str, Any]:
             output = _managed_output(workspace, workspace / "catalog-prices" / plan_id, "plan output")
             if not read_checkpoint(output, job_id):
                 raise ValueError("Research plan has no checkpoint to resume")
+        if job.get("operation") == "research_batch":
+            from .research_batch import read_batch_journal
+            arguments = job["arguments"]
+            # A worker can die after claiming the job but before it writes its
+            # first journal. No batch can have started at that point, so the
+            # pinned job can safely resume from batch zero.
+            read_batch_journal(workspace, arguments["plan_id"], job_id)
         result_path = path.with_name("result.json")
         result = _read_json(result_path)
         paused_agent = (job.get("status") == "succeeded" and job.get("operation") == "agent" and
                         isinstance(result, dict) and isinstance(result.get("result"), dict) and
                         result["result"].get("status") == "paused")
-        if job.get("status") != "interrupted" and not paused_agent:
+        retryable_batch = job.get("operation") == "research_batch" and job.get("status") == "failed"
+        if job.get("status") != "interrupted" and not paused_agent and not retryable_batch:
             raise ValueError("only interrupted or paused agent jobs can be resumed")
         job.update(status="queued", updated_at=utc_now(), error=None)
         job.pop("worker_token", None)
@@ -443,6 +451,7 @@ def _finish_job(root: Path, job: dict[str, Any], token: str, *, result: dict[str
         else:
             details = {"type": type(error).__name__}
             from .ai_providers import AIGenerationError
+            from .research_batch import BatchStopped
             if isinstance(error, AIGenerationError):
                 details.update(code=error.code, message=error.safe_message)
             elif isinstance(error, (ValueError, FileNotFoundError)):
@@ -451,7 +460,8 @@ def _finish_job(root: Path, job: dict[str, Any], token: str, *, result: dict[str
                                       "Job arguments or workspace inputs are invalid; review the job configuration.")
             elif isinstance(error, RuntimeError):
                 details["message"] = "The workspace is busy or the operation could not continue; review inputs and retry."
-            current.update(status="failed", updated_at=utc_now(), error=details)
+            current.update(status="interrupted" if isinstance(error, BatchStopped) else "failed",
+                           updated_at=utc_now(), error=details)
         current.pop("worker_token", None)
         _write_json(path, current)
 

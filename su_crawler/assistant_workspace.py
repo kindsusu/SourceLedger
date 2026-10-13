@@ -305,6 +305,9 @@ def execute_job(root: str | Path, operation: str, args: dict[str, Any], *, job_i
     if operation == "recommend":
         from .recommendation_jobs import execute_generation
         return execute_generation(root, args)
+    if operation == "research_batch":
+        from .research_batch import execute_batch_run
+        return execute_batch_run(root, args, job_id=job)
     if operation in {"plan_preview", "research_plan"}:
         from .plan_jobs import execute_plan_job
         return execute_plan_job(root, operation, args, job_id=job)
@@ -433,6 +436,7 @@ def _result_metadata(root: Path, operation: str, args: dict[str, Any], result: d
 def _compact_observation(row: dict[str, Any]) -> dict[str, Any]:
     """Keep MCP pages readable without duplicating source text and snapshots."""
     keys = ("id", "source_url", "source_id", "product_id", "amount", "currency", "price_profile",
+            "reference_price", "advance_percent", "section",
             "status", "result_status", "verification_level", "comparable", "comparison_key",
             "association_status", "target_observation_id", "primary_candidate", "price_kind",
             "collected_at", "evidence_path", "missing_conditions", "conflicts")
@@ -441,7 +445,7 @@ def _compact_observation(row: dict[str, Any]) -> dict[str, Any]:
     if isinstance(fields, dict):
         permitted = ("name", "price", "currency", "price_basis", "price_type", "term_months",
                      "contract_term_months", "contract_term", "term", "terms", "deposit_amount",
-                     "deposit_percent", "deposit", "annual_mileage_km", "annual_mileage", "trim",
+                     "deposit_percent", "advance_percent", "reference_price", "deposit", "annual_mileage_km", "annual_mileage", "trim",
                      "options", "option", "insurance", "tax", "unit", "pack_quantity")
         value["raw_fields"] = {key: fields[key][:400] + "… [truncated; request detail=true]"
                                if isinstance(fields[key], str) and len(fields[key]) > 400 else fields[key]
@@ -500,7 +504,15 @@ def result_observations(root: str | Path, job: dict[str, Any], *, offset: int = 
     if not detail:
         page = [_compact_observation(row) for row in page]
         evidence_page = [_compact_observation(row) for row in evidence_page]
-    return {**presentation, "total": len(presentation["rows"]), "offset": offset, "limit": limit,
+    collection_result = result.get("result") if isinstance(result.get("result"), dict) else result
+    coverage = collection_result.get("coverage", []) if isinstance(collection_result, dict) else []
+    coverage = coverage if isinstance(coverage, list) else []
+    section_gaps = [{"url": item.get("url") or item.get("source_url"), **section}
+                    for item in coverage if isinstance(item, dict)
+                    for section in (item.get("sections") or []) if isinstance(section, dict)
+                    and section.get("status") != "complete"]
+    return {**presentation, "coverage": coverage, "section_gaps": section_gaps,
+            "total": len(presentation["rows"]), "offset": offset, "limit": limit,
             "rows": page, "evidence_submissions": evidence_page,
             "evidence_offset": evidence_offset, "evidence_limit": evidence_limit,
             "total_records": len(rows)}

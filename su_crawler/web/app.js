@@ -758,6 +758,32 @@ function renderJobDetail() {
       target.append(node("h4", { text: i18n.t("plan.coverageDetails") }), list);
     }
   }
+  const catalogCoverage = Array.isArray(result.result?.coverage) ? result.result.coverage : Array.isArray(result.coverage) ? result.coverage : [];
+  const catalogPages = catalogCoverage.filter(page => Array.isArray(page.sections) && page.sections.length);
+  if (catalogPages.length) {
+    const list = node("div", { className: "plan-coverage" });
+    for (const page of catalogPages) {
+      const url = safeWebUrl(page.url || page.source_url);
+      for (const section of page.sections) {
+        if (!section || typeof section !== "object") continue;
+        const status = ["complete", "partial", "unknown"].includes(section.status) ? section.status : "unknown";
+        const label = { complete: "catalogComplete", partial: "catalogPartial", unknown: "catalogUnknown" }[status];
+        const count = key => Number.isSafeInteger(section[key]) && section[key] >= 0 ? section[key] : "—";
+        const row = node("div", { className: "plan-coverage-row" }, [
+          node("strong", { text: displayValue(section.section) }),
+          node("span", { text: i18n.t(`plan.${label}`) }),
+          node("p", { text: i18n.t("plan.catalogSectionCounts", {
+            observed: count("observed_count"), extracted: count("extracted_count"),
+            prices: count("price_count"), unparsed: count("unparsed_count"), clicks: count("click_count"),
+          }) }),
+        ]);
+        if (url) row.append(node("a", { text: page.url || page.source_url, attrs: { href: url, target: "_blank", rel: "noopener noreferrer" } }));
+        if (section.reason) row.append(node("p", { className: "hint", text: section.reason }));
+        list.append(row);
+      }
+    }
+    target.append(node("h4", { text: i18n.t("plan.catalogSections") }), list);
+  }
   if (job.error) target.append(node("div", { className: "detail-error", text: errorText(typeof job.error === "string" ? job.error : displayValue(job.error)) }));
   if (result.execution_status === "succeeded") target.append(node("p", { className: "hint", text: t("executionCaution") }));
   renderObservations(target);
@@ -803,9 +829,9 @@ function renderObservations(target) {
     const fields = row.raw_fields && typeof row.raw_fields === "object" ? row.raw_fields : {};
     const browserCandidate = row.extraction_method === "host_browser_submission";
     const productName = fields.name || row.product_name || row.product_id;
-    const attributes = Object.entries(fields).filter(([key, value]) => key !== "name" && key !== "price" && key !== "currency" && value !== null && value !== "").map(([key, value]) => `${key}: ${displayValue(value)}`).join(" · ");
+    const attributes = Object.entries(fields).filter(([key, value]) => key !== "name" && key !== "price" && key !== "currency" && value !== null && value !== "").map(([key, value]) => `${i18n.t(`plan.field.${key}`)}: ${displayValue(value)}`).join(" · ");
     const attributeCell = node("td");
-    const keyFields = row.price_profile === "rental" ? ["term_months", "deposit_amount", "annual_mileage_km"] : ["unit", "pack_quantity", "price_basis"];
+    const keyFields = row.price_profile === "rental" ? ["reference_price", "term_months", "deposit_amount", "advance_percent", "annual_mileage_km"] : ["unit", "pack_quantity", "price_basis"];
     for (const key of keyFields) {
       if (fields[key] != null) attributeCell.append(node("p", { text: `${i18n.t(`plan.field.${key}`)}: ${displayValue(fields[key])}` }));
     }
@@ -889,7 +915,15 @@ function renderAiModelChoices(savedModel = "") {
   const select = byId("ai-model-choice");
   clear(select);
   select.append(node("option", { value: "", text: t("providerDefaultChoice") }));
-  for (const model of aiProvider(providerId)?.models || []) select.append(node("option", { value: model.id, text: model.label || model.id }));
+  const suggested = aiProvider(providerId)?.recommended_model || "";
+  const models = aiProvider(providerId)?.models || [];
+  for (const model of models) select.append(node("option", {
+    value: model.id,
+    text: `${model.label || model.id}${model.id === suggested ? ` · ${i18n.t("plan.executionRecommendedChoice")}` : ""}`,
+  }));
+  if (suggested && !models.some(model => model.id === suggested)) select.append(node("option", {
+    value: suggested, text: `${suggested} · ${i18n.t("plan.executionRecommendedChoice")}`,
+  }));
   select.append(node("option", { value: "__custom__", text: t("customModel") }));
   const known = [...select.options].some((option) => option.value === savedModel);
   select.value = savedModel && !known ? "__custom__" : savedModel;

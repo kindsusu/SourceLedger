@@ -121,6 +121,9 @@ def test_connected_preview_to_confirmed_collection_and_report(tmp_path, monkeypa
                 choice.uncheck()
                 choice.check()
                 page.locator("#plan-start").click()
+                playwright.expect(page.locator("#plan-execution-preview")).to_be_visible()
+                playwright.expect(page.locator("#plan-execution-preview")).to_contain_text("catalog.example.test")
+                page.locator("#plan-start").click()
                 playwright.expect(page.locator("#job-detail")).to_contain_text("Succeeded", ignore_case=True, timeout=30000)
                 _, final = json_response(request(http_server, "GET", "/api/bootstrap"))
                 approved = final["research_plans"]["plans"][0]

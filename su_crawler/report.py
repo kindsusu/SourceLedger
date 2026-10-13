@@ -150,6 +150,62 @@ def _validate_xlsx(path: Path) -> None:
             raise ValueError("invalid XLSX archive")
 
 
+def append_section_coverage(path: str | Path, coverage: list[dict[str, Any]]) -> Path:
+    """Replace the catalog section audit sheet in an existing report atomically.
+
+    Coverage is page based; each page may contain several section records.
+    """
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font, PatternFill
+
+    path = Path(path)
+    wb = load_workbook(path)
+    title = "Catalog coverage"
+    if title in wb:
+        del wb[title]
+    ws = wb.create_sheet(title)
+    headers = ["Page URL", "Section", "Status", "Observed offers", "Extracted offers",
+               "Current prices", "Unparsed offers", "Expansion clicks", "Reason",
+               "Evidence reference", "Snapshot reference"]
+    ws.append(headers)
+    for page in coverage:
+        if not isinstance(page, dict):
+            continue
+        sections = page.get("sections")
+        if not isinstance(sections, list) or not sections:
+            continue
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            evidence = section.get("evidence") or section.get("evidence_ref") or section.get("evidence_path")
+            snapshot = section.get("snapshot_path") or section.get("snapshot_ref") or page.get("evidence_path")
+            ws.append([_text(page.get("url") or page.get("source_url")),
+                       _text(section.get("section")), _text(section.get("status") or "unknown"),
+                       section.get("observed_count"), section.get("extracted_count"),
+                       section.get("price_count"), section.get("unparsed_count"),
+                       section.get("click_count"), _text(section.get("reason")),
+                       _text(evidence), _text(snapshot)])
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+    for col, width in {"A": 48, "B": 28, "C": 16, "D": 18, "E": 18,
+                       "F": 18, "G": 18, "H": 18, "I": 48, "J": 50, "K": 50}.items():
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:K{max(ws.max_row, 1)}"
+    fd, tmp_name = tempfile.mkstemp(prefix=path.stem + ".", suffix=".xlsx", dir=path.parent)
+    os.close(fd)
+    temp = Path(tmp_name)
+    try:
+        wb.save(temp)
+        _validate_xlsx(temp)
+        os.replace(temp, path)
+    finally:
+        wb.close()
+        temp.unlink(missing_ok=True)
+    return path
+
+
 def export_report(
     config: CollectionConfig,
     run: dict[str, Any],
@@ -294,12 +350,14 @@ def export_report(
 
         # 4. Full raw observation history, including unavailable/review rows.
         history_headers = ["Observation ID", "Task ID", "Product", "Source", "Status", "Reason", "Collected at (UTC)", "Amount", "Raw Amount", "Normalized Amount", "Calculation", "Currency", "Unit", "Comparable", "Freshness", "Extraction Method", "Raw Fields JSON", "Price Profile", "Value Origin", "Source Visibility", "Verification Level", "Estimated Amount (not observed)", "Derived Values JSON", "Review Flags", "Rental Conditions JSON", "Unverified Observed Amount"]
-        history_headers.append("Evidence Mode")
+        history_headers.extend(["Evidence Mode", "Reference Price (observed)", "Advance Percent (observed)"])
         ws = wb.add_worksheet(SHEETS[3]); row = _setup_sheet(ws, history_headers, fmts, demo)
         for obs in observations:
             values = [obs.get("id"), obs.get("task_id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), obs.get("reason"), obs.get("collected_at"), _observed_amount(obs), _raw_price(obs), obs.get("normalized_amount"), obs.get("calculation"), obs.get("currency"), obs.get("unit"), obs.get("comparable"), obs.get("freshness"), obs.get("extraction_method"), obs.get("raw_fields"), obs.get("price_profile", "unit"), obs.get("value_origin", "observed"), obs.get("source_visibility"), obs.get("verification_level"), _estimated_amount(obs), obs.get("derived_values"), obs.get("review_flags"), obs.get("rental_conditions")]
             values.append(_observed_amount(obs, include_review=True) if obs.get('status') == 'review' else None)
             values.append(obs.get('evidence_mode', 'unknown'))
+            values.extend([(obs.get("raw_fields") or {}).get("reference_price"),
+                           (obs.get("rental_conditions") or {}).get("advance_percent", (obs.get("raw_fields") or {}).get("advance_percent"))])
             for col, value in enumerate(values):
                 if col in (7, 21, 25): _write_decimal(ws, row, col, value, fmts["number"])
                 elif col == 9: _write_decimal(ws, row, col, value, fmts["number"])
@@ -357,6 +415,7 @@ def export_report(
                        "Upfront Deposit Amount", "Deposit Installment Amount", "Deposit Installment Months",
                        "Deposit Percent", "Displayed Deposit (raw)", "Value Origin", "Source Visibility",
                        "Status", "Comparable", "Freshness", "Collected at (UTC)", "Source URL", "Review Reason", "Observation ID"]
+            headers.extend(["Reference Price (observed)", "Advance Percent (observed)"])
             ws = wb.add_worksheet("Rental Quotes"); row = _setup_sheet(ws, headers, fmts, demo)
             for obs in rentals:
                 terms = obs.get("rental_conditions") or {}
@@ -371,6 +430,8 @@ def export_report(
                           (obs.get("raw_fields") or {}).get("displayed_deposit"), obs.get("value_origin"), obs.get("source_visibility"),
                           obs.get("status"), obs.get("comparable"), obs.get("freshness"), obs.get("collected_at"),
                           obs.get("source_url"), obs.get("reason"), obs.get("id")]
+                values.extend([(obs.get("raw_fields") or {}).get("reference_price"),
+                               terms.get("advance_percent", (obs.get("raw_fields") or {}).get("advance_percent"))])
                 for col, value in enumerate(values):
                     if col in (2, 3, 5, 6, 7, 8, 15, 16, 17, 18): _write_decimal(ws, row, col, value, fmts["number"])
                     elif col == 25: _write_utc(ws, row, col, value, fmts["date"], fmts["text"])

@@ -164,6 +164,10 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
             row.update(comparable=False, reason=row["reason"] + "; validity date at report time expired or needs review")
     path = Path(config.output_dir) / f"{'demo-' if config.demo else ''}prices-{run_id}.xlsx"
     export_report(config, run, store.tasks(run_id), rows, path)
+    coverage = store.run_coverage(run_id)
+    if coverage:
+        from .report import append_section_coverage
+        append_section_coverage(path, coverage)
     with store.db:
         store.db.execute("UPDATE runs SET report_path=? WHERE id=?", (str(path), run_id))
     return store.run(run_id)

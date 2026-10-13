@@ -25,6 +25,12 @@ SETTINGS_FILE = "ai-settings.json"
 MAX_SETTINGS_BYTES = 4096
 MAX_OUTPUT_BYTES = 1024 * 1024
 MODEL_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._:/-]{0,199}\Z")
+# Recommendations are advisory. An empty saved model still delegates model
+# selection to the signed-in CLI, and a selected model is never replaced.
+RECOMMENDED_MODELS = {
+    "codex": {"id": "gpt-6.1-sol", "label": "Sol"},
+    "claude": {"id": "opus", "label": "Opus"},
+}
 # Keep Codex's tool transport available: current models may require code mode
 # even for web search. Restrict the exposed capabilities, not their dispatcher.
 CODEX_FEATURES = ("shell_tool", "unified_exec", "apps", "plugins", "hooks", "multi_agent",
@@ -92,6 +98,19 @@ def normalize_ai_settings(value: dict) -> dict:
     if isinstance(timeout, bool) or not isinstance(timeout, int) or not 30 <= timeout <= 600:
         raise ValueError("timeout_seconds must be an integer from 30 to 600")
     return {"provider": provider, "model": model, "timeout_seconds": timeout}
+
+
+def model_recommendation(provider: str, selected_model: str = "") -> dict[str, str]:
+    """Describe a proposed model without claiming the connected app selected it."""
+    if provider not in RECOMMENDED_MODELS:
+        raise ValueError("provider must be codex or claude")
+    if not isinstance(selected_model, str) or (selected_model and not MODEL_PATTERN.fullmatch(selected_model)):
+        raise ValueError("model must be a safe model ID of at most 200 characters")
+    recommendation = RECOMMENDED_MODELS[provider]
+    return {"provider": provider, "recommended_model": recommendation["id"],
+            "recommended_label": recommendation["label"],
+            "selected_model": selected_model, "selection_source": "user" if selected_model else "host_default",
+            "actual_model_status": "unknown_until_run"}
 
 
 def _settings_path(root: Path) -> Path:
@@ -170,11 +189,14 @@ def get_ai_configuration(root: str | Path) -> dict:
         settings = _load_settings(base)
     codex = _codex_command() is not None
     claude = _claude_command() is not None
-    return {"settings": settings, "providers": [
+    return {"settings": settings, "recommendation": model_recommendation(settings["provider"], settings["model"]),
+            "providers": [
         {"id": "codex", "label": "Codex CLI", "available": codex,
+         "recommended_model": RECOMMENDED_MODELS["codex"]["id"],
          "models": _codex_models() if codex else [],
          "message": "Local Codex CLI found; model access is checked when run." if codex else "Install and sign in to Codex CLI."},
         {"id": "claude", "label": "Claude Code CLI", "available": claude,
+         "recommended_model": RECOMMENDED_MODELS["claude"]["id"],
          "models": [{"id": alias, "label": alias.title()} for alias in ("sonnet", "opus", "haiku")],
          "message": "Local Claude Code CLI found; model access is checked when run." if claude else "Install and sign in to Claude Code CLI."},
     ]}

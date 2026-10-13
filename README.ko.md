@@ -12,6 +12,10 @@ SourceLedger는 출처를 탐색하고 상품 가격과 원문·근거를 보존
 
 ## 동작 구조
 
+추천 모델은 **Codex의 Sol, Claude의 Opus**이며 기존 사용자 선택은 유지합니다. 수집 전 실행 계획에서 대상 사이트, 요청한 모델 또는 확인되지 않은 호스트 모델, 시간·페이지 한도와 체크포인트를 검토합니다. MCP에서는 `get_research_execution_plan`으로 조회합니다. 새 UI·MCP 작업은 한 작업 공간에서 동시 수집 2개를 기본으로 사용합니다(사이트당 최대 2개, 브라우저 1개). 1개를 선택하면 순차 실행합니다. MCP 진행 조회는 `get_research_progress`를 사용합니다. 연결된 앱을 통한 Exa 출처 탐색은 선택 사항입니다. [적용 내용](docs/CRAWLER_IMPROVEMENTS.ko.md)을 참고하세요. [성능 실측](docs/COLLECTION_PERFORMANCE.ko.md)과 [Exa MCP·Scrapy 구조 검토](docs/UPSTREAM_ARCHITECTURE_REVIEW.ko.md)를 참고하세요.
+
+고정된 전체 목록은 계획을 한 번 승인한 뒤 `start_research_batch_run`으로 수집할 수 있습니다. 서버가 배치와 체크포인트를 관리하므로 배치마다 AI의 계획·승인을 반복하지 않습니다. [전체 목록 배치 수집](docs/SERVER_BATCH_COLLECTION.ko.md)을 참고하세요.
+
 [![SourceLedger 수집 구조](docs/architecture/sourceledger.png)](docs/ARCHITECTURE.ko.md)
 
 범위와 한도가 정해진 에이전트가 출처 후보에서 추출 규칙을 제안하고, 새 원문을 수집해 검증한 관측을 SQLite에 기록한 뒤 XLSX 보고서를 만듭니다. 없는 값은 채우지 않습니다. 선택적 검색·모델 보조·활성화에는 명시적인 조건을 적용합니다.
@@ -166,6 +170,8 @@ HTML은 `selectors`와 선택 `row_selector`의 CSS 위치를 증거로 남깁�
 
 `Source.adapter`는 지원되는 렌더링 형식의 결정적 파서를 지정합니다. 현재 값은 `jetcar`, `gongcar`, `funrent`입니다. 어댑터는 원문 근거와 화면 표시 여부를 기록합니다. 계산기에 표시된 값은 `calculator_estimate`로 표기해 `observed` 가격과 구분하며, 비교 가능한 견적으로 자동 승격하지 않습니다. 숨겨진 내용, 불충분한 근거, 불완전한 렌탈 조건은 비교하지 않고 검토 대상으로 남습니다.
 
+공카 `/rentpass`·`/longterm` 수집은 공개 인기 상품을 끝까지 펼치고 특가 영역을 확인합니다. 섹션별 건수·확장 종료 사유·근거를 SQLite, MCP/UI 결과, XLSX의 `Catalog coverage` 시트에 보존합니다. 목록 완료와 가격·계약 조건 검증을 구분하며, 예산 초과·화면 변경·미해석 카드는 누락 상태로 표시합니다. [구현 및 실제 검증 기록](docs/GONGCAR_COLLECTION_PLAN.ko.md)을 참고하세요. 이 범위에는 한달렌트·하루렌트·비공개 재고가 포함되지 않습니다.
+
 처음 지원 사이트를 수집할 때는 산업군·상품·시장을 명시하는 워크스페이스를 만든 다음 권한 있는 정확한 페이지 URL을 넣습니다. 아래 URL은 자리표시자이므로 실제 사용 시 권한 있는 URL로 바꾸세요. 이 명령은 사이트 전체 목록을 탐색하거나 완전한 목록이라고 주장하지 않습니다.
 
 ```powershell
@@ -248,3 +254,7 @@ worker의 heartbeat가 확인되지 않으면 MCP는 수집 시작 요청을 거
 구현 범위와 검증 상태는 [IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)를 참고하세요.
 
 MCP로 조사 누락 조회, 검토 대기 브라우저 근거 제출, 부분 재시도와 체크포인트 재개를 지원합니다. [근거 보완과 조사 재개](docs/MCP_FOLLOWUP.ko.md)를 참고하세요.
+
+공카 한달·하루렌트 목록과 명시된 상세 URL의 화면 가격을 수집하며, 계약기간별 가격을 구분합니다. 목록 완료 판정에는 사이트의 총수가 필요하고 누락된 조건은 검토 상태로 유지합니다. 링크가 없는 상품 카드의 상세 URL 탐색에는 아직 브라우저 이동이 필요합니다. [수집 성능과 최적화 기준](docs/COLLECTION_PERFORMANCE.ko.md)에 측정 결과와 수집기 직접 실행 시간의 한계를 정리했습니다.
+
+체크포인트는 이제 원본을 보존하는 해시 기반 파일 저장 방식을 사용합니다. 백업할 때 SQLite뿐 아니라 `checkpoint_blobs/`, `evidence/`를 포함한 출력 폴더 전체를 보관하세요. [용량 실측과 호환성](docs/STORAGE_OPTIMIZATION.ko.md)을 참고하세요.

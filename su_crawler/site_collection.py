@@ -27,13 +27,71 @@ HOST_ADAPTERS = {
 }
 
 
-def _ready_recipe(adapter: str) -> list[dict]:
+def _ready_recipe(adapter: str, url: str = '') -> list[dict]:
+    path = urlsplit(url).path.rstrip('/')
+    if adapter == 'gongcar' and path in {'/monthly-rent', '/daily-rent'}:
+        monthly = path == '/monthly-rent'
+        return [{'action': 'expand_list',
+                 'section': 'monthly_catalog' if monthly else 'daily_catalog',
+                 'selector': 'main',
+                 'item_selector': 'div.grid div.cursor-pointer:has(> div > h4)',
+                 'button_selector': 'p:text-is("더 보기...")' if monthly else 'button:has(> span:text-is("펼쳐보기"))',
+                 'trigger': 'scroll' if monthly else 'click',
+                 'max_clicks': 100, 'max_items': 1000}]
+    if adapter == 'gongcar' and (path.startswith('/monthly-rent/') or path.startswith('/daily-rent/')):
+        return [{'action': 'wait_for', 'selector': 'main h1', 'state': 'visible'},
+                {'action': 'wait_for', 'selector': 'main h3:text-is("렌트 가격")', 'state': 'visible'}]
+    if adapter == 'gongcar' and urlsplit(url).path.rstrip('/') in {'/rentpass', '/longterm'}:
+        return [{'action': 'expand_list',
+                 'selector': 'section:has(h2:has-text("인기 차량")):not(:has(section h2:has-text("인기 차량")))',
+                 'item_selector': ':scope > div > div.grid > button',
+                 'button_selector': 'button:text-is("더보기"), button:text-is("더 보기")',
+                 'max_clicks': 100, 'max_items': 1000},
+                {'action': 'expand_list', 'section': 'promotion',
+                 'selector': 'section:has(button > span:has-text("특가")):not(:has(section button > span:has-text("특가")))',
+                 'item_selector': 'div.grid > button',
+                 'button_selector': 'button:text-is("더보기"), button:text-is("더 보기"), button[aria-label="다음"]',
+                 'max_clicks': 100, 'max_items': 1000}]
     selectors = {
         'gongcar': ('table tbody tr td:visible, '
                     'section:has(h2:has-text("인기 차량")) > div > div.grid > button:visible'),
         'funrent': '#estCar',
     }
     return [{'action': 'wait_for', 'selector': selectors[adapter], 'state': 'visible'}] if adapter in selectors else []
+
+
+def _sections(result, candidates, adapter):
+    if adapter != 'gongcar':
+        return []
+    from .adapters.gongcar import section_coverage
+    sections = section_coverage(result, candidates)
+    for section in sections:
+        kind = str(section['section']).rsplit('_', 1)[-1]
+        events = [event for event in result.trace if event.get('event') == 'list_expansion'
+                  and event.get('section') in {kind, section['section']}]
+        section['click_count'] = events[-1].get('click_count', 0) if events else 0
+    return sections
+
+
+def _save_coverage(destination, run, coverage):
+    from .report import append_section_coverage
+    store = Store(destination)
+    try:
+        rows = store.observations(run['id'])
+        for page in coverage:
+            page_rows = [row for row in rows if row.get('source_id') == page.get('source_id')]
+            for section in page.get('sections', []):
+                section_rows = [row for row in page_rows if (row.get('raw_fields') or {}).get('section') == section.get('section')]
+                evidence = sorted({row['evidence_path'] for row in section_rows if row.get('evidence_path')})
+                if not evidence:
+                    evidence = sorted({row['evidence_path'] for row in page_rows if row.get('evidence_path')})
+                section['evidence_ref'] = '; '.join(evidence)
+        store.save_run_coverage(run['id'], coverage)
+    finally:
+        store.close()
+    _atomic_write(Path(destination) / f"coverage-{run['id']}.json", {'coverage': coverage})
+    if any(page.get('sections') for page in coverage):
+        append_section_coverage(run['report_path'], coverage)
 
 
 def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
@@ -75,7 +133,8 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                 adapter = HOST_ADAPTERS[host]
                 sid = 'site_' + stable_id(url)
                 source = Source(sid, adapter, 'web', url, [], adapter=adapter,
-                                allowed_domains=[host], max_attempts=1, incremental=incremental)
+                                allowed_domains=[host], max_attempts=1, incremental=incremental,
+                                recipe=_ready_recipe(adapter, url))
                 candidates = []
                 result = FetchResult(sid, 'budget_exhausted', 'none', message='Collection time limit reached')
                 prefetched_responses: list[tuple[FetchResult, list]] = []
@@ -86,17 +145,18 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
-                    bounded = replace(source, timeout_seconds=min(30, remaining))
-                    if backend == 'playwright':
-                        bounded = replace(bounded, recipe=_ready_recipe(adapter))
+                    bounded = replace(source, timeout_seconds=min(120 if adapter == 'gongcar' else 30, remaining),
+                                      recipe=source.recipe if backend == 'playwright' else [])
                     # Pipeline snapshots are keyed with the one backend that
                     # actually produced the retained response.
-                    cache_source = replace(source, backends=[backend])
+                    cache_source = replace(source, backends=[backend], recipe=[] if backend == 'http' else source.recipe)
                     saved = load_snapshot(store, destination, cache_source, backend)
                     try:
                         current = conditional_fetch(collector, bounded, str(Path(workspace_path).resolve().parent), backend, saved)
                     except Exception as exc:
                         current = FetchResult(sid, 'failed', backend, message=f'Collector error: {type(exc).__name__}')
+                    if backend == 'playwright' and bounded.recipe:
+                        current.trace.append({'event': 'collection_recipe', 'recipe': bounded.recipe})
                     result = current
                     attempt = {'backend': backend, 'status': current.status, 'at': current.fetched_at,
                                'message': current.message, 'trace': deepcopy(current.trace)}
@@ -126,10 +186,11 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                             )
                         # Proof quality leads; identity/row counts only break
                         # ties and cannot let hidden stale rows beat rendered UI.
-                        score = (max(per_identity.values(), default=(-1,)), len(per_identity), len(identified))
+                        sections = _sections(result, current_candidates, adapter)
+                        score = (sum(s['status'] == 'complete' for s in sections), max(per_identity.values(), default=(-1,)), len(per_identity), len(identified))
                         if best is None or score > best_score:
                             best, best_score = (result, current_candidates), score
-                        if identified and all(_has_sufficient_evidence(
+                        if (not sections or all(s['status'] == 'complete' for s in sections)) and identified and all(_has_sufficient_evidence(
                                 [candidate for candidate in identified
                                  if str(candidate.fields['item_id']) == identity], source.decimal_separator)
                                 for identity in per_identity):
@@ -138,6 +199,8 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                         break
                 if best is not None:
                     result, candidates = best
+                if result.backend == 'playwright' and source.recipe:
+                    source.recipe_version = 'catalog-expansion-v2'
                 if result.status == 'fetched' and not candidates and not result.message:
                     result.message = ('Select a vehicle in the calculator with a reviewed browser recipe; no selected quote was found.'
                                       if adapter == 'funrent' else 'No supported quote rows found; the rendered page format or selection needs review.')
@@ -166,16 +229,20 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                 prefetched[sid] = prefetched_responses or [(result, candidates)]
                 coverage.append({'source_id': sid, 'adapter': adapter, 'url': url,
                                  'status': result.status, 'items': len(identities),
-                                 'coverage_gap': not bool(identities),
+                                 'sections': _sections(result, candidates, adapter),
+                                 'coverage_gap': not bool(identities) or any(s['status'] != 'complete' for s in _sections(result, candidates, adapter)),
                                  'reason': result.message, 'trace': result.trace})
         finally:
             store.close()
     config = CollectionConfig(f"{workspace['industry']} — {workspace['product']['name']} — {workspace['market']}",
-        products, sources, str(destination), str(Path(workspace_path).resolve().parent),
+        products, sources, str(destination), str(destination),
         max_run_seconds=max(5, deadline - time.monotonic()))
     # The response has already been freshly fetched and extracted above. The
     # ordinary pipeline saves evidence and performs fresh validation.
     result = execute(config, prefetched=prefetched)
+    _save_coverage(destination, result, coverage)
+    if any(p['coverage_gap'] for p in coverage):
+        result['status'] = 'partial'
     config_path = destination / f"collection-{result['id']}.json"
     document = asdict(config)
     document.pop('base_dir')

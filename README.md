@@ -20,6 +20,10 @@ Read the [architecture and Archify guide](docs/ARCHITECTURE.md) ([한국어](doc
 
 ## Quick start
 
+Recommended host models are **Sol for Codex** and **Opus for Claude**; existing model choices remain unchanged. Before collecting, review the execution plan showing selected sites, requested/unknown host model, page/time limits, and checkpoints. MCP clients can read `get_research_execution_plan`. New UI/MCP jobs default to bounded concurrency 2 in one workspace (up to 2 per host, browser capture 1). Choose 1 for sequential collection. Use `get_research_progress` for compact MCP polling. Exa discovery through an existing host connection is optional; see [implementation details](docs/CRAWLER_IMPROVEMENTS.md). See the [measured performance](docs/COLLECTION_PERFORMANCE.md) and [Exa MCP / Scrapy architecture review](docs/UPSTREAM_ARCHITECTURE_REVIEW.md).
+
+For a large fixed inventory, approve the full plan once and use `start_research_batch_run`. The server processes bounded batches and persists checkpoints without a separate AI approval cycle for each batch. See [approved inventory collection](docs/SERVER_BATCH_COLLECTION.md).
+
 SourceLedger supports Python 3.11 or later; Python 3.12 is recommended. Clone this repository, or download and extract its GitHub ZIP. The default setup installs the local core only. See [installation](docs/INSTALLATION.md) for macOS/Linux, browser, MCP, developer-test, Linux dependency, headless browser mode, and moving-computer instructions.
 
 ```bat
@@ -166,6 +170,8 @@ Set `profile_dir` to reuse a dedicated, already authenticated browser profile. I
 
 `Source.adapter` selects a deterministic parser for the supported rendered formats: `jetcar`, `gongcar`, or `funrent`. An adapter records source evidence and visibility. A price displayed in a calculator is marked `calculator_estimate`, remains distinct from an `observed` price, and is not silently promoted into a comparable quote. Hidden content, incomplete evidence, or incomplete rental conditions remains reviewable rather than comparable.
 
+Gongcar `/rentpass` and `/longterm` collections expand the public popular-offer list and inspect promotions. Section counts, expansion stop reasons and evidence are retained in SQLite, MCP/UI results and the XLSX `Catalog coverage` sheet. Discovery completion is separate from price/contract verification; budgets, changed layouts and unparsed cards remain explicit gaps. See the [implementation and live verification notes](docs/GONGCAR_COLLECTION_PLAN.md). This covers these two public catalogs, not daily/monthly rental or private inventory.
+
 For a first supported-site collection, create a workspace so the industry, product, and market are explicit, then supply the exact authorized page URLs. Use a placeholder or your own authorized URL; this command does not discover or claim to complete a whole-site listing.
 
 ```powershell
@@ -256,3 +262,7 @@ Scanned-document OCR, autonomous browser navigation, rule recovery, and schedule
 See [implementation status](docs/STATUS.md) for implemented scope and validation.
 
 MCP follow-up supports coverage-gap inspection, review-only browser evidence, partial retry and checkpoint resume. See [Evidence and recovery](docs/MCP_FOLLOWUP.md).
+
+Gongcar short-rental adapters support monthly/daily catalog cards and explicit detail URLs, including visible rental-period prices. Catalog completeness requires a declared count; missing conditions stay under review. Non-link product-card discovery still needs browser navigation. See [collection performance and optimization criteria](docs/COLLECTION_PERFORMANCE.md) for measured experiments and the limits of engine-only timing.
+
+Checkpoint captures now use lossless, content-addressed storage. Back up the entire output directory, including `checkpoint_blobs/` and `evidence/`, alongside SQLite. See [storage measurements and compatibility](docs/STORAGE_OPTIMIZATION.md).

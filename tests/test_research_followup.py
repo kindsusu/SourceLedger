@@ -11,7 +11,7 @@ from su_crawler.assistant_workspace import execute_job
 from su_crawler.catalog_checkpoint import read_checkpoint
 from su_crawler.models import FetchResult, utc_now
 from su_crawler.plan_jobs import queue_plan_job
-from su_crawler.research_followup import research_gaps, submit_browser_evidence
+from su_crawler.research_followup import research_gaps, submit_browser_evidence, validate_retry
 from su_crawler.storage import Store
 from test_catalog_collection import plan, html_product
 
@@ -28,6 +28,31 @@ def completed_job(root, monkeypatch, urls):
     runtime._write_json(runtime._job_path(root, job["id"]), job)
     runtime._write_json(runtime._job_path(root, job["id"]).with_name("result.json"), result)
     return job, result
+
+
+def test_partial_section_on_visited_page_is_gap_and_retryable(tmp_path, monkeypatch):
+    url = "https://shop.example/item"
+    monkeypatch.setattr(catalog_collection, "collect", lambda s, b, backend: FetchResult(
+        s.id, "fetched", backend, content=html_product("Widget", price="10", currency="USD"), final_url=s.location))
+    job, result = completed_job(tmp_path, monkeypatch, [url])
+    page = result["result"]["coverage"][0]
+    assert page["status"] == "visited"
+    page["sections"] = [{"section": "popular", "status": "partial", "observed_count": 4,
+                         "extracted_count": 4, "price_count": 4, "unparsed_count": 0,
+                         "reason": "button_stalled", "click_count": 1}]
+    runtime._write_json(runtime._job_path(tmp_path, job["id"]).with_name("result.json"), result)
+    gap = research_gaps(tmp_path, job["id"])["items"][0]
+    assert gap["status"] == "partial" and gap["retryable"] is True
+    assert gap["sections"] == page["sections"]
+    args = {"retry_of": job["id"], "retry_urls": [url], **{
+        key: job["arguments"][key] for key in ("plan_id", "expected_revision", "plan_fingerprint")}}
+    validate_retry(tmp_path, args)
+    page["sections"][0]["status"] = "complete"
+    runtime._write_json(runtime._job_path(tmp_path, job["id"]).with_name("result.json"), result)
+    gap = research_gaps(tmp_path, job["id"])["items"][0]
+    assert gap["status"] == "needs_review" and gap["retryable"] is False
+    with pytest.raises(ValueError, match="review-only prices"):
+        validate_retry(tmp_path, args)
 
 
 def test_browser_submission_mcp_is_review_idempotent_and_in_xlsx(tmp_path, monkeypatch):

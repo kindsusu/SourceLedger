@@ -27,7 +27,7 @@ from .recommendations import create_recommendation_request, list_recommendations
 from .ai_providers import get_ai_configuration, save_ai_settings
 from .recommendation_jobs import latest_recommendation_jobs, queue_generation
 from .research_plans import create_plan, list_plans, revise_plan
-from .plan_jobs import confirm_research, latest_plan_jobs, start_plan_job
+from .plan_jobs import confirm_research, latest_plan_jobs, preview_execution, start_plan_job
 
 
 MAX_BODY_BYTES = 256 * 1024
@@ -358,6 +358,10 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
         if path == "/api/plans/edit":
             self._fields(value, allowed={"plan_id", "expected_revision", "changes"}, required={"plan_id", "expected_revision", "changes"})
             return revise_plan(base, **value)
+        if path == "/api/plans/execution-preview":
+            self._fields(value, allowed={"plan_id", "expected_revision", "provider", "model", "max_pages", "max_seconds", "follow_links", "concurrency"},
+                         required={"plan_id", "expected_revision"})
+            return preview_execution(base, **value)
         if path == "/api/plans/confirm":
             self._fields(value, allowed={"plan_id", "expected_revision", "user_confirmed"}, required={"plan_id", "expected_revision", "user_confirmed"})
             return confirm_research(base, **value)

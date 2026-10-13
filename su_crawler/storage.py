@@ -76,6 +76,9 @@ class Store:
         CREATE TABLE IF NOT EXISTS browser_submissions (
             id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), data TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS run_coverage (
+            run_id TEXT PRIMARY KEY REFERENCES runs(id), data TEXT NOT NULL
+        );
         """)
 
     def close(self):
@@ -101,6 +104,23 @@ class Store:
         if row is None:
             raise ValueError("Run ID does not exist")
         return dict(row)
+
+    def run_coverage(self, run_id: str) -> list[dict]:
+        """Read the exact page/section coverage persisted for a run."""
+        row = self.db.execute("SELECT data FROM run_coverage WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            return []
+        value = json.loads(row[0])
+        if not isinstance(value, list):
+            raise ValueError("Run coverage is not a list")
+        return value
+
+    def save_run_coverage(self, run_id: str, coverage: list[dict]) -> None:
+        if not isinstance(coverage, list):
+            raise ValueError("Run coverage must be a list")
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO run_coverage(run_id,data) VALUES(?,?)",
+                            (run_id, json.dumps(coverage, ensure_ascii=False)))
 
     def tasks(self, run_id: str) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM tasks WHERE run_id=? ORDER BY source_id,product_id", (run_id,))]

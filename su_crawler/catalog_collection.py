@@ -6,6 +6,7 @@ Other page content remains source evidence and an explicit coverage gap.
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 import json
 import math
@@ -22,9 +23,10 @@ from .models import Candidate, CollectionConfig, FetchResult, Product, Source, s
 from .pipeline import execute, _candidate_quality, _has_sufficient_evidence
 from .research import _atomic_write
 from .research_plans import canonical_url
-from .site_collection import HOST_ADAPTERS, _ready_recipe
+from .site_collection import HOST_ADAPTERS, _ready_recipe, _sections, _save_coverage
 from .scope_conditions import assess_conditions, normalize_conditions, normalize_text
 from .catalog_checkpoint import read_checkpoint, write_checkpoint
+from .catalog_scheduler import HostGate, PageLedger, fetch_http
 from .storage import Store
 
 
@@ -183,7 +185,8 @@ def _products_for(source: Source, candidates: list[Candidate], fallback_name: st
 def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                  max_pages: int = 10, max_seconds: float = 120, collector=None,
                  checkpoint_id: str | None = None, retry_urls: list[str] | None = None,
-                 parent_checkpoint_id: str | None = None, follow_links: bool = True) -> dict:
+                 parent_checkpoint_id: str | None = None, follow_links: bool = True,
+                 concurrency: int = 1) -> dict:
     """Collect selected pages and at most ``max_pages`` same-host pages total.
 
     The returned coverage is page-scoped, never a claim about whole-site coverage.
@@ -197,6 +200,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         raise ValueError("max_pages must be between 1 and 50")
     if not isinstance(follow_links, bool):
         raise ValueError("follow_links must be a boolean")
+    if not isinstance(concurrency, int) or isinstance(concurrency, bool) or not 1 <= concurrency <= 4:
+        raise ValueError("concurrency must be between 1 and 4")
     if not isinstance(max_seconds, (int, float)) or isinstance(max_seconds, bool) or not math.isfinite(max_seconds) or max_seconds <= 0:
         raise ValueError("max_seconds must be a positive finite number")
     includes = snapshot.get("include_terms", [])
@@ -242,8 +247,12 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         if url in excluded_urls:
             coverage.append({"url": url, "status": "excluded", "reason": "excluded_urls", "candidate_id": item.get("id")})
     binding = stable_id(snapshot, max_pages, max_seconds, retry_urls, parent_checkpoint_id)
+    binding = stable_id(binding, 'catalog-expansion-v2',
+                        [(url, _ready_recipe(HOST_ADAPTERS.get(urlsplit(url).hostname), url)) for url in chosen])
     if not follow_links:
         binding = stable_id(binding, "selected_urls_only")
+    if concurrency != 1:
+        binding = stable_id(binding, "parallel_http_v1", concurrency)
     state = read_checkpoint(destination, checkpoint_id) if checkpoint_id else None
     if state and state["binding"] != binding:
         raise ValueError("Collection checkpoint scope or budget changed")
@@ -251,6 +260,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         return state["result"]
     captures = {}
     elapsed, dispatched = 0.0, 0
+    retry_total = 0
     if not state and retry_urls is not None:
         parent = read_checkpoint(destination, parent_checkpoint_id) if parent_checkpoint_id else None
         if not parent or not parent.get("result"):
@@ -268,9 +278,13 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         captures, coverage = state["captures"], state["coverage"]
         queue, visited, queued = deque(state["queue"]), set(state["visited"]), set(state["queued"])
         elapsed, dispatched = state["elapsed"], state["dispatched"]
+        retry_total = state.get("transient_retries", 0)
         if state.get("inflight"):
             coverage.append({"url": state["inflight"], "status": "interrupted",
                              "reason": "Worker stopped during this page; reserved time was charged. Retry explicitly."})
+        for leased_url in state.get("parallel_leases", []):
+            coverage.append({"url": leased_url, "status": "interrupted",
+                             "reason": "Worker stopped during a reserved page; reserved time was charged. Retry explicitly."})
     for data in captures.values():
         sources.append(Source(**data["source"]))
         products.extend(Product(**item) for item in data["products"])
@@ -279,44 +293,118 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     started = time.monotonic()
     deadline = started + max(0, max_seconds - elapsed)
     collection_finished = bool(state and state.get("collection_finished"))
+    parallel_leases: list[str] = []
+    pending = deque()
+    gate = HostGate(concurrency=concurrency)
+    executor = ThreadPoolExecutor(max_workers=concurrency) if concurrency > 1 and not collection_finished else None
+    ledger = PageLedger(destination, checkpoint_id) if concurrency > 1 and checkpoint_id else None
+    if ledger:
+        ledger.reconcile(state, [url for url, _ in queue])
 
-    def save(*, inflight=None, reserve=0, result=None):
+    def save(*, inflight=None, reserve=None, result=None):
         if checkpoint_id:
+            if reserve is None:
+                reserve = max((240 if HOST_ADAPTERS.get(urlsplit(u).hostname) == 'gongcar' else 60
+                               for u in parallel_leases), default=0)
             write_checkpoint(destination, checkpoint_id, {
                 "binding": binding, "captures": captures, "coverage": coverage,
                 "queue": list(queue), "visited": sorted(visited), "queued": sorted(queued),
                 "elapsed": min(max_seconds, elapsed + time.monotonic() - started + reserve),
                 "dispatched": dispatched, "inflight": inflight, "result": result,
+                "transient_retries": retry_total,
+                "parallel_leases": list(parallel_leases),
                 "collection_finished": collection_finished})
 
     save()
-    while not collection_finished and queue and dispatched < max_pages and time.monotonic() < deadline:
-        url, origin = queue.popleft()
-        if url in visited:
-            continue
-        visited.add(url)
-        dispatched += 1
-        # On a hard crash, conservatively charge the maximum time reserved for
-        # the page. Completed pages refund unused time in the next checkpoint.
-        save(inflight=url, reserve=min(60, max(0, deadline - time.monotonic())))
+    try:
+      while not collection_finished and (queue or pending) and (pending or (dispatched < max_pages and time.monotonic() < deadline)):
+        prefetched_http = None
+        retry_count = 0
+        if executor is not None:
+            if not pending:
+                batch = []
+                while queue and dispatched < max_pages and len(batch) < concurrency and time.monotonic() < deadline:
+                    page_url, page_origin = queue.popleft()
+                    if page_url in visited:
+                        continue
+                    visited.add(page_url)
+                    dispatched += 1
+                    parallel_leases.append(page_url)
+                    batch.append((page_url, page_origin))
+                if batch:
+                    # Reserve the longest simultaneous page budget. On crash,
+                    # every leased URL is spent and this time remains charged.
+                    reserve = max(240 if HOST_ADAPTERS.get(urlsplit(u).hostname) == 'gongcar' else 60 for u, _ in batch)
+                    save(reserve=min(reserve, max(0, deadline - time.monotonic())))
+                    for page_url, page_origin in batch:
+                        host = urlsplit(page_url).hostname
+                        adapter = HOST_ADAPTERS.get(host)
+                        pre_source = Source("catalog_source_" + stable_id(page_url), host, "web", page_url, [],
+                                            allowed_domains=[host], adapter=adapter, max_attempts=1,
+                                            backends=["http", "playwright"], min_interval_seconds=0,
+                                            recipe=_ready_recipe(adapter, page_url))
+                        if ledger:
+                            lease_seconds = 240 if adapter == "gongcar" else 60
+                            ledger.set(page_url, "leased", lease_seconds=lease_seconds)
+                        future = executor.submit(fetch_http, page_url, source=pre_source, fetch=fetch,
+                                                 base_dir=base_dir, deadline=deadline, gate=gate)
+                        pending.append((page_url, page_origin, future))
+            if not pending:
+                break
+            url, origin, future = pending.popleft()
+            prefetched_http, retry_count = future.result()
+            retry_total += max(0, retry_count - 1)
+            if ledger:
+                ledger.set(url, "leased", attempts=retry_count,
+                           lease_seconds=max(0, deadline - time.monotonic()))
+        else:
+            url, origin = queue.popleft()
+            if url in visited:
+                continue
+            visited.add(url)
+            dispatched += 1
+            # On a hard crash, conservatively charge the maximum time reserved for
+            # the page. Completed pages refund unused time in the next checkpoint.
+            page_budget = 240 if HOST_ADAPTERS.get(urlsplit(url).hostname) == 'gongcar' else 60
+            save(inflight=url, reserve=min(page_budget, max(0, deadline - time.monotonic())))
         host = urlsplit(url).hostname
         adapter = HOST_ADAPTERS.get(host)
         source_id = "catalog_source_" + stable_id(url)
         source = Source(source_id, host, "web", url, [], allowed_domains=[host], adapter=adapter,
-                        max_attempts=1, backends=["http", "playwright"], min_interval_seconds=0)
+                        max_attempts=1, backends=["http", "playwright"], min_interval_seconds=0,
+                        recipe=_ready_recipe(adapter, url))
         responses = []
-        chosen_result, chosen_candidates, chosen_assessments, best_score = None, [], [], (-1,)
+        chosen_result, chosen_candidates, chosen_assessments, chosen_sections, best_score = None, [], [], [], (-1,)
         for backend in source.backends:
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if remaining <= 0 and not (backend == "http" and prefetched_http is not None):
                 break
-            bounded = replace(source, timeout_seconds=min(30, remaining))
-            if backend == "playwright" and adapter:
-                bounded = replace(bounded, recipe=_ready_recipe(adapter))
-            try:
-                result = fetch(bounded, base_dir, backend)
-            except Exception as exc:
-                result = FetchResult(source_id, "failed", backend, message=f"Collector error: {type(exc).__name__}")
+            bounded = replace(source, timeout_seconds=max(0.001, min(120 if adapter == 'gongcar' else 30, remaining)),
+                              recipe=source.recipe if backend == "playwright" else [])
+            if backend == "http" and prefetched_http is not None:
+                result = prefetched_http
+            else:
+                permit = gate.enter(host, deadline) if executor is not None else None
+                if executor is not None and permit is None:
+                    result = FetchResult(source_id, "budget_exhausted", backend,
+                                         message="Collection time limit reached while waiting for host slot")
+                else:
+                    try:
+                        if permit is not None:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                result = FetchResult(source_id, "budget_exhausted", backend,
+                                                     message="Collection time limit reached before browser fetch")
+                            else:
+                                result = fetch(replace(bounded, timeout_seconds=min(bounded.timeout_seconds, remaining)),
+                                               base_dir, backend)
+                        else:
+                            result = fetch(bounded, base_dir, backend)
+                    except Exception as exc:
+                        result = FetchResult(source_id, "failed", backend, message=f"Collector error: {type(exc).__name__}")
+                    finally:
+                        if permit is not None:
+                            permit.release()
             if result.status == "fetched":
                 final = result.final_url or url
                 try:
@@ -326,6 +414,9 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                     result = FetchResult(source_id, "policy_denied", backend, message="Invalid response URL")
             candidates = []
             assessments = []
+            sections = []
+            if backend == "playwright" and bounded.recipe:
+                result.trace.append({"event": "collection_recipe", "recipe": bounded.recipe})
             if result.status == "fetched":
                 try:
                     candidates = extract(result, source) if adapter else []
@@ -333,6 +424,9 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                         candidates = _jsonld_candidates(result)
                 except Exception as exc:
                     result.message = f"Extraction needs review: {type(exc).__name__}"
+                # Section discovery describes the public page. Scope exclusions
+                # affect retained observations, never the observed card count.
+                sections = _sections(result, candidates, adapter)
                 kept = []
                 for candidate in candidates:
                     name = str(candidate.fields.get("name") or candidate.fields.get("model") or "")[:160]
@@ -355,17 +449,20 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                     kept.append(candidate)
                 candidates = kept
             responses.append((result, candidates))
-            score = (bool(candidates), max((_candidate_quality(c) for c in candidates), default=(-1,)))
+            sections = sections if result.status == 'fetched' else []
+            score = (sum(s['status'] == 'complete' for s in sections), bool(candidates), max((_candidate_quality(c) for c in candidates), default=(-1,)), len(candidates))
             if chosen_result is None or score > best_score:
-                chosen_result, chosen_candidates, chosen_assessments, best_score = result, candidates, assessments, score
+                chosen_result, chosen_candidates, chosen_assessments, chosen_sections, best_score = result, candidates, assessments, sections, score
             if result.status in {"policy_denied", "needs_auth"}:
                 break
-            if candidates and _has_sufficient_evidence(candidates):
+            if candidates and (not sections or all(s['status'] == 'complete' for s in sections)) and _has_sufficient_evidence(candidates):
                 break
         if not responses:
             responses = [(FetchResult(source_id, "budget_exhausted", "none", message="Collection time limit reached"), [])]
         result = chosen_result or responses[-1][0]
         candidates = chosen_candidates
+        if result.backend == 'playwright' and source.recipe:
+            source.recipe_version = 'catalog-expansion-v2'
         sources.append(source)
         page_products = _products_for(source, candidates, next((str(item.get("name")) for candidate_url, item in selected if candidate_url == url), topic["product"]))
         products.extend(page_products)
@@ -376,16 +473,29 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         scope_counts = {key: sum(item["status"] == key for item in chosen_assessments)
                         for key in ("matched", "unknown", "excluded", "not_checked")}
         coverage.append({"url": url, "source_id": source_id, "origin": origin, "status": status,
+                         "sections": chosen_sections,
                          "products": len(candidates), "products_extracted": len(chosen_assessments),
                          "scope_counts": scope_counts, "scope_assessments": chosen_assessments[:100],
                          "scope_assessments_truncated": max(0, len(chosen_assessments) - 100),
                          "reason": result.message or ("No supported structured product data or no products satisfying the explicit scope" if not candidates and status == "no_data" else "")})
+        if ledger:
+            ledger.set(url, "completed" if status == "visited" else "review" if status == "no_data" else "failed",
+                       attempts=retry_count, detail=status)
         if result.status == "fetched" and retry_urls is None and follow_links:
             for link in _links(result, result.final_url or url, host, excluded_urls):
                 if link not in visited and link not in queued and urlsplit(link).hostname in allowed_hosts:
                     queue.append((link, "discovered"))
                     queued.add(link)
+                    if ledger:
+                        ledger.set(link, "queued")
+        if prefetched_http is not None:
+            parallel_leases.remove(url)
         save()
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        if ledger is not None:
+            ledger.close()
     if not collection_finished:
         for url, origin in queue:
             if url not in visited:
@@ -395,7 +505,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         # is interrupted, a restart must not expand or change that run's config.
         save()
     config = CollectionConfig(f"{topic['industry']} — {topic['product']} — {topic['market']}", products, sources,
-                              str(destination), base_dir, max_run_seconds=60)
+                              str(destination), str(destination), max_run_seconds=60)
     run_id = "catalog_" + stable_id(checkpoint_id) if checkpoint_id else None
     resume_id = None
     if run_id:
@@ -431,6 +541,9 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     document.pop("base_dir")
     _atomic_write(config_path, document)
     status = "partial" if any(x["status"] in {"unprocessed", "interrupted", "blocked", "policy_denied", "needs_auth", "failed", "timeout", "tool_unavailable", "budget_exhausted"} for x in coverage) else "needs_review" if any(x["status"] == "no_data" or any(x.get("scope_counts", {}).get(key, 0) for key in ("unknown", "excluded", "not_checked")) for x in coverage) or run["status"] != "completed" else "completed"
+    _save_coverage(destination, run, coverage)
+    if any(s['status'] != 'complete' for p in coverage for s in p.get('sections', [])):
+        status = 'partial'
     result = {"run_id": run["id"], "output_dir": str(destination), "report_path": run["report_path"],
             "status": status, "coverage": coverage, "config_path": str(config_path),
             "plan_scope": {"request_text": snapshot.get("request_text", ""), "topic": topic,
@@ -440,5 +553,12 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             "scope_note": "Coverage distinguishes visited pages, extracted products, explicit condition matches, unknowns, and exclusions. Only fields present in product evidence were checked. Other natural-language and commercial conditions still require review."}
     result["budget"] = {"pages_used": dispatched, "max_pages": max_pages,
                         "seconds_used": min(max_seconds, elapsed + time.monotonic() - started), "max_seconds": max_seconds}
+    result["execution"] = {"mode": "parallel" if concurrency > 1 else "sequential",
+                           "concurrency": concurrency,
+                           "per_host_concurrency": min(concurrency, 2),
+                           "browser_concurrency": 1,
+                           "min_host_interval_seconds": 0.25 if concurrency > 1 else 0,
+                           "max_transient_attempts": 2 if concurrency > 1 else 1,
+                           "transient_retries": retry_total}
     save(result=result)
     return result

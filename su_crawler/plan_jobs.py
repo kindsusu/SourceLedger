@@ -15,7 +15,7 @@ from .research import _locked, init_workspace
 
 def _validate(args: dict, operation: str, *, prepared: bool = False) -> dict:
     allowed = {"plan_id", "expected_revision"}
-    allowed |= {"provider", "model", "timeout_seconds"} if operation == "plan_preview" else {"max_pages", "max_seconds", "retry_of", "retry_urls", "follow_links"}
+    allowed |= {"provider", "model", "timeout_seconds"} if operation == "plan_preview" else {"max_pages", "max_seconds", "retry_of", "retry_urls", "follow_links", "concurrency"}
     if prepared:
         allowed |= {"plan_fingerprint", "_resume", "_attempt"}
     if not isinstance(args, dict) or set(args) - allowed:
@@ -37,10 +37,14 @@ def _validate(args: dict, operation: str, *, prepared: bool = False) -> dict:
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or not 1 <= seconds <= 600:
             raise ValueError("max_seconds must be between 1 and 600")
         clean.update(max_pages=pages, max_seconds=seconds)
-        if "follow_links" in args:
-            if not isinstance(args["follow_links"], bool):
-                raise ValueError("follow_links must be a boolean")
-            clean["follow_links"] = args["follow_links"]
+        if not isinstance(args.get("follow_links", False), bool):
+            raise ValueError("follow_links must be a boolean")
+        clean["follow_links"] = args.get("follow_links", False)
+        # Older prepared jobs retain sequential execution on resume.
+        concurrency = args.get("concurrency", 1 if prepared else 2)
+        if isinstance(concurrency, bool) or not isinstance(concurrency, int) or not 1 <= concurrency <= 4:
+            raise ValueError("concurrency must be an integer from 1 to 4")
+        clean["concurrency"] = concurrency
         if "retry_of" in args or "retry_urls" in args:
             parent, urls = args.get("retry_of"), args.get("retry_urls")
             if not isinstance(parent, str) or not re.fullmatch(r"[0-9a-f]{32}", parent):
@@ -88,6 +92,22 @@ def confirm_research(root: str | Path, **args) -> dict:
         result["legacy_workspace_status"] = "unavailable"
         result["note"] = "Plan confirmed. Advanced workspace setup is unavailable; plan collection can still start."
     return result
+
+
+def preview_execution(root: str | Path, plan_id: str, expected_revision: int,
+                      provider: str = "connected", model: str = "", max_pages: int = 10,
+                      max_seconds: float = 120, follow_links: bool = False, concurrency: int = 2) -> dict:
+    """Describe a pinned scope and execution capability without starting work."""
+    from .execution_policy import build_execution_brief
+    clean = _validate({"plan_id": plan_id, "expected_revision": expected_revision,
+                       "max_pages": max_pages, "max_seconds": max_seconds,
+                       "follow_links": follow_links, "concurrency": concurrency}, "research_plan")
+    plan = plans.get_plan(root, clean["plan_id"])["plan"]
+    if plan["revision"] != clean["expected_revision"]:
+        raise ValueError("Research plan changed; review the latest revision before continuing")
+    return {"execution_plan": build_execution_brief(
+        plan, provider=provider, model=model, max_pages=max_pages,
+        max_seconds=max_seconds, follow_links=follow_links, concurrency=clean["concurrency"])}
 
 
 def queue_plan_job(root: str | Path, operation: str, args: dict) -> dict:
@@ -156,7 +176,7 @@ def execute_plan_job(root: str | Path, operation: str, args: dict, *, job_id: st
         validate_retry(base, clean)
     result = collect_plan(base, snapshot, output_dir=output, max_pages=clean["max_pages"], max_seconds=clean["max_seconds"],
                           checkpoint_id=job_id, retry_urls=clean.get("retry_urls"), parent_checkpoint_id=clean.get("retry_of"),
-                          follow_links=clean.get("follow_links", True))
+                          follow_links=clean["follow_links"], concurrency=clean["concurrency"])
     result["retry_of"] = clean.get("retry_of")
     return {"operation": operation, "execution_status": "succeeded", "evidence_status": result.get("status", "needs_review"),
             "plan_id": clean["plan_id"], "plan_revision": clean["expected_revision"],

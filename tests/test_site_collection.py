@@ -65,32 +65,43 @@ def test_three_adapters_flow_to_sqlite_and_xlsx_with_estimate_separation(tmp_pat
     assert all(not row["comparable"] and row["status"] != "verified" for row in estimates)
 
 
-def test_gongcar_current_host_flows_to_reviewable_report_without_promo_mixing(tmp_path):
+def test_gongcar_current_host_keeps_popular_and_promotion_conditions_separate(tmp_path):
     url = "https://gongcar.kr/rentpass"
     output = tmp_path / "prices"
 
     class CheckingCollector(FixtureCollector):
         def __call__(self, source, base, backend, *, validators=None):
             if backend == "playwright":
-                assert source.recipe == _ready_recipe("gongcar")
+                assert source.recipe == _ready_recipe("gongcar", url)
+                assert source.recipe[0]["action"] == "expand_list"
                 assert "인기 차량" in source.recipe[0]["selector"]
             return super().__call__(source, base, backend, validators=validators)
 
     collector = CheckingCollector(fail_http_for={url})
     result = collect_sites(workspace(tmp_path), urls=[url], output_dir=output, collector=collector)
-    assert result["coverage"][0]["items"] == 3
-    assert not result["coverage"][0]["coverage_gap"]
+    assert result["coverage"][0]["items"] == 4
+    assert result["coverage"][0]["coverage_gap"]
+    sections = {section["section"]: section for section in result["coverage"][0]["sections"]}
+    assert sections["rentpass_popular"]["observed_count"] == 3
+    assert sections["rentpass_popular"]["status"] == "partial"
+    assert sections["rentpass_promotion"]["observed_count"] == 1
+    assert sections["rentpass_promotion"]["status"] == "partial"
     assert Path(result["report_path"]).is_file()
     store = Store(output)
     rows = store.observations(result["id"])
     store.close()
-    assert {row["raw_fields"]["name"] for row in rows} == {"더 뉴 모닝", "더 뉴 레이", "캐스퍼"}
-    assert {row["amount"] for row in rows} == {"290000", "310000"}
+    assert {row["raw_fields"]["name"] for row in rows} == {"더 뉴 모닝", "더 뉴 레이", "캐스퍼", "아르카나"}
+    assert {row["amount"] for row in rows} == {"290000", "310000", "460000"}
     assert all(row["status"] == "review" and not row["comparable"] for row in rows)
     assert all(row["rental_conditions"]["term_months"] == 48 for row in rows)
-    assert all(row["rental_conditions"]["deposit_percent"] == "30" for row in rows)
-    assert all(row["derived_values"]["price_kind"] == "from" for row in rows)
-    assert all("deposit_amount" not in row["raw_fields"] for row in rows)
+    popular = [row for row in rows if row["raw_fields"]["section"] == "rentpass_popular"]
+    promotion = [row for row in rows if row["raw_fields"]["section"] == "rentpass_promotion"]
+    assert len(popular) == 3 and len(promotion) == 1
+    assert all(row["rental_conditions"]["deposit_percent"] == "30" for row in popular)
+    assert all(row["derived_values"]["price_kind"] == "from" for row in popular)
+    assert all("deposit_amount" not in row["raw_fields"] for row in popular)
+    assert promotion[0]["rental_conditions"]["deposit_amount"] == "0"
+    assert "deposit_percent" not in promotion[0]["raw_fields"]
 
 
 def test_jetcar_fractional_man_km_survives_collection_validation(tmp_path):
