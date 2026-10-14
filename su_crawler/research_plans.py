@@ -23,7 +23,7 @@ MAX_CANDIDATES = 1000  # Explicitly reviewed full-site URL inventories; AI previ
 MAX_DOCUMENT_BYTES = 256 * 1024
 _PREVIEW_KEYS = {"summary", "topic", "categories", "candidates", "note", "include_terms", "exclude_terms", "conditions"}
 _EDIT_KEYS = {"request_text", "include_terms", "exclude_terms", "topic", "summary", "categories",
-              "conditions", "selected_candidate_ids", "removed_candidate_ids", "added_candidates"}
+              "conditions", "selected_candidate_ids", "removed_candidate_ids", "added_candidates", "collection_rules"}
 _CANDIDATE_KEYS = {"name", "url", "evidence_url", "reason", "kind"}
 
 
@@ -275,6 +275,12 @@ def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes:
         if len(candidates) > MAX_CANDIDATES:
             raise ValueError("Too many candidates")
         plan["candidates"] = candidates
+        from .collection_rules import normalize_rules
+        if 'collection_rules' in edit:
+            plan['collection_rules'] = normalize_rules(edit['collection_rules'], {c['url'] for c in candidates})
+        elif 'collection_rules' in plan:
+            plan['collection_rules'] = {url: rule for url, rule in plan['collection_rules'].items()
+                                        if url in {c['url'] for c in candidates}}
         plan["state"] = "preview" if candidates else "draft"
         _save(db, plan)
     return {"plan": plan}

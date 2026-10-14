@@ -107,12 +107,29 @@ def test_real_collection_shared_ledger_distinct_checkpoints_and_reports(tmp_path
         store.close()
     assert counts == [2, 1]
     assert result['result']['observation_counts']['total'] == 3
+    assert result['result']['coverage_summary']['unknown'] == 3
+    assert result['result']['status'] == 'needs_review'
     assert all(Path(row['report_path']).is_file() for row in reports)
     assert all(read_checkpoint(output, row['checkpoint_id'])['result']['run_id'] == row['run_id'] for row in reports)
     calls_before_replay = len(calls)
     again = batch.execute_batch_run(tmp_path, job['arguments'], job_id=job['id'])
     assert again['result']['completed_batches'] == 2
     assert len(calls) == calls_before_replay
+    monkeypatch.setattr('su_crawler.catalog_collection.collection_rules_version', lambda: 'updated-rules')
+    updated = batch.execute_batch_run(tmp_path, job['arguments'], job_id=job['id'])
+    assert len(calls) == calls_before_replay
+    assert updated['result']['observation_counts']['total'] == 3
+    journal = batch.read_batch_journal(tmp_path, plan['id'], job['id'])
+    assert len(journal['prior_results']) == 1
+    old_runs = {row['run_id'] for row in journal['prior_results'][0]['batches']}
+    new_runs = {row['run_id'] for row in journal['batches']}
+    assert old_runs.isdisjoint(new_runs)
+    store = Store(output)
+    try:
+        assert sum(len(store.observations(run_id)) for run_id in old_runs) == 3
+        assert sum(len(store.observations(run_id)) for run_id in new_runs) == 3
+    finally:
+        store.close()
 
 
 def test_partial_batch_status_is_preserved(tmp_path):

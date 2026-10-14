@@ -166,17 +166,23 @@ def append_section_coverage(path: str | Path, coverage: list[dict[str, Any]]) ->
     ws = wb.create_sheet(title)
     headers = ["Page URL", "Section", "Status", "Observed offers", "Extracted offers",
                "Current prices", "Unparsed offers", "Expansion clicks", "Reason",
-               "Evidence reference", "Snapshot reference"]
+               "Evidence reference", "Snapshot reference", "Expected offers"]
     ws.append(headers)
     for page in coverage:
         if not isinstance(page, dict):
             continue
         sections = page.get("sections")
-        if not isinstance(sections, list) or not sections:
-            continue
+        if not isinstance(sections, list):
+            sections = []
+        sections = [section for section in sections if isinstance(section, dict)]
+        if not sections:
+            from .coverage import page_status
+            status = page_status(page) if page.get("status") else "unknown"
+            sections = [{"section": "Page scope", "status": status,
+                         "reason": page.get("reason") or ("Page excluded from the requested scope." if status == "excluded"
+                                                          else "Page collection was interrupted." if status == "partial"
+                                                          else "No section inventory recorded; completeness not checked.")}]
         for section in sections:
-            if not isinstance(section, dict):
-                continue
             evidence = section.get("evidence") or section.get("evidence_ref") or section.get("evidence_path")
             snapshot = section.get("snapshot_path") or section.get("snapshot_ref") or page.get("evidence_path")
             ws.append([_text(page.get("url") or page.get("source_url")),
@@ -184,15 +190,63 @@ def append_section_coverage(path: str | Path, coverage: list[dict[str, Any]]) ->
                        section.get("observed_count"), section.get("extracted_count"),
                        section.get("price_count"), section.get("unparsed_count"),
                        section.get("click_count"), _text(section.get("reason")),
-                       _text(evidence), _text(snapshot)])
+                       _text(evidence), _text(snapshot), section.get("expected_count")])
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
     for col, width in {"A": 48, "B": 28, "C": 16, "D": 18, "E": 18,
-                       "F": 18, "G": 18, "H": 18, "I": 48, "J": 50, "K": 50}.items():
+                       "F": 18, "G": 18, "H": 18, "I": 48, "J": 50, "K": 50, "L": 18}.items():
         ws.column_dimensions[col].width = width
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:K{max(ws.max_row, 1)}"
+    ws.auto_filter.ref = f"A1:L{max(ws.max_row, 1)}"
+    fd, tmp_name = tempfile.mkstemp(prefix=path.stem + ".", suffix=".xlsx", dir=path.parent)
+    os.close(fd)
+    temp = Path(tmp_name)
+    try:
+        wb.save(temp)
+        _validate_xlsx(temp)
+        os.replace(temp, path)
+    finally:
+        wb.close()
+        temp.unlink(missing_ok=True)
+    append_collection_issues(path, [issue for page in coverage if isinstance(page, dict)
+                                    for issue in (page.get("collection_issues") or [])
+                                    if isinstance(issue, dict)])
+    return path
+
+
+def append_collection_issues(path: str | Path, issues: list[dict[str, Any]]) -> Path:
+    """Replace the actionable issue ledger in an existing XLSX report atomically."""
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font, PatternFill
+
+    path = Path(path)
+    wb = load_workbook(path)
+    title = "Collection Issues"
+    if title in wb:
+        del wb[title]
+    ws = wb.create_sheet(title)
+    headers = ["Issue ID", "Page URL", "Section", "Status", "Category", "Reason",
+               "Next action", "Attempts", "Evidence reference"]
+    ws.append(headers)
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        ws.append([_text(issue.get("id")), _text(issue.get("url")), _text(issue.get("section")),
+                   _text(issue.get("status")), _text(issue.get("category")), _text(issue.get("reason")),
+                   _text(issue.get("next_action")), issue.get("attempt_count"),
+                   _text(issue.get("evidence_ref"))])
+        for cell in ws[ws.max_row]:
+            if isinstance(cell.value, str):
+                cell.data_type = "s"  # Source text must never become an Excel formula.
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+    for col, width in {"A": 30, "B": 52, "C": 26, "D": 16, "E": 24,
+                       "F": 52, "G": 52, "H": 12, "I": 48}.items():
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:I{max(ws.max_row, 1)}"
     fd, tmp_name = tempfile.mkstemp(prefix=path.stem + ".", suffix=".xlsx", dir=path.parent)
     os.close(fd)
     temp = Path(tmp_name)
@@ -223,7 +277,7 @@ def export_report(
     demo = bool(run.get("demo", config.demo))
     by_source = {source.id: source for source in config.sources}
     by_product = {product.id: product for product in config.products}
-    from .result_view import build_result_view, FIELD_LABELS
+    from .result_view import build_result_view, FIELD_LABELS, variant_keys
     presentation = build_result_view(observations)
     # A report must expose an uncreated task as a coverage gap, rather than
     # silently treating the absence of an observation as a zero-price result.
@@ -263,7 +317,19 @@ def export_report(
             fields = obs.get("raw_fields") or {}
             recorded = "\n".join(f'{item["label"]}: {item["value"]}' + (" (normalized from browser text)" if item["status"] == "derived" else "")
                                   for key, item in obs["field_status"].items() if key not in {"price", "currency"} and item["status"] != "missing")
-            if obs.get("primary_candidate") and fields.get("price"):
+            # A browser-only review candidate may not have a price profile.
+            # Keep explicit size/option/term conditions visible in the Results
+            # sheet rather than hiding them in the evidence JSON.
+            variant_values = dict(fields)
+            for alias, canonical in (("size", "spec:size"), ("color", "spec:color"), ("option", "options"),
+                                     ("deposit", "deposit_amount"), ("annual_mileage", "annual_mileage_km")):
+                if canonical not in variant_values and alias in variant_values:
+                    variant_values[canonical] = variant_values[alias]
+            extras = "\n".join(f"{FIELD_LABELS.get(key, key)}: {variant_values[key]}" for key in variant_keys(variant_values)
+                               if key not in obs["field_status"] and variant_values.get(key) not in (None, ""))
+            if extras:
+                recorded = recorded + ("\n" if recorded else "") + extras
+            if obs.get("primary_candidate") and fields.get("price") not in (None, ""):
                 recorded = f'Displayed price text (review required): {fields["price"]}' + ("\n" + recorded if recorded else "")
             if obs.get("price_kind") == "from":
                 recorded = "Displayed price: starting at (source uses ~); exact quote unknown" + ("\n" + recorded if recorded else "")

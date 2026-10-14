@@ -10,7 +10,7 @@ SourceLedger can collect a reviewed URL inventory with one approval and one dura
 4. Call `start_research_batch_run` with the confirmed revision. Defaults are 20 URLs per batch, 600 seconds per batch and HTTP concurrency 2. Link discovery is disabled for this fixed inventory.
 5. Wait for the job and inspect `get_research_batch_progress`. Use `get_research_batch_reports` for paginated batch results and XLSX locations.
 
-The server pins the confirmed plan fingerprint and URL order. Each batch has a separate checkpoint and report; all batches use the plan's SQLite database and evidence directory. The existing single-plan job limits remain unchanged. HTTP concurrency does not imply concurrent browser captures: browser fallback remains serial.
+The server pins the confirmed plan fingerprint and URL order. Each batch has a separate checkpoint and report; all batches use the plan's SQLite database and evidence directory. The existing single-plan job limits remain unchanged. HTTP concurrency does not imply concurrent browser captures: browser fallback is serial by default. Set `browser_reuse=true` and `browser_concurrency=2` explicitly in both preflight and start to enable the experimental bounded browser pool; the browser limit cannot exceed the global concurrency. See [browser optimization](BROWSER_OPTIMIZATION.md).
 
 Completed batches are recorded in a durable journal. Explicitly resuming an interrupted run skips completed batches and uses the current batch's existing checkpoint and remaining budget. A completed partial batch is not silently fetched again. Stop requests are observed between batches; an active batch may take up to its remaining budget to finish.
 

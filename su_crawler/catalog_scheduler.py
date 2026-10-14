@@ -160,6 +160,8 @@ def _retry_delay(result: FetchResult, attempt: int) -> float:
 
 
 def _transient(result: FetchResult) -> bool:
+    if any(event.get('event') == 'access_challenge' for event in result.trace):
+        return False
     if result.status == "timeout":
         return True
     if result.status == "blocked" and "HTTP 429" in result.message:

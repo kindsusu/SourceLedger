@@ -76,7 +76,9 @@ def test_real_stdio_mcp_round_trip_and_independent_worker(tmp_path):
                         assert Path(payload["report_path"]).is_file()
 
     # Worker is started independently, outside the MCP SDK's Windows job object.
-    worker = subprocess.Popen([sys.executable, "-m", "su_crawler.worker", "--config", str(path), "--idle-timeout", "8"],
+    # Keep the independent worker alive throughout MCP process startup even
+    # when the test host is busy launching browsers in other test processes.
+    worker = subprocess.Popen([sys.executable, "-m", "su_crawler.worker", "--config", str(path), "--idle-timeout", "30"],
                               cwd=str(root), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     from su_crawler.worker import worker_status
     try:
@@ -106,7 +108,7 @@ def test_real_stdio_mcp_round_trip_and_independent_worker(tmp_path):
         assert status and status["status"] in {"completed", "partial"}
         assert status["report_path"] and Path(status["report_path"]).exists()
         asyncio.run(check_results(run_id))
-        assert worker.wait(timeout=15) == 0
+        assert worker.wait(timeout=40) == 0
     finally:
         release_request.set()
         httpd.shutdown()

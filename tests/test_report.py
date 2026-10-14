@@ -3,24 +3,114 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 from su_crawler.models import CollectionConfig, Product, Source
-from su_crawler.report import SHEETS, append_section_coverage, export_report
+from su_crawler.report import SHEETS, append_collection_issues, append_section_coverage, export_report
 
 
 def test_catalog_coverage_sheet_replaces_rows_and_preserves_evidence(tmp_path):
     cfg = _config(tmp_path)
     path = export_report(cfg, {"id": "r"}, [], [], tmp_path / "sections.xlsx")
     coverage = [{"url": "https://example.test/rentpass", "sections": [{
-        "section": "popular", "status": "partial", "observed_count": 8,
+        "section": "popular", "status": "partial", "observed_count": 8, "expected_count": 8,
         "extracted_count": 7, "price_count": 6, "unparsed_count": 1,
         "click_count": 2, "reason": "more control stalled", "evidence_ref": "evidence/popular.html",
-    }]}]
+    }], "collection_issues": [{"id": "issue-1", "url": "https://example.test/rentpass",
+                              "section": "popular", "status": "open", "reason": "more control stalled",
+                              "category": "browser_handoff", "next_action": "Open in browser",
+                              "attempt_count": 2, "evidence_ref": "evidence/popular.html"}]}]
     assert append_section_coverage(path, coverage) == path
     append_section_coverage(path, coverage)
     wb = load_workbook(path, read_only=True)
     assert wb.sheetnames.count("Catalog coverage") == 1
     values = list(wb["Catalog coverage"].values)
     assert values[1] == ("https://example.test/rentpass", "popular", "partial", 8, 7, 6, 1, 2,
-                         "more control stalled", "evidence/popular.html", None)
+                         "more control stalled", "evidence/popular.html", None, 8)
+    assert list(wb["Collection Issues"].values)[1] == ("issue-1", "https://example.test/rentpass",
+        "popular", "open", "browser_handoff", "more control stalled", "Open in browser", 2,
+        "evidence/popular.html")
+
+
+def test_collection_issues_sheet_preserves_actions_and_evidence(tmp_path):
+    path = export_report(_config(tmp_path), {"id": "r"}, [], [], tmp_path / "issues.xlsx")
+    issue = {"id": "issue-1", "url": "https://example.test/list", "section": "More offers",
+             "status": "open", "reason": '=HYPERLINK("bad")', "category": "browser_handoff",
+             "next_action": "Open the page in the browser", "attempt_count": 2,
+             "evidence_ref": "evidence/list.html"}
+    append_collection_issues(path, [issue])
+    append_collection_issues(path, [issue])
+    wb = load_workbook(path, read_only=True, data_only=False)
+    try:
+        assert wb.sheetnames.count("Collection Issues") == 1
+        row = list(wb["Collection Issues"].values)[1]
+        assert row == ("issue-1", "https://example.test/list", "More offers", "open",
+                       "browser_handoff", '=HYPERLINK("bad")', "Open the page in the browser",
+                       2, "evidence/list.html")
+        assert wb["Collection Issues"]["F2"].data_type == "s"
+    finally:
+        wb.close()
+
+
+def test_pages_without_section_inventory_are_reported_as_unknown(tmp_path):
+    cfg = _config(tmp_path)
+    path = export_report(cfg, {"id": "r"}, [], [], tmp_path / "sections.xlsx")
+    append_section_coverage(path, [{"url": "https://example.test/product", "evidence_path": "evidence/page.html"},
+                                   {"url": "https://example.test/irrelevant", "status": "excluded"},
+                                   {"url": "https://example.test/timeout", "status": "timeout"}])
+    wb = load_workbook(path, read_only=True)
+    try:
+        rows = list(wb["Catalog coverage"].values)
+        assert len(rows) == 4
+        assert rows[1][:3] == ("https://example.test/product", "Page scope", "unknown")
+        assert rows[1][3:8] == (None, None, None, None, None)
+        assert rows[1][8] == "No section inventory recorded; completeness not checked."
+        assert rows[1][10] == "evidence/page.html"
+        assert rows[1][11] is None
+        assert rows[2][:3] == ("https://example.test/irrelevant", "Page scope", "excluded")
+        assert rows[2][3:8] == (None, None, None, None, None)
+        assert rows[2][11] is None
+        assert rows[3][:3] == ("https://example.test/timeout", "Page scope", "partial")
+        assert rows[3][11] is None
+    finally:
+        wb.close()
+
+
+def test_browser_only_size_variant_is_visible_in_results_and_evidence(tmp_path):
+    cfg = _config(tmp_path)
+    base = {"id": "base", "source_url": "https://shop.example/p", "source_name": "Shop",
+            "extraction_method": "adapter", "status": "review", "raw_fields": {"name": "Shirt", "size": "M", "price": "20000"}}
+    proof = {"id": "size-l", "source_url": "https://shop.example/p", "source_name": "Shop",
+             "extraction_method": "host_browser_submission", "raw_fields": {"name": "Shirt", "size": "L", "price": "22000"}}
+    path = export_report(cfg, {"id": "r"}, [], [base, proof], tmp_path / "variants.xlsx")
+    wb = load_workbook(path, read_only=True)
+    try:
+        results = list(wb["Results"].values)
+        assert len(results) == 3
+        assert results[2][4] == "review"
+        assert "Size: L" in results[2][5]
+        assert "22000" in results[2][5]
+        assert results[2][10] == "size-l"
+        evidence = list(wb["Supporting Evidence"].values)
+        assert evidence[1][0] == "size-l" and evidence[1][2] == "unmatched"
+    finally:
+        wb.close()
+
+
+def test_browser_component_spec_and_quantity_tier_stay_visible_in_xlsx(tmp_path):
+    cfg = _config(tmp_path)
+    proof = {"id": "component", "source_url": "https://shop.example/p", "source_name": "Shop",
+             "extraction_method": "host_browser_submission", "raw_fields": {
+                 "name": "Resistor", "price": 0, "spec:resistance": "10kΩ", "spec:tolerance": "1%",
+                 "pack_quantity": "10", "quantity_tier": "10-99"}}
+    path = export_report(cfg, {"id": "r"}, [], [proof], tmp_path / "components.xlsx")
+    wb = load_workbook(path, read_only=True)
+    try:
+        row = list(wb["Results"].values)[1]
+        assert row[4] == "review" and row[2] is None
+        assert "Displayed price text (review required): 0" in row[5]
+        assert "spec:resistance: 10kΩ" in row[5]
+        assert "Quantity tier: 10-99" in row[5]
+        assert "Pack quantity: 10" in row[5]
+    finally:
+        wb.close()
 
 
 def _config(tmp_path):

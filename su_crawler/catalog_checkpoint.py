@@ -118,12 +118,29 @@ def read_checkpoint(output: Path, key: str) -> dict | None:
     store = Store(output)
     try:
         row = store.db.execute("SELECT data FROM catalog_checkpoints WHERE id=?", (key,)).fetchone()
-        return json.loads(row[0], object_hook=lambda value: _decode(output, value)) if row else None
+        if row is None:
+            return None
+        def decode(value):
+            if set(value) == {'__checkpoint_page__'}:
+                digest = value['__checkpoint_page__']
+                if not isinstance(digest, str) or not _DIGEST.fullmatch(digest):
+                    raise ValueError('Invalid checkpoint page reference')
+                saved = store.db.execute('SELECT data FROM checkpoint_pages WHERE digest=?', (digest,)).fetchone()
+                if saved is None or hashlib.sha256(saved[0].encode('utf-8')).hexdigest() != digest:
+                    raise ValueError('Checkpoint page is missing or corrupt')
+                return json.loads(saved[0], object_hook=lambda item: _decode(output, item))
+            return _decode(output, value)
+        return json.loads(row[0], object_hook=decode)
     finally:
         store.close()
 
 
-def write_checkpoint(output: Path, key: str, state: dict) -> None:
+def write_checkpoint(output: Path, key: str, state: dict, *, page_cache: dict | None = None) -> None:
+    """Page bodies are immutable; callers using page_cache must replace changed pages.
+
+    The optional cache is coordinator-local and scoped to one output/checkpoint.
+    It avoids serializing every prior page on each progress update.
+    """
     store = Store(output)
     try:
         def encode(value):
@@ -131,9 +148,28 @@ def write_checkpoint(output: Path, key: str, state: dict) -> None:
                 return _write_blob(output, value)
             raise TypeError("Unsupported checkpoint value")
 
-        serialized = json.dumps(state, ensure_ascii=False, default=encode)
+        store.db.execute('CREATE TABLE IF NOT EXISTS checkpoint_pages (digest TEXT PRIMARY KEY, data TEXT NOT NULL)')
+        document = dict(state)
+        pages = {}
+        cache_updates = {}
+        for url, page in state.get('captures', {}).items():
+            saved = page_cache.get(url) if page_cache is not None else None
+            if saved is not None and saved[0] is page:
+                digest = saved[1]
+            else:
+                serialized_page = json.dumps(page, ensure_ascii=False, default=encode)
+                digest = hashlib.sha256(serialized_page.encode('utf-8')).hexdigest()
+                store.db.execute('INSERT OR IGNORE INTO checkpoint_pages(digest,data) VALUES(?,?)', (digest, serialized_page))
+                if page_cache is not None:
+                    cache_updates[url] = (page, digest)
+            pages[url] = {'__checkpoint_page__': digest}
+        if 'captures' in state:
+            document['captures'] = pages
+        serialized = json.dumps(document, ensure_ascii=False, default=encode)
         with store.db:
             store.db.execute("INSERT OR REPLACE INTO catalog_checkpoints(id,data) VALUES(?,?)",
                              (key, serialized))
+        if page_cache is not None:
+            page_cache.update(cache_updates)
     finally:
         store.close()

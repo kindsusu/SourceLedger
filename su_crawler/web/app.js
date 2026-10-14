@@ -19,6 +19,7 @@ function operationText(value) {
   return i18n.t(`app.operation.${code}`) === `app.operation.${code}` ? titleCase(value) : t(`operation.${code}`);
 }
 const OBSERVATION_PAGE_SIZE = 50;
+const ISSUE_PAGE_SIZE = 50;
 
 const state = {
   bootstrap: null,
@@ -26,6 +27,12 @@ const state = {
   selectedJobId: null,
   selectedJob: null,
   observations: null,
+  collectionIssues: null,
+  issueOffset: 0,
+  issuePending: new Set(),
+  issueReportPending: false,
+  browserRecoveryPending: new Set(),
+  browserRecoveryPlans: new Map(),
   observationOffset: 0,
   loadingJob: false,
   identityHydrated: false,
@@ -609,6 +616,8 @@ function renderJobList() {
 async function selectJob(id, { keepOffset = false } = {}) {
   state.selectedJobId = id;
   if (!keepOffset) state.observationOffset = 0;
+  if (!keepOffset) state.issueOffset = 0;
+  if (!keepOffset) state.issueReportPending = false;
   state.loadingJob = true;
   renderJobList();
   renderJobDetail();
@@ -617,7 +626,9 @@ async function selectJob(id, { keepOffset = false } = {}) {
     if (state.selectedJobId !== id) return;
     state.selectedJob = selected;
     state.observations = null;
+    state.collectionIssues = null;
     if (state.selectedJob?.result?.run_id && state.selectedJob?.result?.output_dir) await loadObservations();
+    if (canLoadCollectionIssues(state.selectedJob)) await loadCollectionIssues();
   } catch (error) {
     if (state.selectedJobId !== id) return;
     state.selectedJob = { id, loadError: error.rawMessage || error.message };
@@ -631,15 +642,22 @@ async function selectJob(id, { keepOffset = false } = {}) {
 async function refreshSelectedJob() {
   const requestedId = state.selectedJobId;
   try {
-    const before = JSON.stringify([state.selectedJob, state.observations]);
+    const before = JSON.stringify([state.selectedJob, state.observations, state.collectionIssues]);
     const job = await api(`/api/jobs/${encodeURIComponent(requestedId)}`);
     if (state.selectedJobId !== requestedId) return;
     state.selectedJob = job;
     if (job?.result?.run_id && job?.result?.output_dir) await loadObservations();
-    if (before !== JSON.stringify([state.selectedJob, state.observations])) renderJobDetail();
+    if (canLoadCollectionIssues(job)) await loadCollectionIssues();
+    if (before !== JSON.stringify([state.selectedJob, state.observations, state.collectionIssues])) renderJobDetail();
   } catch (_error) {
     // Keep the last durable receipt visible during a transient poll failure.
   }
+}
+
+function canLoadCollectionIssues(job) {
+  if (job?.status !== "succeeded") return false;
+  if (job.operation === "research_batch") return Boolean(job.arguments?.plan_id);
+  return job.operation === "research_plan" && Boolean(job.result?.run_id && job.result?.output_dir);
 }
 
 async function loadObservations() {
@@ -651,6 +669,82 @@ async function loadObservations() {
   } catch (error) {
     if (state.selectedJobId === requestedId && state.observationOffset === requestedOffset) state.observations = { rows: [], total: 0, offset: requestedOffset, limit: OBSERVATION_PAGE_SIZE, error: error.rawMessage || error.message };
   }
+}
+
+async function loadCollectionIssues() {
+  const requestedId = state.selectedJobId;
+  const requestedOffset = state.issueOffset;
+  try {
+    const payload = await api(`/api/jobs/${encodeURIComponent(requestedId)}/issues?offset=${requestedOffset}&limit=${ISSUE_PAGE_SIZE}`);
+    if (state.selectedJobId === requestedId && state.issueOffset === requestedOffset) state.collectionIssues = payload;
+  } catch (_error) {
+    // A job receipt can still show embedded issues when its separate endpoint is unavailable.
+  }
+}
+
+function renderCollectionIssues(target, result) {
+  const payload = state.collectionIssues;
+  const fromEndpoint = Array.isArray(payload) ? payload : Array.isArray(payload?.collection_issues) ? payload.collection_issues : Array.isArray(payload?.issues) ? payload.issues : null;
+  const pages = Array.isArray(result.result?.coverage) ? result.result.coverage : Array.isArray(result.coverage) ? result.coverage : [];
+  const embedded = pages.flatMap(page => Array.isArray(page?.collection_issues) ? page.collection_issues : []);
+  const issues = (fromEndpoint || embedded).filter(issue => issue && typeof issue === "object");
+  if (!issues.length) return;
+  const section = node("section", { className: "observation-section" });
+  section.append(node("h4", { text: i18n.t("plan.collectionIssues") }),
+    node("p", { className: "hint", text: i18n.t("plan.collectionIssuesHint") }));
+  if (state.issueReportPending) section.append(node("p", { className: "plan-scope-notice", attrs: { role: "status" },
+    text: i18n.t("plan.issueReportPending") }));
+  if (Number.isSafeInteger(payload?.total)) section.append(node("p", { className: "hint", text:
+    i18n.t("plan.issueRange", { shown: issues.length ? `${state.issueOffset + 1}–${state.issueOffset + issues.length}` : "0", total: payload.total }) }));
+  const list = node("div", { className: "plan-coverage" });
+  for (const issue of issues) {
+    const row = node("div", { className: "plan-coverage-row collection-issue-row" });
+    const safe = safeWebUrl(issue.url);
+    const recoveryKey = `${state.selectedJobId}:${issue.id}`;
+    const recovery = state.browserRecoveryPlans.get(recoveryKey);
+    row.append(node("strong", { text: displayValue(issue.section || issue.category || issue.id) }),
+      node("span", { text: i18n.t(`plan.issueStatus.${["open", "needs_review", "deferred", "resolved"].includes(issue.status) ? issue.status : "open"}`) }));
+    if (safe) row.append(node("a", { text: issue.url, attrs: { href: safe, target: "_blank", rel: "noopener noreferrer" } }));
+    else if (issue.url) row.append(node("p", { text: issue.url }));
+    if (issue.reason) row.append(node("p", { text: issue.reason }));
+    if (issue.next_action) row.append(node("p", { text: `${i18n.t("plan.issueNextAction")}: ${issue.next_action}` }));
+    if (issue.category || Number.isSafeInteger(issue.attempt_count)) row.append(node("p", { className: "hint", text:
+      `${displayValue(issue.category)} · ${i18n.t("plan.issueAttempts", { count: Number.isSafeInteger(issue.attempt_count) ? issue.attempt_count : "—" })}` }));
+    if (issue.evidence_ref) row.append(node("p", { className: "hint", text: `${i18n.t("plan.issueEvidence")}: ${issue.evidence_ref}` }));
+    if (issue.id && issue.status === "open") row.append(node("button", { className: "button button-secondary", type: "button",
+      text: i18n.t("plan.issueMarkReview"), disabled: state.issuePending.has(String(issue.id)),
+      attrs: { "data-issue-id": issue.id, "data-issue-status": "needs_review" } }));
+    if (issue.id && ["needs_review", "deferred"].includes(issue.status)) row.append(node("button", { className: "button button-secondary", type: "button",
+      text: i18n.t("plan.issueReopen"), disabled: state.issuePending.has(String(issue.id)),
+      attrs: { "data-issue-id": issue.id, "data-issue-status": "open" } }));
+    if (issue.id && issue.category === "browser_handoff") {
+      row.append(node("button", { className: "button button-secondary", type: "button",
+        text: i18n.t("plan.browserRecoveryPrepare"), disabled: state.browserRecoveryPending.has(recoveryKey),
+        attrs: { "data-browser-recovery-issue": issue.id } }));
+      if (recovery) {
+        const instructions = Array.isArray(recovery.instructions) ? recovery.instructions.join("\n") : String(recovery.instructions || "");
+        const panel = node("div", { className: "plan-scope-notice browser-recovery-plan", attrs: { role: "status" } });
+        panel.append(node("p", { text: i18n.t("plan.browserRecoveryManualHint") }),
+          node("p", { text: i18n.t("plan.browserRecoveryStatus", { status: displayValue(recovery.status), attempts: displayValue(recovery.attempts_remaining) }) }),
+          node("p", { className: "browser-recovery-instructions", text: instructions,
+            attrs: { style: "white-space: pre-wrap; overflow-wrap: anywhere" } }));
+        const approvedUrl = safeWebUrl(recovery.url);
+        if (approvedUrl) panel.append(node("a", { text: i18n.t("plan.browserRecoveryOpenUrl"), attrs: { href: approvedUrl, target: "_blank", rel: "noopener noreferrer" } }));
+        panel.append(node("button", { className: "button button-secondary", type: "button",
+          text: i18n.t("plan.browserRecoveryCopy"), attrs: { "data-browser-recovery-copy": issue.id } }));
+        row.append(panel);
+      }
+    }
+    list.append(row);
+  }
+  section.append(list);
+  if (Number.isSafeInteger(payload?.total) && payload.total > ISSUE_PAGE_SIZE) section.append(node("div", { className: "detail-actions" }, [
+    node("button", { className: "button button-secondary", type: "button", text: i18n.t("plan.issuePrevious"),
+      disabled: state.issueOffset <= 0, attrs: { "data-issue-page": "previous" } }),
+    node("button", { className: "button button-secondary", type: "button", text: i18n.t("plan.issueNext"),
+      disabled: state.issueOffset + issues.length >= payload.total, attrs: { "data-issue-page": "next" } }),
+  ]));
+  target.append(section);
 }
 
 function fact(label, value) {
@@ -759,15 +853,25 @@ function renderJobDetail() {
     }
   }
   const catalogCoverage = Array.isArray(result.result?.coverage) ? result.result.coverage : Array.isArray(result.coverage) ? result.coverage : [];
-  const catalogPages = catalogCoverage.filter(page => Array.isArray(page.sections) && page.sections.length);
-  if (catalogPages.length) {
+  const catalogPages = catalogCoverage.filter(page => page && typeof page === "object");
+  const summary = result.result?.coverage_summary || result.coverage_summary;
+  if (catalogPages.length || summary) {
     const list = node("div", { className: "plan-coverage" });
     for (const page of catalogPages) {
       const url = safeWebUrl(page.url || page.source_url);
-      for (const section of page.sections) {
+      const sections = Array.isArray(page.sections) ? page.sections.filter(section => section && typeof section === "object") : [];
+      if (!sections.length) {
+        const fallbackStatus = page.status === "excluded" ? "excluded"
+          : (page.coverage_status === "partial" || (page.status && !["visited", "fetched", "no_data"].includes(page.status))) ? "partial" : "unknown";
+        const fallbackReason = fallbackStatus === "excluded" ? "plan.catalogExcludedReason"
+          : fallbackStatus === "partial" ? "plan.catalogInterrupted" : "plan.catalogNoInventory";
+        sections.push({ section: i18n.t("plan.catalogPageScope"), status: fallbackStatus,
+          reason: page.reason || i18n.t(fallbackReason) });
+      }
+      for (const section of sections) {
         if (!section || typeof section !== "object") continue;
-        const status = ["complete", "partial", "unknown"].includes(section.status) ? section.status : "unknown";
-        const label = { complete: "catalogComplete", partial: "catalogPartial", unknown: "catalogUnknown" }[status];
+        const status = ["complete", "partial", "unknown", "excluded"].includes(section.status) ? section.status : "unknown";
+        const label = { complete: "catalogComplete", partial: "catalogPartial", unknown: "catalogUnknown", excluded: "catalogExcluded" }[status];
         const count = key => Number.isSafeInteger(section[key]) && section[key] >= 0 ? section[key] : "—";
         const row = node("div", { className: "plan-coverage-row" }, [
           node("strong", { text: displayValue(section.section) }),
@@ -777,14 +881,27 @@ function renderJobDetail() {
             prices: count("price_count"), unparsed: count("unparsed_count"), clicks: count("click_count"),
           }) }),
         ]);
+        if (Number.isSafeInteger(section.expected_count) && section.expected_count >= 0) {
+          row.append(node("p", { text: i18n.t("plan.catalogExpected", { count: section.expected_count }) }));
+        }
         if (url) row.append(node("a", { text: page.url || page.source_url, attrs: { href: url, target: "_blank", rel: "noopener noreferrer" } }));
         if (section.reason) row.append(node("p", { className: "hint", text: section.reason }));
         list.append(row);
       }
     }
-    target.append(node("h4", { text: i18n.t("plan.catalogSections") }), list);
+    target.append(node("h4", { text: i18n.t("plan.catalogSections") }));
+    if (summary && ["complete", "partial", "unknown", "excluded"].some(key => Number.isSafeInteger(summary[key]))) {
+      target.append(node("p", { className: "hint", text: i18n.t("plan.catalogCoverageSummary", {
+        complete: Number.isSafeInteger(summary.complete) ? summary.complete : "—",
+        partial: Number.isSafeInteger(summary.partial) ? summary.partial : "—",
+        unknown: Number.isSafeInteger(summary.unknown) ? summary.unknown : "—",
+        excluded: Number.isSafeInteger(summary.excluded) ? summary.excluded : "—",
+      }) }));
+    }
+    target.append(node("p", { className: "hint", text: i18n.t("plan.catalogScopeCaution") }), list);
   }
   if (job.error) target.append(node("div", { className: "detail-error", text: errorText(typeof job.error === "string" ? job.error : displayValue(job.error)) }));
+  renderCollectionIssues(target, result);
   if (result.execution_status === "succeeded") target.append(node("p", { className: "hint", text: t("executionCaution") }));
   renderObservations(target);
 }
@@ -827,13 +944,22 @@ function renderObservations(target) {
     const estimated = row.value_origin === "calculator_estimate" ? (row.derived_amount ?? row.derived_values?.estimated_price ?? null) : null;
     const evidenceStatus = row.result_status === "conflict" ? i18n.t("plan.resultConflict") : row.verification_level || row.status || "unknown";
     const fields = row.raw_fields && typeof row.raw_fields === "object" ? row.raw_fields : {};
+    const visibleFields = { ...fields };
+    for (const [alias, canonical] of [["size", "spec:size"], ["color", "spec:color"], ["option", "options"]]) {
+      if (visibleFields[canonical] == null && visibleFields[alias] != null) visibleFields[canonical] = visibleFields[alias];
+    }
     const browserCandidate = row.extraction_method === "host_browser_submission";
     const productName = fields.name || row.product_name || row.product_id;
     const attributes = Object.entries(fields).filter(([key, value]) => key !== "name" && key !== "price" && key !== "currency" && value !== null && value !== "").map(([key, value]) => `${i18n.t(`plan.field.${key}`)}: ${displayValue(value)}`).join(" · ");
     const attributeCell = node("td");
-    const keyFields = row.price_profile === "rental" ? ["reference_price", "term_months", "deposit_amount", "advance_percent", "annual_mileage_km"] : ["unit", "pack_quantity", "price_basis"];
+    const specFields = Object.keys(visibleFields).filter(key => key.startsWith("spec:"));
+    const keyFields = row.price_profile === "rental" ? ["reference_price", "term_months", "deposit_amount", "advance_percent", "annual_mileage_km", "options", ...specFields]
+      : ["offer_sku", "mpn", "options", "quantity_tier", "min_order", "unit", "pack_quantity", "price_basis", ...specFields];
     for (const key of keyFields) {
-      if (fields[key] != null) attributeCell.append(node("p", { text: `${i18n.t(`plan.field.${key}`)}: ${displayValue(fields[key])}` }));
+      if (visibleFields[key] != null) {
+        const label = key.startsWith("spec:") && !["spec:size", "spec:color"].includes(key) ? key.slice(5) : i18n.t(`plan.field.${key}`);
+        attributeCell.append(node("p", { text: `${label}: ${displayValue(visibleFields[key])}` }));
+      }
     }
     const allFields = node("details");
     allFields.append(node("summary", { text: i18n.t("plan.optionsAttributes") }), node("p", { text: attributes || "—" }));
@@ -1303,6 +1429,53 @@ function installEvents() {
   });
   byId("job-list").addEventListener("click", (event) => { const button = event.target.closest("[data-job-id]"); if (button) selectJob(button.dataset.jobId); });
   byId("job-detail").addEventListener("click", async (event) => {
+    const recoveryButton = event.target.closest("[data-browser-recovery-issue]");
+    if (recoveryButton) {
+      const jobId = state.selectedJobId;
+      const issueId = recoveryButton.dataset.browserRecoveryIssue;
+      const recoveryKey = `${jobId}:${issueId}`;
+      if (!jobId || state.browserRecoveryPending.has(recoveryKey)) return;
+      state.browserRecoveryPending.add(recoveryKey);
+      recoveryButton.disabled = true;
+      try {
+        const plan = await api(`/api/jobs/${encodeURIComponent(jobId)}/browser-recovery`, { method: "POST", body: { issue_id: issueId } });
+        if (state.selectedJobId !== jobId) return;
+        state.browserRecoveryPlans.set(recoveryKey, plan);
+        renderJobDetail();
+      } catch (error) { if (state.selectedJobId === jobId) toast(error.message, true); }
+      finally { state.browserRecoveryPending.delete(recoveryKey); if (state.selectedJobId === jobId) renderJobDetail(); }
+      return;
+    }
+    const copyRecovery = event.target.closest("[data-browser-recovery-copy]");
+    if (copyRecovery) {
+      const recovery = state.browserRecoveryPlans.get(`${state.selectedJobId}:${copyRecovery.dataset.browserRecoveryCopy}`);
+      const instructions = Array.isArray(recovery?.instructions) ? recovery.instructions.join("\n") : String(recovery?.instructions || "");
+      try { await navigator.clipboard.writeText(instructions); toast(i18n.t("plan.browserRecoveryCopied")); }
+      catch (_error) { toast(i18n.t("plan.browserRecoveryCopyFailed"), true); }
+      return;
+    }
+    const issueButton = event.target.closest("[data-issue-id][data-issue-status]");
+    if (issueButton) {
+      const issueId = issueButton.dataset.issueId;
+      if (state.issuePending.has(issueId)) return;
+      state.issuePending.add(issueId);
+      issueButton.disabled = true;
+      try {
+        const updated = await api(`/api/jobs/${encodeURIComponent(state.selectedJobId)}/issues`, { method: "POST",
+          body: { issue_id: issueId, status: issueButton.dataset.issueStatus } });
+        state.issueReportPending = updated?.report_refresh === "pending";
+        await loadCollectionIssues(); renderJobDetail();
+      } catch (error) { toast(error.message, true); }
+      finally { state.issuePending.delete(issueId); }
+      return;
+    }
+    const issuePage = event.target.closest("[data-issue-page]");
+    if (issuePage) {
+      state.issueOffset = Math.max(0, state.issueOffset + (issuePage.dataset.issuePage === "next" ? ISSUE_PAGE_SIZE : -ISSUE_PAGE_SIZE));
+      issuePage.disabled = true;
+      await loadCollectionIssues(); renderJobDetail();
+      return;
+    }
     const resume = event.target.closest("[data-resume-job]");
     if (resume) {
       const id = resume.dataset.resumeJob;

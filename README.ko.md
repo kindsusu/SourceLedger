@@ -12,6 +12,10 @@ SourceLedger는 출처를 탐색하고 상품 가격과 원문·근거를 보존
 
 ## 동작 구조
 
+동적 수집 규칙·인증 프로필·SQLite 문제 원장 사용법은 [수집 한계와 재처리 관리](docs/LIMITATION_MANAGEMENT.ko.md)를 참고하세요. 검증 결과와 남은 범위는 [구현 검토](docs/LIMITATION_IMPLEMENTATION_REVIEW.ko.md)에 기록했습니다.
+
+범위 판정·저장 원본 재분석·남은 한계는 [수집 정확성 개선](docs/CROSS_SITE_RELIABILITY_2026-10-14.ko.md)을 참고하세요.
+
 추천 모델은 **Codex의 Sol, Claude의 Opus**이며 기존 사용자 선택은 유지합니다. 수집 전 실행 계획에서 대상 사이트, 요청한 모델 또는 확인되지 않은 호스트 모델, 시간·페이지 한도와 체크포인트를 검토합니다. MCP에서는 `get_research_execution_plan`으로 조회합니다. 새 UI·MCP 작업은 한 작업 공간에서 동시 수집 2개를 기본으로 사용합니다(사이트당 최대 2개, 브라우저 1개). 1개를 선택하면 순차 실행합니다. MCP 진행 조회는 `get_research_progress`를 사용합니다. 연결된 앱을 통한 Exa 출처 탐색은 선택 사항입니다. [적용 내용](docs/CRAWLER_IMPROVEMENTS.ko.md)을 참고하세요. [성능 실측](docs/COLLECTION_PERFORMANCE.ko.md)과 [Exa MCP·Scrapy 구조 검토](docs/UPSTREAM_ARCHITECTURE_REVIEW.ko.md)를 참고하세요.
 
 고정된 전체 목록은 계획을 한 번 승인한 뒤 `start_research_batch_run`으로 수집할 수 있습니다. 서버가 배치와 체크포인트를 관리하므로 배치마다 AI의 계획·승인을 반복하지 않습니다. [전체 목록 배치 수집](docs/SERVER_BATCH_COLLECTION.ko.md)을 참고하세요.
@@ -185,7 +189,7 @@ HTML은 `selectors`와 선택 `row_selector`의 CSS 위치를 증거로 남깁�
 
 XLSX 보고서는 렌탈 관측이 있는 실행에만 **Rental Quotes** 시트를 추가합니다. 이 시트는 관측 월 납입금과 계산기 추정값을 다른 열에 두고, 보증금·선납금·할부 같은 렌탈 조건도 따로 표시합니다. **Observation History**도 관측 금액, 추정 금액, 원문 필드, 근거, 값의 출처, 표시 상태, 검증 수준, 렌탈 조건을 구분합니다. 가격 비교 통계에서는 계산기 추정값과 숨겨진 출처 값을 제외합니다.
 
-일반 `Source.incremental`의 기본값은 꺼짐이며 `"incremental": true`를 명시해야 합니다. 적격 공개 HTTP 출처에만 적용됩니다. `collect-sites`는 `--no-incremental`을 주지 않으면 생성하는 공개 HTTP 출처의 증분 수집을 켭니다. 다음 실행도 출처에 다시 요청하며, 일치하는 조건부 HTTP 응답이 확인된 뒤에만 보존 본문·추출 결과를 재사용할 수 있습니다. 브라우저 출처는 매번 새로 수집합니다. 보존한 증거가 없거나 변경됐으면 validator를 보내지 않고 새 응답을 받습니다. 자세한 내용은 [수집 신뢰성 안내](docs/COLLECTION_RELIABILITY.ko.md) ([English](docs/COLLECTION_RELIABILITY.md))와 [Milestone 04](docs/MILESTONE_04.md)를 참고하세요.
+일반 `Source.incremental`의 기본값은 꺼짐이며 `"incremental": true`를 명시해야 합니다. 적격 공개 HTTP 출처에만 적용됩니다. `collect-sites`는 `--no-incremental`을 주지 않으면 생성하는 공개 HTTP 출처의 증분 수집을 켭니다. 다음 실행도 출처에 다시 요청하며, 일치하는 조건부 HTTP 응답이 확인된 뒤에만 보존 본문·추출 결과를 재사용할 수 있습니다. 브라우저 출처는 매번 새로 수집합니다. 보존한 증거가 없거나 변경됐으면 validator를 보내지 않고 새 응답을 받습니다. 자세한 내용은 [수집 신뢰성 안내](docs/CROSS_SITE_RELIABILITY_2026-10-14.ko.md) ([English](docs/CROSS_SITE_RELIABILITY_2026-10-14.md))와 [Milestone 04](docs/MILESTONE_04.md)를 참고하세요.
 
 ### 검증과 활성화
 
@@ -229,8 +233,10 @@ worker의 heartbeat가 확인되지 않으면 MCP는 수집 시작 요청을 거
 
 ## 현재 한계
 
+CAPTCHA·접근 확인 화면의 제한된 연결 AI 지원은 [브라우저 인증 복구](docs/BROWSER_RECOVERY.ko.md)를 참고하세요. 자체 해결기나 브라우저 세션 자동 이전 기능은 아닙니다.
+
 - 키워드 검색은 직접 설정한 SearXNG 서버를 사용합니다. 임의의 공용 검색 서버를 기본으로 호출하지 않습니다.
-- 구조화된 데이터·의미가 명시된 HTML의 선택자 제안과 선택적 로컬 모델 보조를 지원합니다. 새 브라우저 동작 계획, 자동 로그인, 무인 규칙 복구는 미구현입니다.
+- 구조화된 데이터·의미가 명시된 HTML의 선택자 제안과 선택적 로컬 모델 보조를 지원합니다. 검토한 브라우저 수집 절차는 MCP·웹 UI로 입력할 수 있습니다. 절차의 무인 생성, 자동 로그인, 무인 규칙 복구는 미구현입니다.
 - SearXNG/Ollama 요청 경로는 통제된 응답으로 검사했으며 실제 서버·모델·대표 실사이트 검증은 남아 있습니다. 루프백 주소만으로 모델 실행 위치를 보증하지 않으므로 Ollama 클라우드 기능을 꺼야 합니다.
 - 로컬 연결의 CLI·SDK 계약은 오프라인 테스트로 확인했지만 Codex·Claude Code·Claude Desktop GUI 실제 연결은 검증하지 않았습니다. ChatGPT 웹·모바일 연결에는 인증된 원격 배포와 산출물 다운로드 경로가 필요합니다.
 - Crawl4AI는 선택 의존성이고 이 환경에서 설치·실사이트 동작을 검증하지 않았습니다.
@@ -258,3 +264,5 @@ MCP로 조사 누락 조회, 검토 대기 브라우저 근거 제출, 부분 �
 공카 한달·하루렌트 목록과 명시된 상세 URL의 화면 가격을 수집하며, 계약기간별 가격을 구분합니다. 목록 완료 판정에는 사이트의 총수가 필요하고 누락된 조건은 검토 상태로 유지합니다. 링크가 없는 상품 카드의 상세 URL 탐색에는 아직 브라우저 이동이 필요합니다. [수집 성능과 최적화 기준](docs/COLLECTION_PERFORMANCE.ko.md)에 측정 결과와 수집기 직접 실행 시간의 한계를 정리했습니다.
 
 체크포인트는 이제 원본을 보존하는 해시 기반 파일 저장 방식을 사용합니다. 백업할 때 SQLite뿐 아니라 `checkpoint_blobs/`, `evidence/`를 포함한 출력 폴더 전체를 보관하세요. [용량 실측과 호환성](docs/STORAGE_OPTIMIZATION.ko.md)을 참고하세요.
+
+MCP 실행 설정으로 브라우저 재사용과 브라우저 동시성 2개를 선택해 비교할 수 있습니다. [브라우저 최적화와 검증 계획](docs/BROWSER_OPTIMIZATION.ko.md)을 참고하세요.

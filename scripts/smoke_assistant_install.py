@@ -72,7 +72,12 @@ def main() -> int:
                 plan_tools = {"list_research_plans", "get_research_plan", "create_research_plan",
                               "submit_research_preview", "update_research_plan", "confirm_research_plan",
                               "start_research_plan", "generate_research_preview"}
-                assert len(available) == 27 and plan_tools <= available
+                recovery_tools = {"get_collection_issues", "triage_collection_issue",
+                                  "prepare_browser_recovery", "begin_browser_recovery",
+                                  "finish_browser_recovery"}
+                # Check required capabilities; the full exact tool contract is
+                # covered by unit tests and can grow between releases.
+                assert plan_tools | recovery_tools <= available
                 status = await call(client, "get_workspace_status")
                 assert status["status"] == "needs_setup"
                 await call(client, "initialize_workspace", {
@@ -131,7 +136,7 @@ def main() -> int:
                 if time.monotonic() >= deadline:
                     raise RuntimeError("Installed assistant worker did not stop")
                 time.sleep(0.1)
-    print("Installed wheel: 27 MCP tools, research-plan draft, disconnected execution, observations and XLSX resource passed.")
+    print("Installed wheel: required MCP capabilities, research-plan draft, disconnected execution, observations and XLSX resource passed.")
     return 0
 
 

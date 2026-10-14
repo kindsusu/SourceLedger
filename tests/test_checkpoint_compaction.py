@@ -28,7 +28,8 @@ def test_roundtrip_deduplicates_binary_and_does_not_mutate_state(tmp_path):
     assert state["captures"]["a"]["content"] is html
     assert state["captures"]["a"]["screenshot"] is png
     row = _saved_json(tmp_path, "run")
-    assert row["captures"]["a"]["content"] == row["captures"]["b"]["content"]
+    assert '__checkpoint_page__' in row['captures']['a']
+    assert checkpoint.read_checkpoint(tmp_path, 'run')['captures']['a']['content'] == checkpoint.read_checkpoint(tmp_path, 'run')['captures']['b']['content']
     assert "__bytes__" not in json.dumps(row)
     blobs = list((tmp_path / "checkpoint_blobs").rglob("*.*"))
     assert len(blobs) == 2
@@ -38,6 +39,28 @@ def test_roundtrip_deduplicates_binary_and_does_not_mutate_state(tmp_path):
     write(tmp_path, "run", {**state, "dispatched": 3})
     assert list((tmp_path / "checkpoint_blobs").rglob("*.*")) == blobs
     assert checkpoint.read_checkpoint(tmp_path, "run")["dispatched"] == 3
+
+
+def test_progress_update_does_not_serialize_immutable_pages_again(tmp_path, monkeypatch):
+    page = {'content': b'original evidence'}
+    state = {'captures': {'url': page}, 'dispatched': 1}
+    cache = {}
+    checkpoint.write_checkpoint(tmp_path, 'run', state, page_cache=cache)
+    def fail(*args):
+        raise AssertionError('Unchanged page bytes must not be processed again')
+    monkeypatch.setattr(checkpoint, '_write_blob', fail)
+    checkpoint.write_checkpoint(tmp_path, 'run', {**state, 'dispatched': 2}, page_cache=cache)
+    assert checkpoint.read_checkpoint(tmp_path, 'run')['dispatched'] == 2
+
+
+def test_checkpoint_page_corruption_fails_closed(tmp_path):
+    checkpoint.write_checkpoint(tmp_path, 'run', {'captures': {'url': {'content': b'original'}}})
+    store = Store(tmp_path)
+    with store.db:
+        store.db.execute("UPDATE checkpoint_pages SET data='{}'")
+    store.close()
+    with pytest.raises(ValueError, match='corrupt'):
+        checkpoint.read_checkpoint(tmp_path, 'run')
 
 
 def test_legacy_base64_checkpoint_remains_readable(tmp_path):

@@ -15,15 +15,98 @@ def _table(soup: BeautifulSoup, *needles: str) -> Tag | None:
     return next((table for table in soup.select("table") if is_visible(table) and all(n in (visible_text(table) or "") for n in needles)), None)
 
 
+_DETAIL_PATH = re.compile(r"/(?:sub0201|sub0301|sub0701)/\d+/?$")
+
+
+def is_detail_url(url: str) -> bool:
+    """Single route contract for discovery and detail extraction."""
+    return bool(_DETAIL_PATH.fullmatch(urlparse(url).path))
+
+
 def _actual_id(result: FetchResult, source: Source, soup: BeautifulSoup) -> tuple[str | None, str | None]:
     canonical = soup.select_one('link[rel="canonical"]')
     urls = [canonical.get("href") if canonical else None, result.final_url, source.location]
     for url in urls:
         path = urlparse(str(url or "")).path
-        match = re.search(r"/(sub0[23]01)/(\d+)/?$", path)
+        match = _DETAIL_PATH.fullmatch(path)
         if match:
-            return match.group(2), str(url)
+            return re.search(r"/(\d+)/?$", path).group(1), str(url)
     return None, None
+
+
+def _rent_rows(table: Tag | None):
+    """Yield visible data rows, including rows the current parser cannot decode."""
+    for index, row in enumerate(table.select("tr") if table else [], start=1):
+        if not is_visible(row):
+            continue
+        raw = visible_text(row) or ""
+        if re.search(r"\d+\s*개월", raw) or re.search(r"월\s*[\d,]+\s*원", raw):
+            yield index, raw
+
+
+def _rent_identity(index: int, raw: str) -> tuple[int, str, str, str | None, str | None] | None:
+    """Use the displayed row and contract conditions, not its price alone."""
+    term = re.search(r"(\d+)\s*개월", raw)
+    price = re.search(r"월\s*([\d,]+)\s*원", raw)
+    if not term or not price:
+        return None
+    deposit_match = re.search(r"보증금\s*[\d,.]+\s*(?:만원|원)", raw)
+    deposit = won(deposit_match.group()) if deposit_match else None
+    if deposit_match and deposit is None:
+        return None
+    annual_match = re.search(r"연\s*([\d,.]+)\s*(만)?\s*[Kk][Mm]", raw)
+    annual = None
+    if annual_match:
+        annual_value = decimal_string(annual_match.group(1), multiplier=10_000 if annual_match.group(2) else 1)
+        if annual_value is None or Decimal(annual_value) != Decimal(annual_value).to_integral_value():
+            return None
+        annual = str(int(Decimal(annual_value)))
+    return index, term.group(1), decimal_string(price.group(1)), deposit, annual
+
+
+def section_coverage(result: FetchResult, candidates: list[Candidate]) -> list[dict[str, object]]:
+    """Compare visible rental terms with extracted term/price identities."""
+    table = _table(html_soup(result.content), "보증금", "개월")
+    if table is None:
+        return [{"section": "jetcar_rent_terms", "status": "unknown", "reason": "rent_table_not_discovered",
+                 "observed_count": 0, "expected_count": None, "extracted_count": len(candidates),
+                 "price_count": sum(c.fields.get("price") is not None for c in candidates),
+                 "unparsed_count": 0, "extracted_locators": []}]
+    raw_rows = list(_rent_rows(table))
+    expected: dict[tuple[int, str, str, str | None, str | None], str] = {}
+    unparsed = 0
+    for index, raw in raw_rows:
+        identity = _rent_identity(index, raw)
+        if identity is None:
+            unparsed += 1
+            continue
+        expected[identity] = f"row:{index}|term:{identity[1]}|price:{identity[2]}|deposit:{identity[3]}|annual_km:{identity[4]}"
+    matched: list[str] = []
+    remaining = dict(expected)
+    for candidate in candidates:
+        locator_match = re.search(r":rent-row:(\d+)$", candidate.locator)
+        if locator_match is None:
+            continue
+        key = (int(locator_match.group(1)), candidate.fields.get("term_months"),
+               candidate.fields.get("price"), candidate.fields.get("deposit_amount"),
+               candidate.fields.get("annual_mileage_km"))
+        if key in remaining:
+            del remaining[key]
+            matched.append(candidate.locator)
+    missing = len(remaining) + unparsed
+    if not raw_rows:
+        status, reason = "unknown", "rent_rows_not_observed"
+    elif missing:
+        status, reason = "partial", "rent_rows_not_fully_extracted"
+    elif len(matched) != len(raw_rows):
+        status, reason = "partial", "rent_row_identity_mismatch"
+    else:
+        status, reason = "complete", "visible_rent_rows_matched"
+    return [{"section": "jetcar_rent_terms", "status": status, "reason": reason,
+             "observed_count": len(raw_rows), "expected_count": len(raw_rows),
+             "extracted_count": len(matched), "price_count": len(matched),
+             "unparsed_count": missing, "expected_identities": [expected[key] for key in sorted(expected)],
+             "extracted_locators": matched}]
 
 
 def extract(result: FetchResult, source: Source) -> list[Candidate]:
@@ -78,10 +161,7 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
         proofs["tax"] = evidence("css:.cap", fields["tax"], visible_text(tax_node))
 
     rows = []
-    for index, row in enumerate(rent_table.select("tr") if rent_table else [], start=1):
-        if not is_visible(row):
-            continue
-        raw = visible_text(row) or ""
+    for index, raw in _rent_rows(rent_table):
         term = re.search(r"(\d+)\s*개월", raw)
         price = re.search(r"월\s*([\d,]+)\s*원", raw)
         if not term or not price:

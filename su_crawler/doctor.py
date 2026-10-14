@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib.util
 import shutil
 
-from .browser_runtime import select_browser_runtime
+from .browser_runtime import browser_headless, select_browser_runtime
 
 def _playwright_browser_ready() -> tuple[bool, str]:
     if importlib.util.find_spec("playwright") is None:
@@ -17,13 +17,35 @@ def _playwright_browser_ready() -> tuple[bool, str]:
             if runtime:
                 return True, f"{runtime.name} executable found: {runtime.executable.name}"
             return False, "Package is installed but no Chromium executable was found"
-    except Exception as exc:
-        return False, f"Package is installed but its runtime could not be checked: {exc}"
+    except Exception:
+        return False, "Package is installed but its runtime could not be checked"
 
 
-def doctor() -> list[dict]:
-    """Report installed and runnable states without changing system state."""
+def _probe_browser_launch(*, headless: bool, timeout_ms: int = 5000) -> tuple[bool, str]:
+    """Optional bounded smoke check; never include local exception details."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as pw:
+            runtime = select_browser_runtime(pw.chromium)
+            if runtime is None:
+                return False, "No Chromium executable was found"
+            browser = pw.chromium.launch(headless=headless, timeout=timeout_ms, **runtime.launch_options())
+            browser.close()
+            return True, "Chromium launched successfully"
+    except Exception:
+        return False, "Chromium executable was found but could not be launched in the selected display mode"
+
+
+def doctor(*, verify_browser_launch: bool = False, browser_display_mode: str | None = None) -> list[dict]:
+    """Report installed state; launch is verified only when explicitly requested."""
+    if browser_display_mode not in {None, "visible", "headless"}:
+        raise ValueError("browser_display_mode must be visible or headless")
     browser_ready, browser_reason = _playwright_browser_ready()
+    launch_verified: bool | None = None
+    if browser_ready and verify_browser_launch:
+        headless = browser_headless() if browser_display_mode is None else browser_display_mode == "headless"
+        launch_verified, browser_reason = _probe_browser_launch(headless=headless)
     crawl4ai_installed = importlib.util.find_spec("crawl4ai") is not None
     httpx_installed = importlib.util.find_spec("httpx") is not None
     agent_reach_command = shutil.which("agent-reach") or shutil.which("agent_reach")
@@ -38,9 +60,11 @@ def doctor() -> list[dict]:
         },
         {
             "backend": "playwright",
-            "status": "available" if browser_ready else "unavailable",
+            "status": "available" if browser_ready and launch_verified is not False else "unavailable",
             "installed": importlib.util.find_spec("playwright") is not None,
-            "connected": browser_ready,
+            "connected": launch_verified is True,
+            "executable_found": browser_ready,
+            "launch_verified": launch_verified,
             "reason": browser_reason,
         },
         {

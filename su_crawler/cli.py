@@ -116,7 +116,9 @@ def main(argv: list[str] | None = None) -> int:
             p.add_argument("--max-tasks", type=int)
         else:
             p.add_argument("--run-id", required=True)
-    sub.add_parser("doctor")
+    diagnostic = sub.add_parser("doctor")
+    diagnostic.add_argument("--verify-browser-launch", action="store_true")
+    diagnostic.add_argument("--browser-display-mode", choices=["visible", "headless"])
     discovery = sub.add_parser("discover")
     discovery.add_argument("--config", required=True)
     discovery.add_argument("--source-id", required=True)
@@ -220,7 +222,8 @@ def main(argv: list[str] | None = None) -> int:
             result = activate_config(args.config, receipt_path=args.receipt, output_path=args.output)
         elif args.command == "doctor":
             from .doctor import doctor
-            result = doctor()
+            result = doctor(verify_browser_launch=args.verify_browser_launch,
+                            browser_display_mode=args.browser_display_mode)
         elif args.command == "serve-mcp":
             from .mcp_server import build_server
             server = build_server(Path(args.config).resolve(), port=args.port)

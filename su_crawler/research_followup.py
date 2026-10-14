@@ -16,18 +16,30 @@ from .research_plans import canonical_url, confirmed_snapshot
 from .storage import Store, workspace_lock
 from .scope_conditions import assess_conditions
 from .site_collection import HOST_ADAPTERS
+from .coverage import unknown_section
+from .collection_issues import MAX_RETRY_CHAIN, RETRYABLE_CODES
 
 RETRYABLE = {"no_data", "blocked", "failed", "timeout", "tool_unavailable", "budget_exhausted", "unprocessed", "interrupted"}
 
 
+def _all_issues(store, run_id):
+    rows = []
+    while True:
+        batch = store.collection_issues(run_id, offset=len(rows), limit=500)
+        rows.extend(batch)
+        if len(batch) < 500:
+            return rows
+
+
 def _incomplete_sections(page):
-    return [section for section in page.get("sections", [])
+    sections = page.get('sections') or ([unknown_section()] if page.get('status') in {'visited', 'no_data'} else [])
+    return [section for section in sections
             if isinstance(section, dict) and section.get("status") != "complete"]
 
 
 def _retryable_page(page):
     return page.get("status") in RETRYABLE or (
-        page.get("status") in {"visited", "no_data"} and bool(_incomplete_sections(page)))
+        page.get("status") in {"visited", "no_data"} and any(s.get('status') == 'partial' for s in _incomplete_sections(page)))
 
 
 def completed(root, job_id):
@@ -48,23 +60,27 @@ def research_gaps(root, job_id, *, offset=0, limit=50):
     store = Store(output)
     try:
         rows = store.observations(result["run_id"])
+        issue_rows = _all_issues(store, result["run_id"])
     finally:
         store.close()
     items = []
     from .result_view import build_result_view
     for page in result["result"]["coverage"]:
+        page_issues = [issue for issue in issue_rows if issue['page_url'] == page['url'] and issue['status'] != 'resolved']
         page_rows = [row for row in rows if row["source_url"] == page["url"]]
         displayed = build_result_view(page_rows)
         unresolved = [row for row in displayed["rows"] if row["status"] != "verified" or not row.get("comparable")]
         incomplete = _incomplete_sections(page)
         if page["status"] == "excluded" or (page["status"] == "visited" and not unresolved and not incomplete):
             continue
-        status = "partial" if incomplete and page["status"] in {"visited", "no_data"} else (
+        status = "partial" if any(s.get('status') == 'partial' for s in incomplete) and page["status"] in {"visited", "no_data"} else (
             page["status"] if page["status"] != "visited" else "needs_review")
         items.append({"url": page["url"], "status": status, "reason": page.get("reason", ""),
-                      "sections": page.get("sections", []),
-                      "retryable": _retryable_page(page),
-                      "next_action": "review_conditions" if status == "needs_review" else
+                      "sections": page.get("sections") or incomplete,
+                      "retryable": (all(issue['reason_code'] in RETRYABLE_CODES for issue in page_issues)
+                                    if page_issues else _retryable_page(page)),
+                      "collection_issues": page_issues,
+                      "next_action": "inspect_scope_and_recipe" if incomplete and all(s.get('status') == 'unknown' for s in incomplete) else "review_conditions" if status == "needs_review" else
                                      "resolve_access" if status in {"policy_denied", "needs_auth"} else "retry_or_browser_evidence",
                       "review_count": len(unresolved),
                       "unlinked_evidence_count": displayed["unlinked_evidence_count"],
@@ -76,13 +92,115 @@ def research_gaps(root, job_id, *, offset=0, limit=50):
 
 
 def validate_retry(root, args):
-    job, result, _ = completed(root, args["retry_of"])
+    job, result, output = completed(root, args["retry_of"])
+    chain = 0
+    ancestor = job
+    seen = set()
+    while ancestor.get('arguments', {}).get('retry_of'):
+        parent_id = ancestor['arguments']['retry_of']
+        if parent_id in seen:
+            raise ValueError('Retry history contains a cycle')
+        seen.add(parent_id)
+        chain += 1
+        if chain >= MAX_RETRY_CHAIN:
+            raise ValueError(f'Retry chain limit ({MAX_RETRY_CHAIN}) reached; inspect evidence or change the collection approach')
+        ancestor = runtime.get_job(root, parent_id)
     for key in ("plan_id", "expected_revision", "plan_fingerprint"):
         if job["arguments"].get(key) != args.get(key):
             raise ValueError("Retry must use the same confirmed plan revision")
-    allowed = {page["url"] for page in result["result"]["coverage"] if _retryable_page(page)}
-    if not set(args["retry_urls"]) <= allowed:
-        raise ValueError("Retry only unresolved pages reported by this job; review-only prices need evidence, not blind retries")
+    store = Store(output)
+    try:
+        issues = _all_issues(store, result['run_id'])
+        persisted = store.run_coverage(result['run_id'])
+    finally:
+        store.close()
+    reported_allowed = {page['url'] for page in result['result']['coverage'] if _retryable_page(page)}
+    persisted_allowed = {page['url'] for page in persisted if _retryable_page(page)} if persisted else reported_allowed
+    if not set(args['retry_urls']) <= reported_allowed & persisted_allowed:
+        raise ValueError('Retry only unresolved pages reported by this job; review-only prices need evidence, not blind retries')
+    for url in args['retry_urls']:
+        active = [issue for issue in issues if issue['page_url'] == url and issue['status'] != 'resolved']
+        blocked = [issue for issue in active if issue['reason_code'] not in RETRYABLE_CODES]
+        if blocked:
+            codes = ', '.join(sorted({issue['reason_code'] for issue in blocked}))
+            raise ValueError(f'Retry requires review before another attempt: {codes}')
+
+
+def list_collection_issues(root, job_id, *, status=None, offset=0, limit=50):
+    """Read durable issue triage for a completed research-plan job."""
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError('offset must be non-negative')
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+        raise ValueError('limit must be between 1 and 200')
+    job = runtime.get_job(root, job_id)
+    if job.get('operation') == 'research_batch':
+        from .research_batch import read_batch_journal
+        plan_id = job['arguments']['plan_id']
+        journal = read_batch_journal(root, plan_id, job_id)
+        run_ids = [batch['run_id'] for batch in (journal or {}).get('batches', []) if batch.get('run_id')]
+        output = _managed_output(workspace_root(root), workspace_root(root) / 'catalog-prices' / plan_id,
+                                 'batch run output')
+        store = Store(output)
+        try:
+            rows = store.collection_issues_for_runs(run_ids, status=status, offset=offset, limit=limit + 1)
+            total = store.collection_issue_count(run_ids, status=status)
+        finally:
+            store.close()
+        return {'job_id': job_id, 'run_ids': run_ids, 'items': rows[:limit],
+                'collection_issues': rows[:limit], 'total': total,
+                'offset': offset, 'limit': limit, 'has_more': len(rows) > limit}
+    _, result, output = completed(root, job_id)
+    store = Store(output)
+    try:
+        rows = store.collection_issues(result['run_id'], status=status, offset=offset, limit=limit + 1)
+        total = store.collection_issue_count([result['run_id']], status=status)
+    finally:
+        store.close()
+    return {'job_id': job_id, 'run_id': result['run_id'], 'items': rows[:limit],
+            'collection_issues': rows[:limit], 'total': total,
+            'offset': offset, 'limit': limit, 'has_more': len(rows) > limit}
+
+
+def triage_collection_issue(root, job_id, issue_id, *, status, evidence=None):
+    """Manual triage may mark review; resolution always needs cited evidence."""
+    job = runtime.get_job(root, job_id)
+    if job.get('operation') == 'research_batch':
+        from .research_batch import read_batch_journal
+        plan_id = job['arguments']['plan_id']
+        journal = read_batch_journal(root, plan_id, job_id)
+        allowed_runs = {batch['run_id'] for batch in (journal or {}).get('batches', []) if batch.get('run_id')}
+        output = _managed_output(workspace_root(root), workspace_root(root) / 'catalog-prices' / plan_id,
+                                 'batch run output')
+    else:
+        _, result, output = completed(root, job_id)
+        allowed_runs = {result['run_id']}
+    with workspace_lock(output):
+        store = Store(output)
+        try:
+            row = store._collection_issue(issue_id) if store.db.execute(
+                'SELECT 1 FROM collection_issues WHERE id=?', (issue_id,)).fetchone() else None
+            if row is None or row['run_id'] not in allowed_runs:
+                raise ValueError('Collection issue does not belong to this job')
+            run = store.run(row['run_id'])
+            report_path = Path(run['report_path']).absolute() if run.get('report_path') else None
+            if report_path is not None:
+                if report_path.parent != output or report_path.is_symlink() or not report_path.is_file():
+                    raise ValueError('Collection report is missing or outside the managed output')
+            updated = store.update_collection_issue(issue_id, status=status, evidence=evidence)
+            if report_path is not None:
+                from .report import append_collection_issues
+                try:
+                    append_collection_issues(report_path, _all_issues(store, row['run_id']))
+                except (PermissionError, OSError) as exc:
+                    updated['report_refresh'] = 'pending'
+                    updated['report_refresh_reason'] = type(exc).__name__
+                else:
+                    updated['report_refresh'] = 'updated'
+            else:
+                updated['report_refresh'] = 'unavailable'
+            return updated
+        finally:
+            store.close()
 
 
 def _config(output, run_id, root):

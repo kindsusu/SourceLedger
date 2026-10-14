@@ -39,7 +39,8 @@ def _selected(plan: dict) -> list[dict]:
 
 
 def _validate(args: dict, *, prepared: bool = False) -> dict:
-    allowed = {"plan_id", "expected_revision", "batch_size", "max_seconds", "concurrency"}
+    allowed = {"plan_id", "expected_revision", "batch_size", "max_seconds", "concurrency",
+               "browser_reuse", "browser_concurrency"}
     if prepared:
         allowed |= {"plan_fingerprint", "url_fingerprint", "_resume", "_attempt"}
     if not isinstance(args, dict) or set(args) - allowed:
@@ -53,14 +54,21 @@ def _validate(args: dict, *, prepared: bool = False) -> dict:
     size = args.get("batch_size", 20)
     seconds = args.get("max_seconds", 600)
     concurrency = args.get("concurrency", 2)
+    browser_reuse = args.get("browser_reuse", False)
+    browser_concurrency = args.get("browser_concurrency", 1)
     if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= 50:
         raise ValueError("batch_size must be an integer from 1 to 50")
     if isinstance(seconds, bool) or not isinstance(seconds, (float, int)) or not math.isfinite(seconds) or not 1 <= seconds <= 600:
         raise ValueError("max_seconds must be between 1 and 600")
     if isinstance(concurrency, bool) or not isinstance(concurrency, int) or not 1 <= concurrency <= 4:
         raise ValueError("concurrency must be an integer from 1 to 4")
+    if not isinstance(browser_reuse, bool):
+        raise ValueError("browser_reuse must be a boolean")
+    if isinstance(browser_concurrency, bool) or not isinstance(browser_concurrency, int) or not 1 <= browser_concurrency <= min(2, concurrency):
+        raise ValueError("browser_concurrency must be 1 or 2 and no greater than concurrency")
     clean = {"plan_id": plan_id, "expected_revision": revision, "batch_size": size,
-             "max_seconds": seconds, "concurrency": concurrency}
+             "max_seconds": seconds, "concurrency": concurrency,
+             "browser_reuse": browser_reuse, "browser_concurrency": browser_concurrency}
     if prepared:
         for key in ("plan_fingerprint", "url_fingerprint"):
             if not isinstance(args.get(key), str) or not _DIGEST.fullmatch(args[key]):
@@ -126,6 +134,7 @@ def _initial_journal(job_id: str, clean: dict, selected: list[dict]) -> dict:
             "target_count": len(selected), "batch_size": clean["batch_size"],
             "batch_count": math.ceil(len(selected) / clean["batch_size"]),
             "max_seconds_per_batch": clean["max_seconds"], "concurrency": clean["concurrency"],
+            "browser_reuse": clean["browser_reuse"], "browser_concurrency": clean["browser_concurrency"],
             "started_at": utc_now(), "finished_at": None, "batches": []}
 
 
@@ -133,17 +142,43 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
     batches = journal["batches"]
     coverage = Counter()
     observations = Counter()
+    timings = Counter()
+    browser_counts = Counter()
+    peak_browser = 0
+    coverage_summary = Counter()
     for batch in batches:
         coverage.update(batch["coverage_counts"])
         observations.update(batch.get("observation_counts", {}))
+        if 'coverage_summary' in batch:
+            coverage_summary.update(batch['coverage_summary'])
+        else:
+            counts = batch.get('coverage_counts', {})
+            coverage_summary.update({'unknown': counts.get('visited', 0) + counts.get('no_data', 0),
+                                     'excluded': counts.get('excluded', 0),
+                                     'partial': sum(value for key, value in counts.items()
+                                                    if key not in {'visited', 'no_data', 'excluded'})})
+        execution = batch.get("execution", {})
+        timings.update(execution.get("timings", {}))
+        browser_counts.update({key: execution.get(key, 0) for key in
+                               ("browser_pages", "browser_launches", "browser_reused_contexts")})
+        peak_browser = max(peak_browser, execution.get("peak_browser_concurrency", 0))
     complete = len(batches) == journal["batch_count"]
-    partial = any(batch["status"] == "partial" for batch in batches)
+    partial = bool(coverage_summary['partial']) or any(batch["status"] == "partial" for batch in batches)
     return {"status": ("running" if not complete else "partial" if partial else
-                       "needs_review" if any(batch["status"] == "needs_review" for batch in batches) else "completed"),
+                       "needs_review" if coverage_summary['unknown'] or any(batch["status"] == "needs_review" for batch in batches) else "completed"),
             "target_count": journal["target_count"], "batch_count": journal["batch_count"],
+            "concurrency": journal.get("concurrency", 2),
+            "browser_reuse": journal.get("browser_reuse", False),
+            "browser_concurrency": journal.get("browser_concurrency", 1),
+            "measured_peak_browser_concurrency": peak_browser,
+            "browser_counts": dict(browser_counts),
+            "timings": {key: round(value, 3) for key, value in timings.items()},
             "completed_batches": len(batches), "coverage_counts": dict(coverage),
             "observation_counts": dict(observations),
             "incomplete_sections": sum(batch.get("incomplete_sections", 0) for batch in batches),
+            "unknown_sections": sum(batch.get('unknown_sections', batch.get('coverage_counts', {}).get('visited', 0)
+                                               + batch.get('coverage_counts', {}).get('no_data', 0)) for batch in batches),
+            "coverage_summary": {key: coverage_summary[key] for key in ('complete', 'partial', 'unknown', 'excluded')},
             "pending_targets": max(0, journal["target_count"] - sum(batch["target_count"] for batch in batches)),
             "reports_ready": len(batches), "output_dir": str(output),
             "journal_path": str(output / "batch-runs" / (journal["job_id"] + ".json")),
@@ -218,7 +253,7 @@ def _observation_counts(output: Path, run_id: str) -> dict[str, int]:
 
 
 def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
-    from .catalog_collection import collect_plan
+    from .catalog_collection import collect_plan, collection_rules_version
 
     clean = _validate(args, prepared=True)
     base = workspace_root(root)
@@ -237,10 +272,23 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
         _atomic_write(path, journal)
     if (journal["plan_fingerprint"] != clean["plan_fingerprint"] or journal["url_fingerprint"] != clean["url_fingerprint"]
             or journal["batch_size"] != clean["batch_size"] or journal["max_seconds_per_batch"] != clean["max_seconds"]
-            or journal["concurrency"] != clean["concurrency"] or journal["target_count"] != len(selected)):
+            or journal["concurrency"] != clean["concurrency"]
+            or journal.get("browser_reuse", False) != clean["browser_reuse"]
+            or journal.get("browser_concurrency", 1) != clean["browser_concurrency"]
+            or journal["target_count"] != len(selected)):
         raise ValueError("Batch journal scope or budget changed")
     if len(journal["batches"]) > journal["batch_count"]:
         raise ValueError("Batch journal exceeds approved scope")
+    rules_version = collection_rules_version()
+    if journal.get('rules_version') != rules_version:
+        if journal['batches']:
+            history = journal.setdefault('prior_results', [])
+            history.append({'rules_version': journal.get('rules_version', 'legacy'),
+                            'batches': journal['batches'], 'finished_at': journal.get('finished_at')})
+            journal['batches'] = []
+            journal['finished_at'] = None
+        journal['rules_version'] = rules_version
+        _atomic_write(path, journal)
     for index in range(len(journal["batches"]), journal["batch_count"]):
         owner = runtime._read_json(runtime._job_path(base, job_id)) or {}
         token = owner.get("worker_token")
@@ -248,22 +296,32 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
         if token and stop.get("token") == token:
             raise BatchStopped("Worker stopped between batches; resume the same job")
         subset = selected[index * clean["batch_size"]:(index + 1) * clean["batch_size"]]
-        snapshot = {**plan, "candidates": subset}
+        snapshot = {**plan, "candidates": subset,
+                    "collection_rules": {url: rule for url, rule in plan.get('collection_rules', {}).items()
+                                         if url in {item['url'] for item in subset}}}
         checkpoint_id = _batch_checkpoint(job_id, index)
         started_at = utc_now()
         result = collect_plan(base, snapshot, output_dir=output, max_pages=len(subset),
                               max_seconds=clean["max_seconds"], checkpoint_id=checkpoint_id,
-                              follow_links=False, concurrency=clean["concurrency"])
+                              follow_links=False, concurrency=clean["concurrency"],
+                              browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"])
         counts = Counter(item.get("status", "unknown") for item in result.get("coverage", []))
         observations = _observation_counts(output, result["run_id"])
         incomplete_sections = sum(1 for page in result.get("coverage", [])
                                   for section in page.get("sections", []) if section.get("status") != "complete")
+        from .coverage import summarize
+        unknown_sections = sum(1 for page in result.get('coverage', [])
+                               for section in (page.get('sections') or [{'status': 'unknown'}])
+                               if page.get('status') != 'excluded' and section.get('status') == 'unknown')
         journal["batches"].append({"index": index, "target_count": len(subset),
                                    "checkpoint_id": checkpoint_id, "run_id": result["run_id"],
                                    "status": result["status"], "coverage_counts": dict(counts),
                                    "observation_counts": observations,
                                    "incomplete_sections": incomplete_sections,
+                                   "unknown_sections": unknown_sections,
+                                   "coverage_summary": result.get('coverage_summary', summarize(result.get('coverage', []))),
                                    "budget_seconds_used": round(float(result["budget"]["seconds_used"]), 3),
+                                   "execution": result.get("execution", {}),
                                    "started_at": started_at, "finished_at": utc_now(),
                                    "report_path": result["report_path"]})
         _atomic_write(path, journal)

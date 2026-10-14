@@ -1,5 +1,7 @@
 # Collection reliability
 
+Recent coverage and checkpoint changes: [2026-10-14 implementation](CROSS_SITE_RELIABILITY_2026-10-14.md).
+
 SourceLedger keeps observations tied to the content and conditions that produced them. It records source material in SQLite and writes a human-readable XLSX report; the report is not a replacement for the retained evidence.
 
 ## Research scope and supported pages

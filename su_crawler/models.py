@@ -83,6 +83,9 @@ class FetchResult:
     trace: list[dict[str, Any]] = field(default_factory=list)
     http_metadata: dict[str, str] = field(default_factory=dict)
     evidence_artifacts: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Each browser state is independently persistable evidence. Entries contain
+    # content bytes, final_url, fetched_at, selections, and optional screenshot.
+    variant_snapshots: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

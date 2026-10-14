@@ -122,7 +122,40 @@ def _save_evidence(directory: Path, result: FetchResult, source: Source) -> tupl
         "artifacts": artifacts}, ensure_ascii=False, indent=2), encoding="utf-8")
     artifacts["receipt"] = {"path": str(receipt), "sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()}
     result.evidence_artifacts = artifacts
+    for snapshot in result.variant_snapshots:
+        captured = replace(result, content=snapshot['content'],
+                           final_url=snapshot.get('final_url', result.final_url),
+                           fetched_at=snapshot.get('fetched_at', result.fetched_at),
+                           screenshot=snapshot.get('screenshot'), variant_snapshots=[],
+                           trace=snapshot.get('trace', []) + [{'event': 'captured_selection',
+                                                             'selections': snapshot.get('selections', {})}])
+        _save_evidence(directory, captured, source)
+        snapshot['evidence_artifacts'] = captured.evidence_artifacts
     return str(path), digest
+
+
+def _save_failed_capture_evidence(directory: Path, result: FetchResult, source: Source) -> list[dict[str, str]]:
+    """Persist prior successful browser states without treating a failed fetch as data."""
+    references: list[dict[str, str]] = []
+    for index, snapshot in enumerate(result.variant_snapshots):
+        content = snapshot.get("content")
+        if not isinstance(content, bytes) or not content:
+            continue
+        captured = FetchResult(
+            source_id=result.source_id, status="fetched", backend=result.backend,
+            content=content, media_type="text/html",
+            final_url=snapshot.get("final_url", result.final_url),
+            fetched_at=snapshot.get("fetched_at", result.fetched_at),
+            trace=[{"event": "captured_selection", "selections": snapshot.get("selections", {})},
+                   {"event": "later_collection_terminated", "status": result.status}],
+        )
+        _save_evidence(directory, captured, source)
+        snapshot["evidence_artifacts"] = captured.evidence_artifacts
+        references.append({"index": index, "content_path": captured.evidence_artifacts["content"]["path"],
+                           "content_sha256": captured.evidence_artifacts["content"]["sha256"],
+                           "receipt_path": captured.evidence_artifacts["receipt"]["path"],
+                           "receipt_sha256": captured.evidence_artifacts["receipt"]["sha256"]})
+    return references
 
 
 def _conflicts(rows: list[dict]):
@@ -168,6 +201,16 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
     if coverage:
         from .report import append_section_coverage
         append_section_coverage(path, coverage)
+    # Triage is mutable; re-exports must read its current state instead of the
+    # immutable issue snapshot embedded in historical coverage.
+    issue_rows: list[dict] = []
+    offset = 0
+    while batch := store.collection_issues(run_id, offset=offset, limit=500):
+        issue_rows.extend(batch)
+        offset += len(batch)
+    if coverage or issue_rows:
+        from .report import append_collection_issues
+        append_collection_issues(path, issue_rows)
     with store.db:
         store.db.execute("UPDATE runs SET report_path=? WHERE id=?", (str(path), run_id))
     return store.run(run_id)
@@ -256,13 +299,20 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                                      if len(captured_responses) == 1 and event.get('event') == 'prefetched_attempts'), None)
                     attempts = attempts or [{'backend': backend, 'status': last.status, 'at': last.fetched_at,
                                              'message': last.message, 'trace': last.trace}]
+                    capture_evidence = (_save_failed_capture_evidence(directory, last, source)
+                                        if last.status != "fetched" and last.variant_snapshots else [])
+                    if capture_evidence:
+                        last.trace.append({'event': 'prior_capture_evidence_saved',
+                                           'capture_count': len(capture_evidence),
+                                           'receipts': [item['receipt_path'] for item in capture_evidence]})
                     for attempt in attempts:
                         for task in tasks:
                             store.update_task(task["id"], "running", backend=attempt['backend'], attempt=True)
                         with store.db:
                             store.db.execute("INSERT INTO attempts(run_id,source_id,backend,status,at,data) VALUES(?,?,?,?,?,?)",
                                              (run_id, source.id, attempt['backend'], attempt['status'], attempt['at'],
-                                              json.dumps({'message': attempt['message'], 'trace': attempt['trace']}, ensure_ascii=False)))
+                                              json.dumps({'message': attempt['message'], 'trace': attempt['trace'],
+                                                          'prior_capture_evidence': capture_evidence}, ensure_ascii=False)))
                     if last.status == "fetched":
                         try:
                             candidates = captured_response[1] if captured_response else extract_current(last, source, saved, extract)
@@ -301,6 +351,8 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                         # Auth can still be handled by an explicitly configured browser profile.
                         if last.status == "policy_denied" or backend == "playwright":
                             break
+                    if not captured_responses and any(event.get('event') == 'access_challenge' for event in last.trace):
+                        break
                     if not captured_responses and call + 1 < max_calls:
                         time.sleep(min(source.min_interval_seconds, max(0, deadline - time.monotonic())))
                 if responses:
@@ -324,11 +376,20 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                         evidence_path, digest = evidence_by_response[response_index]
                         product = product_map[task["product_id"]]
                         matches = [c for c in candidates if _matches(c, product)]
-                        rows = [validate(c, product, source, run_id=run_id, task_id=task["id"], evidence_path=evidence_path,
-                                         evidence_sha256=digest, collected_at=fetched.fetched_at,
-                                         source_url=fetched.final_url or source.location).to_dict() for c in matches]
-                        for row in rows:
-                            row["evidence_artifacts"] = dict(fetched.evidence_artifacts)
+                        rows = []
+                        for candidate in matches:
+                            index = candidate.derived_values.get('capture_snapshot_index')
+                            snapshot = (fetched.variant_snapshots[index] if isinstance(index, int) and
+                                        not isinstance(index, bool) and 0 <= index < len(fetched.variant_snapshots) else None)
+                            artifacts = snapshot['evidence_artifacts'] if snapshot is not None else fetched.evidence_artifacts
+                            content_ref = artifacts.get('content', {})
+                            row = validate(candidate, product, source, run_id=run_id, task_id=task['id'],
+                                           evidence_path=content_ref.get('path', evidence_path),
+                                           evidence_sha256=content_ref.get('sha256', digest),
+                                           collected_at=snapshot.get('fetched_at', fetched.fetched_at) if snapshot else fetched.fetched_at,
+                                           source_url=(snapshot.get('final_url') if snapshot else fetched.final_url) or source.location).to_dict()
+                            row['evidence_artifacts'] = dict(artifacts)
+                            rows.append(row)
                         _conflicts(rows)
                         if rows:
                             state = "verified" if all(r["status"] == "verified" for r in rows) else "price_unavailable" if all(r["status"] == "price_unavailable" for r in rows) else "review"

@@ -15,7 +15,7 @@ from .research import _locked, init_workspace
 
 def _validate(args: dict, operation: str, *, prepared: bool = False) -> dict:
     allowed = {"plan_id", "expected_revision"}
-    allowed |= {"provider", "model", "timeout_seconds"} if operation == "plan_preview" else {"max_pages", "max_seconds", "retry_of", "retry_urls", "follow_links", "concurrency"}
+    allowed |= {"provider", "model", "timeout_seconds"} if operation == "plan_preview" else {"max_pages", "max_seconds", "retry_of", "retry_urls", "follow_links", "concurrency", "browser_reuse", "browser_concurrency"}
     if prepared:
         allowed |= {"plan_fingerprint", "_resume", "_attempt"}
     if not isinstance(args, dict) or set(args) - allowed:
@@ -45,6 +45,14 @@ def _validate(args: dict, operation: str, *, prepared: bool = False) -> dict:
         if isinstance(concurrency, bool) or not isinstance(concurrency, int) or not 1 <= concurrency <= 4:
             raise ValueError("concurrency must be an integer from 1 to 4")
         clean["concurrency"] = concurrency
+        browser_reuse = args.get("browser_reuse", False)
+        browser_concurrency = args.get("browser_concurrency", 1)
+        if not isinstance(browser_reuse, bool):
+            raise ValueError("browser_reuse must be a boolean")
+        if (isinstance(browser_concurrency, bool) or not isinstance(browser_concurrency, int)
+                or not 1 <= browser_concurrency <= min(2, concurrency)):
+            raise ValueError("browser_concurrency must be 1 or 2 and cannot exceed concurrency")
+        clean.update(browser_reuse=browser_reuse, browser_concurrency=browser_concurrency)
         if "retry_of" in args or "retry_urls" in args:
             parent, urls = args.get("retry_of"), args.get("retry_urls")
             if not isinstance(parent, str) or not re.fullmatch(r"[0-9a-f]{32}", parent):
@@ -96,18 +104,21 @@ def confirm_research(root: str | Path, **args) -> dict:
 
 def preview_execution(root: str | Path, plan_id: str, expected_revision: int,
                       provider: str = "connected", model: str = "", max_pages: int = 10,
-                      max_seconds: float = 120, follow_links: bool = False, concurrency: int = 2) -> dict:
+                      max_seconds: float = 120, follow_links: bool = False, concurrency: int = 2,
+                      browser_reuse: bool = False, browser_concurrency: int = 1) -> dict:
     """Describe a pinned scope and execution capability without starting work."""
     from .execution_policy import build_execution_brief
     clean = _validate({"plan_id": plan_id, "expected_revision": expected_revision,
                        "max_pages": max_pages, "max_seconds": max_seconds,
-                       "follow_links": follow_links, "concurrency": concurrency}, "research_plan")
+                       "follow_links": follow_links, "concurrency": concurrency,
+                       "browser_reuse": browser_reuse, "browser_concurrency": browser_concurrency}, "research_plan")
     plan = plans.get_plan(root, clean["plan_id"])["plan"]
     if plan["revision"] != clean["expected_revision"]:
         raise ValueError("Research plan changed; review the latest revision before continuing")
     return {"execution_plan": build_execution_brief(
         plan, provider=provider, model=model, max_pages=max_pages,
-        max_seconds=max_seconds, follow_links=follow_links, concurrency=clean["concurrency"])}
+        max_seconds=max_seconds, follow_links=follow_links, concurrency=clean["concurrency"],
+        browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"])}
 
 
 def queue_plan_job(root: str | Path, operation: str, args: dict) -> dict:
@@ -176,7 +187,8 @@ def execute_plan_job(root: str | Path, operation: str, args: dict, *, job_id: st
         validate_retry(base, clean)
     result = collect_plan(base, snapshot, output_dir=output, max_pages=clean["max_pages"], max_seconds=clean["max_seconds"],
                           checkpoint_id=job_id, retry_urls=clean.get("retry_urls"), parent_checkpoint_id=clean.get("retry_of"),
-                          follow_links=clean["follow_links"], concurrency=clean["concurrency"])
+                          follow_links=clean["follow_links"], concurrency=clean["concurrency"],
+                          browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"])
     result["retry_of"] = clean.get("retry_of")
     return {"operation": operation, "execution_status": "succeeded", "evidence_status": result.get("status", "needs_review"),
             "plan_id": clean["plan_id"], "plan_revision": clean["expected_revision"],

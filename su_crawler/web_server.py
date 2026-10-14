@@ -300,6 +300,13 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 raise ValueError("offset and limit must be integers") from exc
             self._json(200, result_observations(self.server.workspace, job, offset=offset, limit=limit))
+        elif parts[3] == 'issues':
+            if set(query) - {'offset', 'limit', 'status'} or any(len(v) != 1 for v in query.values()):
+                raise ValueError('Invalid issue query parameters')
+            from .research_followup import list_collection_issues
+            self._json(200, list_collection_issues(self.server.workspace, parts[2],
+                       offset=int(query.get('offset', ['0'])[0]), limit=int(query.get('limit', ['50'])[0]),
+                       status=query.get('status', [None])[0]))
         elif parts[3] == "report":
             if query:
                 raise ValueError("This endpoint does not accept query parameters")
@@ -352,6 +359,20 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
 
     def _post_route(self, path: str, value: dict[str, Any]) -> dict[str, Any]:
         base = self.server.workspace
+        if path.startswith('/api/jobs/') and path.endswith('/browser-recovery'):
+            parts = path.strip('/').split('/')
+            if len(parts) != 4:
+                raise ValueError('Invalid browser recovery route')
+            self._fields(value, allowed={'issue_id'}, required={'issue_id'})
+            from .browser_recovery import prepare_browser_recovery
+            return prepare_browser_recovery(base, parts[2], value['issue_id'])
+        if path.startswith('/api/jobs/') and path.endswith('/issues'):
+            parts = path.strip('/').split('/')
+            if len(parts) != 4:
+                raise ValueError('Invalid issue route')
+            self._fields(value, allowed={'issue_id', 'status', 'evidence'}, required={'issue_id', 'status'})
+            from .research_followup import triage_collection_issue
+            return triage_collection_issue(base, parts[2], **value)
         if path == "/api/plans":
             self._fields(value, allowed={"request_text", "include_terms", "exclude_terms"}, required={"request_text"})
             return create_plan(base, **value)
@@ -359,7 +380,7 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             self._fields(value, allowed={"plan_id", "expected_revision", "changes"}, required={"plan_id", "expected_revision", "changes"})
             return revise_plan(base, **value)
         if path == "/api/plans/execution-preview":
-            self._fields(value, allowed={"plan_id", "expected_revision", "provider", "model", "max_pages", "max_seconds", "follow_links", "concurrency"},
+            self._fields(value, allowed={"plan_id", "expected_revision", "provider", "model", "max_pages", "max_seconds", "follow_links", "concurrency", "browser_reuse", "browser_concurrency"},
                          required={"plan_id", "expected_revision"})
             return preview_execution(base, **value)
         if path == "/api/plans/confirm":

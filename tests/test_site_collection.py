@@ -54,7 +54,12 @@ def test_three_adapters_flow_to_sqlite_and_xlsx_with_estimate_separation(tmp_pat
     assert Path(result["report_path"]).is_file()
     assert Path(result["config_path"]).is_file()
     assert {row["adapter"] for row in result["coverage"]} == {"jetcar", "gongcar", "funrent"}
-    assert all(row["items"] > 0 and not row["coverage_gap"] for row in result["coverage"])
+    assert all(row['items'] > 0 for row in result['coverage'])
+    assert all(not row['coverage_gap'] for row in result['coverage'] if row['adapter'] == 'jetcar')
+    unbounded = next(row for row in result['coverage'] if row['adapter'] == 'gongcar')
+    assert unbounded['coverage_gap'] and unbounded['coverage_status'] == 'unknown'
+    calculator = next(row for row in result['coverage'] if row['adapter'] == 'funrent')
+    assert calculator['coverage_gap'] and calculator['coverage_status'] == 'unknown'
 
     store = Store(output)
     rows = store.observations(result["id"])

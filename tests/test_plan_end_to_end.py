@@ -155,7 +155,12 @@ def test_connected_preview_to_confirmed_collection_and_report(tmp_path, monkeypa
                     assert "Source Evidence" in workbook.sheetnames
                 finally:
                     workbook.close()
-                playwright.expect(page.locator("#job-detail .plan-coverage-row")).to_have_count(1)
+                # The source visit and the independently unknown catalog
+                # completeness are now both visible to the operator.
+                coverage_rows = page.locator("#job-detail .plan-coverage-row:not(.collection-issue-row)")
+                playwright.expect(coverage_rows).to_have_count(2)
+                playwright.expect(coverage_rows.last).to_contain_text("List completion unknown")
+                playwright.expect(page.locator("#job-detail")).to_contain_text("do not prove that the entire site was found")
                 playwright.expect(page.locator("#job-detail table tbody tr")).to_have_count(1)
                 detail_text = page.locator("#job-detail").inner_text()
                 assert "Product condition checks" in detail_text

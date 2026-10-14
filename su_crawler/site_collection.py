@@ -5,16 +5,19 @@ from dataclasses import asdict, replace
 from copy import deepcopy
 from pathlib import Path
 import math
+import hashlib
+import json
 import time
 from urllib.parse import urlsplit
 
-from .collectors import collect
+from .collectors import collect, robots_policy_scope
 from .extraction import extract
 from .models import CollectionConfig, FetchResult, Product, Source, stable_id
 from .pipeline import execute, _candidate_quality, _has_sufficient_evidence
 from .research import _canonical_url, _atomic_write, load_workspace
 from .storage import Store, workspace_lock
 from .incremental import load_snapshot, conditional_fetch, extract_current
+from .coverage import unknown_section, summarize, apply_status, page_status
 
 
 HOST_ADAPTERS = {
@@ -60,17 +63,63 @@ def _ready_recipe(adapter: str, url: str = '') -> list[dict]:
     return [{'action': 'wait_for', 'selector': selectors[adapter], 'state': 'visible'}] if adapter in selectors else []
 
 
+def _offer_fingerprint(fields, evidence_sha256):
+    payload = json.dumps([fields, evidence_sha256], ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
+
+
 def _sections(result, candidates, adapter):
-    if adapter != 'gongcar':
-        return []
-    from .adapters.gongcar import section_coverage
-    sections = section_coverage(result, candidates)
+    if adapter == 'gongcar':
+        from .adapters.gongcar import section_coverage
+        sections = section_coverage(result, candidates)
+    elif adapter == 'jetcar':
+        from .adapters.jetcar import section_coverage
+        sections = section_coverage(result, candidates)
+    else:
+        sections = []
+    if not sections:
+        sections = [unknown_section(extracted_count=len(candidates))]
+    for event in result.trace:
+        if event.get('event') in {'option_enumeration', 'pagination', 'scroll_list', 'button_enumeration'}:
+            sections.append({'section': event['event'], 'status': event.get('status', 'unknown'),
+                             'reason': event.get('reason', 'Enumeration unconfirmed'),
+                             'observed_count': event.get('observed_count', event.get('captured_count')),
+                             'expected_count': None, 'extracted_count': len(candidates),
+                             'extracted_locators': [c.locator for c in candidates],
+                             'enumeration': event, 'scope': 'reviewed_controls_only',
+                             'count_unit': ('items' if event['event'] == 'scroll_list' else
+                                            'pages' if event['event'] == 'pagination' else 'selected_states')})
+    gaps = [event for event in result.trace if event.get('event') in {'extraction_gap', 'jsonld_truncated', 'discovery_truncated'}]
+    if gaps:
+        sections.append({**unknown_section('; '.join(str(e.get('reason') or e.get('event')) for e in gaps)),
+                         'section': 'processing_limits', 'status': 'partial', 'limits': gaps})
+    digest = hashlib.sha256(result.content).hexdigest()
     for section in sections:
+        expected_locators = set(section.get('extracted_locators', []))
+        matched = [candidate for candidate in candidates
+                   if candidate.locator in expected_locators
+                   or candidate.fields.get('section') == section['section']]
+        if matched:
+            section['extracted_locators'] = [candidate.locator for candidate in matched]
+            section['expected_offers'] = [
+                {'locator': candidate.locator,
+                 'fingerprint': _offer_fingerprint(
+                     {**candidate.fields, **{f"spec:{key.removeprefix('spec:')}": value
+                                              for key, value in candidate.specs.items()}},
+                     _candidate_evidence_digest(result, candidate, digest))}
+                for candidate in matched]
         kind = str(section['section']).rsplit('_', 1)[-1]
         events = [event for event in result.trace if event.get('event') == 'list_expansion'
                   and event.get('section') in {kind, section['section']}]
         section['click_count'] = events[-1].get('click_count', 0) if events else 0
     return sections
+
+
+def _candidate_evidence_digest(result, candidate, default):
+    index = candidate.derived_values.get('capture_snapshot_index')
+    if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(result.variant_snapshots):
+        return hashlib.sha256(result.variant_snapshots[index]['content']).hexdigest()
+    return default
 
 
 def _save_coverage(destination, run, coverage):
@@ -79,13 +128,49 @@ def _save_coverage(destination, run, coverage):
     try:
         rows = store.observations(run['id'])
         for page in coverage:
+            if page.get('status') not in {'visited', 'fetched', 'no_data', 'excluded'} and page.get('source_id'):
+                refs = []
+                for attempt in store.db.execute('SELECT data FROM attempts WHERE run_id=? AND source_id=?',
+                                                (run['id'], page['source_id'])):
+                    refs.extend(json.loads(attempt[0]).get('prior_capture_evidence', []))
+                if refs:
+                    page['prior_capture_evidence'] = refs
+                    page['evidence_path'] = '; '.join(dict.fromkeys(ref['receipt_path'] for ref in refs))
+            if not page.get('sections') and page.get('status') != 'excluded':
+                page['sections'] = [unknown_section(page.get('reason') or 'Page scope has not been verified')]
             page_rows = [row for row in rows if row.get('source_id') == page.get('source_id')]
             for section in page.get('sections', []):
+                locators = section.get('extracted_locators')
+                if locators:
+                    retained = {row.get('locator') for row in page_rows}
+                    excluded = set(page.get('excluded_locators', []))
+                    excluded.update(a['locator'] for a in page.get('scope_assessments', []) if a.get('status') == 'excluded')
+                    missing = set(locators) - retained - excluded
+                    if missing:
+                        section.update(status='partial', retained_count=len(set(locators) & retained),
+                                       reason='Some extracted offer rows were not retained in the final ledger',
+                                       missing_locators=sorted(missing))
+                    expected_offers = [offer for offer in section.get('expected_offers', [])
+                                       if offer['locator'] not in excluded]
+                    retained_offers = {(row.get('locator'), _offer_fingerprint(
+                        row.get('raw_fields') or {}, row.get('evidence_sha256'))) for row in page_rows}
+                    mismatched = [offer['locator'] for offer in expected_offers
+                                  if (offer['locator'], offer['fingerprint']) not in retained_offers]
+                    if mismatched:
+                        section.update(status='partial',
+                                       reason='Stored offer values or evidence differ from the inspected section',
+                                       mismatched_locators=sorted(set(mismatched)))
                 section_rows = [row for row in page_rows if (row.get('raw_fields') or {}).get('section') == section.get('section')]
                 evidence = sorted({row['evidence_path'] for row in section_rows if row.get('evidence_path')})
                 if not evidence:
                     evidence = sorted({row['evidence_path'] for row in page_rows if row.get('evidence_path')})
                 section['evidence_ref'] = '; '.join(evidence)
+            page['coverage_status'] = page_status(page)
+            page['coverage_gap'] = page['coverage_status'] in {'partial', 'unknown'}
+        from .collection_issues import sync_coverage_issues
+        issues = sync_coverage_issues(store, run['id'], coverage)
+        for page in coverage:
+            page['collection_issues'] = [issue for issue in issues if issue.get('page_url', issue.get('url')) == page.get('url')]
         store.save_run_coverage(run['id'], coverage)
     finally:
         store.close()
@@ -125,7 +210,7 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
     deadline = time.monotonic() + max_seconds
     sources, products, prefetched, coverage = [], [], {}, []
     # Release the output lock before execute() acquires its own lock.
-    with workspace_lock(destination):
+    with workspace_lock(destination), robots_policy_scope():
         store = Store(destination)
         try:
             for url in locations:
@@ -241,12 +326,11 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
     # ordinary pipeline saves evidence and performs fresh validation.
     result = execute(config, prefetched=prefetched)
     _save_coverage(destination, result, coverage)
-    if any(p['coverage_gap'] for p in coverage):
-        result['status'] = 'partial'
+    result['status'] = apply_status(result['status'], coverage)
     config_path = destination / f"collection-{result['id']}.json"
     document = asdict(config)
     document.pop('base_dir')
     _atomic_write(config_path, document)
-    return {**result, 'config_path': str(config_path), 'coverage': coverage,
+    return {**result, 'config_path': str(config_path), 'coverage': coverage, 'coverage_summary': summarize(coverage),
             'scope': 'Supplied pages only. Item counts are not whole-site coverage.',
             'note': 'Calculator estimates remain separate from observed prices. Unselected or unsupported pages need review.'}

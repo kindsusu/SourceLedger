@@ -30,7 +30,7 @@ def completed_job(root, monkeypatch, urls):
     return job, result
 
 
-def test_partial_section_on_visited_page_is_gap_and_retryable(tmp_path, monkeypatch):
+def test_job_result_edit_cannot_hide_persisted_unknown_enumeration(tmp_path, monkeypatch):
     url = "https://shop.example/item"
     monkeypatch.setattr(catalog_collection, "collect", lambda s, b, backend: FetchResult(
         s.id, "fetched", backend, content=html_product("Widget", price="10", currency="USD"), final_url=s.location))
@@ -42,11 +42,13 @@ def test_partial_section_on_visited_page_is_gap_and_retryable(tmp_path, monkeypa
                          "reason": "button_stalled", "click_count": 1}]
     runtime._write_json(runtime._job_path(tmp_path, job["id"]).with_name("result.json"), result)
     gap = research_gaps(tmp_path, job["id"])["items"][0]
-    assert gap["status"] == "partial" and gap["retryable"] is True
+    assert gap["status"] == "partial" and gap["retryable"] is False
+    assert any(issue['category'] == 'unknown_enumeration' for issue in gap['collection_issues'])
     assert gap["sections"] == page["sections"]
     args = {"retry_of": job["id"], "retry_urls": [url], **{
         key: job["arguments"][key] for key in ("plan_id", "expected_revision", "plan_fingerprint")}}
-    validate_retry(tmp_path, args)
+    with pytest.raises(ValueError, match='review-only prices need evidence'):
+        validate_retry(tmp_path, args)
     page["sections"][0]["status"] = "complete"
     runtime._write_json(runtime._job_path(tmp_path, job["id"]).with_name("result.json"), result)
     gap = research_gaps(tmp_path, job["id"])["items"][0]
@@ -194,7 +196,9 @@ def test_retry_only_failed_page_reuses_success_and_rejects_new_url(tmp_path, mon
     calls = []
     def fetch(s, b, backend):
         calls.append(s.location)
-        return FetchResult(s.id, "fetched", backend, content=html_product("Widget", price="10", currency="USD") if s.location == urls[0] else b"<html>no metadata</html>", final_url=s.location)
+        if s.location == urls[1] and calls.count(urls[1]) <= 3:
+            return FetchResult(s.id, "timeout", backend, message="temporary failure", final_url=s.location)
+        return FetchResult(s.id, "fetched", backend, content=html_product("Widget", price="10", currency="USD"), final_url=s.location)
     monkeypatch.setattr(catalog_collection, "collect", fetch)
     job, result = completed_job(tmp_path, monkeypatch, urls)
     evidence = submit_browser_evidence(tmp_path, job["id"], url=urls[1], captured_at=utc_now(),

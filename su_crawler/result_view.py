@@ -12,8 +12,38 @@ from .validation import RENTAL_COMPARISON_FIELDS
 FIELD_LABELS = {"price": "Price", "currency": "Currency", "price_basis": "Price basis", "term_months": "Contract term (months)",
                 "deposit_amount": "Deposit", "advance_amount": "Advance payment", "annual_mileage_km": "Annual mileage (km)",
                 "deposit_percent": "Deposit (%)",
+                "item_id": "Item ID", "sku": "SKU", "model": "Model", "spec:size": "Size", "spec:color": "Color",
+                "offer_sku": "Offer SKU", "mpn": "Manufacturer part number", "quantity_tier": "Quantity tier",
+                "min_order": "Minimum order", "member_condition": "Member condition", "membership": "Membership",
                 "trim": "Trim", "options": "Options", "condition": "Product condition", "insurance": "Insurance",
                 "tax": "Tax", "availability": "Availability", "unit": "Unit", "pack_quantity": "Pack quantity", "price_type": "Price type"}
+
+# These attributes identify independently offered variants across industries.
+# Price alone is not an identity attribute: two captures of one offer may disagree.
+VARIANT_FIELDS = ("item_id", "sku", "offer_sku", "model", "mpn", "gtin", "gtin8", "gtin12", "gtin13", "gtin14", "options",
+                  "term_months", "deposit_amount", "deposit_percent", "annual_mileage_km",
+                  "price_basis", "unit", "pack_quantity", "price_type", "quantity_tier", "min_order",
+                  "member_condition", "membership")
+
+
+def variant_keys(*field_sets):
+    """Shared offer identity dimensions, including source-specific specifications."""
+    dynamic = {str(key) for fields in field_sets for key in fields if str(key).startswith("spec:")}
+    return (*VARIANT_FIELDS, *sorted(dynamic))
+
+
+def _present(value):
+    return value is not None and value != ""
+
+
+def _variant_signature(fields):
+    return tuple((key, _value(key, fields[key])) for key in variant_keys(fields) if _present(fields.get(key)))
+
+
+def _variant_conflicts(submitted, base):
+    return [key for key in variant_keys(submitted, base)
+            if _present(submitted.get(key)) and _present(base.get(key))
+            and _value(key, submitted[key]) != _value(key, base[key])]
 
 
 def _text(value):
@@ -56,7 +86,6 @@ def build_result_view(rows):
         row["supporting_evidence"] = []
         row["price_kind"] = (row.get("derived_values") or {}).get("price_kind")
     unlinked = []
-    identity = ("item_id", "sku", "model", "spec:size", "spec:color", "term_months")
     for evidence in submissions:
         fields = _fields(evidence)
         candidates = []
@@ -64,9 +93,9 @@ def build_result_view(rows):
             base = _fields(row)
             if row.get("source_url") != evidence.get("source_url") or not fields.get("name") or _text(base.get("name", "")) != _text(fields["name"]):
                 continue
-            if any(key in fields and key in base and _value(key, fields[key]) != _value(key, base[key]) for key in identity):
-                continue
-            if fields.get("options") and base.get("options") and _text(fields["options"]) not in _text(base["options"]):
+            if _variant_conflicts(fields, base) or any(
+                _present(fields.get(key)) and not _present(base.get(key)) for key in variant_keys(fields)
+            ):
                 continue
             candidates.append(row)
         explicit = (evidence.get("derived_values") or {}).get("target_observation_id")
@@ -81,7 +110,7 @@ def build_result_view(rows):
         evidence["association_status"] = "linked_by_identity"
         evidence["conflicts"] = []
         base = _fields(row)
-        for key in ("price", "currency", "term_months", "deposit_amount", "deposit_percent", "annual_mileage_km", "spec:size", "spec:color"):
+        for key in ("price", "currency"):
             if key in fields and key in base and _value(key, fields[key]) != _value(key, base[key]):
                 evidence["conflicts"].append({"field": key, "observed": base[key], "submitted": fields[key]})
         row["supporting_evidence"].append(evidence)
@@ -107,21 +136,21 @@ def build_result_view(rows):
     for evidence in list(unlinked):
         if evidence.get("association_status") != "unmatched":
             continue
+        if (evidence.get("derived_values") or {}).get("target_observation_id"):
+            # An explicit target that failed identity checks is a disputed
+            # association, not proof that a new product variant exists.
+            continue
         raw_fields = evidence.get("raw_fields") or {}
-        if not raw_fields.get("price"):
+        if not _present(raw_fields.get("price")):
             continue
         same_identity = [row for row in offers if row.get("source_url") == evidence.get("source_url")
                          and _text((row.get("raw_fields") or {}).get("name", "")) == _text(raw_fields.get("name", ""))]
-        # An apparent variant of an existing offer needs manual association;
-        # it must not silently become a second result row.
-        submitted_term = _fields(evidence).get("term_months")
+        # Suppress an identical browser candidate while retaining its evidence.
+        submitted_fields = _fields(evidence)
         matching_browser_candidates = [row for row in same_identity if row.get("primary_candidate")
-                                       and _fields(row).get("term_months") == submitted_term
-                                       and all(_fields(row).get(key) == _fields(evidence).get(key)
-                                               for key in ("deposit_amount", "deposit_percent", "annual_mileage_km",
-                                                           "item_id", "sku", "model", "spec:size", "spec:color", "price_basis"))
-                                       and _text((row.get("raw_fields") or {}).get("price", "")) == _text(raw_fields.get("price", ""))
-                                       and _text((row.get("raw_fields") or {}).get("options", "")) == _text(raw_fields.get("options", ""))]
+                                       and _variant_signature(_fields(row)) == _variant_signature(submitted_fields)
+                                       and _value("price", (row.get("raw_fields") or {}).get("price", ""))
+                                       == _value("price", raw_fields.get("price", ""))]
         if len(matching_browser_candidates) == 1:
             target = matching_browser_candidates[0]
             evidence["target_observation_id"] = target["id"]
@@ -130,7 +159,14 @@ def build_result_view(rows):
             target["supporting_evidence"].append(evidence)
             unlinked.remove(evidence)
             continue
-        if same_identity and (not submitted_term or any(_fields(row).get("term_months") == submitted_term for row in same_identity)):
+        # Admit an unmatched capture only when an explicit option/condition in
+        # its source text distinguishes it from *every* known offer. Missing
+        # attributes never prove a new variant, and an ambiguous association
+        # stays in the evidence list instead of becoming another result.
+        if same_identity and not all(
+            _variant_conflicts(submitted_fields, _fields(row))
+            for row in same_identity
+        ):
             continue
         candidate = deepcopy(evidence)
         candidate["primary_candidate"] = True

@@ -44,8 +44,10 @@ def test_browser_onboarding_job_and_report(tmp_path):
             page = browser.new_page(viewport={"width": 1440, "height": 1000})
             page_errors = []
             console_errors = []
+            issue_requests = []
             page.on("pageerror", lambda error: page_errors.append(str(error)))
             page.on("console", lambda message: console_errors.append(message.text) if message.type == "error" else None)
+            page.on("request", lambda request: issue_requests.append(request.url) if "/issues" in request.url else None)
             page.goto(f"{server.url}/#overview")
             page.locator("#setup-form").get_by_label("Industry", exact=True).fill("Synthetic components")
             page.locator("#setup-form").get_by_label("Product", exact=True).fill("Test part")
@@ -103,6 +105,7 @@ def test_browser_onboarding_job_and_report(tmp_path):
                     playwright.expect(page.locator("#connection-snippet")).to_contain_text("serve-assistant")
             assert page_errors == []
             assert console_errors == []
+            assert issue_requests == []  # Advanced run jobs have no collection-issue ledger.
             browser.close()
     finally:
         stop_worker(workspace)

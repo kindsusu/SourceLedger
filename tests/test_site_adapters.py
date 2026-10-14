@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from su_crawler.adapters import ADAPTER_VERSION, available_adapters
+from su_crawler.adapters.jetcar import is_detail_url, section_coverage as jetcar_coverage
 from su_crawler.extraction import extract
 from su_crawler.models import FetchResult, Product, Source
 from su_crawler.validation import validate
@@ -24,7 +25,7 @@ def assert_complete_evidence(candidate):
 
 def test_registry_has_versioned_render_requirements():
     metadata = available_adapters()
-    assert ADAPTER_VERSION == "2"
+    assert ADAPTER_VERSION == "3"
     assert set(metadata) == {"jetcar", "gongcar", "funrent"}
     assert metadata["jetcar"]["requires_rendered_html"] is False
     assert metadata["gongcar"]["requires_rendered_html"] is True
@@ -71,6 +72,63 @@ def test_jetcar_normalizes_fractional_man_km_without_losing_precision():
     assert value.fields["annual_mileage_km"] == "25000"
     assert value.evidence["annual_mileage_km"]["source_text"] == "연 2.5만KM"
     assert "annual_mileage_not_integer" not in value.review_flags
+
+
+def test_jetcar_cargo_route_extracts_all_terms_and_checks_row_identity():
+    url = "https://www.jetcar.kr/sub0701/16"
+    html = (FIXTURES / "jetcar_detail.html").read_text(encoding="utf-8")
+    html = html.replace("/sub0301/5874", "/sub0701/16")
+    html = html.replace('</table>\n<table hidden>',
+                        '<tr><td>보증금 50 만원</td><td>36개월</td><td>월 390,000 원</td></tr>'
+                        '<tr><td>보증금 50 만원</td><td>48개월</td><td>월 370,000 원</td></tr>'
+                        '<tr><td>보증금 50 만원</td><td>60개월</td><td>월 350,000 원</td></tr>'
+                        '</table>\n<table hidden>', 1)
+    result = FetchResult("s", "fetched", "playwright", html.encode(), final_url=url)
+    values = extract(result, Source("s", "jetcar", "web", url, ["p"], adapter="jetcar"))
+    assert is_detail_url(url) and not is_detail_url("https://www.jetcar.kr/sub0701")
+    assert len(values) == 5
+    assert [v.fields["term_months"] for v in values] == ["12", "24", "36", "48", "60"]
+    coverage = jetcar_coverage(result, values)[0]
+    assert coverage["status"] == "complete"
+    assert coverage["observed_count"] == 5
+    assert coverage["extracted_locators"] == [v.locator for v in values]
+    assert jetcar_coverage(result, values[:1])[0]["status"] == "partial"
+    assert jetcar_coverage(result, values[:1])[0]["unparsed_count"] == 4
+    assert jetcar_coverage(result, [*values[:4], values[0]])[0]["status"] == "partial"
+    changed = [*values[:4], values[4]]
+    changed[4].fields["price"] = "1"
+    assert jetcar_coverage(result, changed)[0]["status"] == "partial"
+
+
+def test_jetcar_coverage_keeps_same_term_price_with_different_deposit_distinct():
+    url = "https://www.jetcar.kr/sub0701/17"
+    html = (FIXTURES / "jetcar_detail.html").read_text(encoding="utf-8")
+    html = html.replace("/sub0301/5874", "/sub0701/17")
+    html = html.replace('<tr><td>보증금 50 만원</td><td>24개월</td><td>월 410,000 원</td></tr>',
+                        '<tr><td>보증금 100 만원</td><td>12개월</td><td>월 450,000 원</td></tr>')
+    result = FetchResult("s", "fetched", "playwright", html.encode(), final_url=url)
+    values = extract(result, Source("s", "jetcar", "web", url, ["p"], adapter="jetcar"))
+    assert [v.fields["price"] for v in values] == ["450000", "450000"]
+    assert [v.fields["deposit_amount"] for v in values] == ["500000", "1000000"]
+    assert jetcar_coverage(result, values)[0]["status"] == "complete"
+    duplicate = [values[0], values[0]]
+    gap = jetcar_coverage(result, duplicate)[0]
+    assert gap["status"] == "partial" and gap["unparsed_count"] == 1
+
+
+def test_jetcar_coverage_does_not_count_unparsed_or_hidden_rent_rows_as_complete():
+    url = "https://www.jetcar.kr/sub0701/16"
+    html = (FIXTURES / "jetcar_detail.html").read_text(encoding="utf-8")
+    html = html.replace("/sub0301/5874", "/sub0701/16")
+    html = html.replace('</table>\n<table hidden>',
+                        '<tr><td>보증금 50 만원</td><td>36개월</td><td>월 문의</td></tr>'
+                        '</table>\n<table hidden>', 1)
+    result = FetchResult("s", "fetched", "playwright", html.encode(), final_url=url)
+    values = extract(result, Source("s", "jetcar", "web", url, ["p"], adapter="jetcar"))
+    coverage = jetcar_coverage(result, values)[0]
+    assert coverage["status"] == "partial"
+    assert coverage["observed_count"] == 3
+    assert coverage["unparsed_count"] == 1
 
 
 def test_gongcar_expands_rowspan_and_excludes_hidden_or_script_quotes():

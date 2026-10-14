@@ -8,6 +8,7 @@ import math
 import re
 
 from .models import CollectionConfig, Product, Source, resolve_path, stable_id
+from .browser_enumeration import validate_enumeration_step
 
 PRICE_PROFILES = frozenset({"unit", "rental"})
 SOURCE_ADAPTERS = frozenset({"jetcar", "gongcar", "funrent"})
@@ -34,6 +35,14 @@ def load_config(path: str | Path) -> CollectionConfig:
         if not isinstance(product.price_profile, str) or product.price_profile not in PRICE_PROFILES:
             raise ValueError(f"Product {product.id}: price_profile must be unit or rental")
     for source in sources:
+        for step in source.recipe:
+            if not isinstance(step, dict):
+                raise ValueError(f"Source {source.id}: recipe steps must be objects")
+            if step.get("action") in {"enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}:
+                try:
+                    validate_enumeration_step(step)
+                except ValueError as exc:
+                    raise ValueError(f"Source {source.id}: {exc}") from exc
         if source.kind not in {"web", "file"}:
             raise ValueError(f"Unsupported source type: {source.kind}")
         if source.adapter is not None and (not isinstance(source.adapter, str) or source.adapter not in SOURCE_ADAPTERS):

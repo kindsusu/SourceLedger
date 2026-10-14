@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import re
+from dataclasses import replace
 from datetime import date, datetime
 from typing import Any
 
@@ -131,51 +132,10 @@ def _extract_html(result: FetchResult, source: Source) -> list[Candidate]:
                                             source_visibility=visibility, evidence_mode=mode))
         return candidates
 
-    # JSON-LD is only a fallback when no site-specific selectors were configured.
-    product_nodes: list[tuple[int, int, dict[str, Any]]] = []
-    for script_index, script in enumerate(soup.select('script[type="application/ld+json"]'), start=1):
-        try:
-            document = json.loads(script.string or script.get_text(), parse_float=str)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        nodes = document if isinstance(document, list) else document.get("@graph", [document]) if isinstance(document, dict) else []
-        for node_index, node in enumerate(nodes, start=1):
-            if not isinstance(node, dict) or node.get("@type") not in ("Product", ["Product"]):
-                continue
-            product_nodes.append((script_index, node_index, node))
-    for script_index, node_index, node in product_nodes:
-            offers = node.get("offers", [])
-            if isinstance(offers, dict):
-                offers = [offers]
-            if not offers:
-                offers = [{}]
-            ambiguous = len(product_nodes) > 1 or len(offers) > 1
-            for offer_index, offer in enumerate(offers, start=1):
-                if not isinstance(offer, dict):
-                    offer = {}
-                locator = f"jsonld:{script_index}/{node_index}/offer:{offer_index}"
-                values = {
-                    "price": None if offer.get("@type") == "AggregateOffer" else offer.get("price"),
-                    "currency": offer.get("priceCurrency"),
-                    "availability": offer.get("availability"),
-                    "valid_to": offer.get("priceValidUntil"),
-                    "sku": node.get("sku"),
-                    "offer_sku": offer.get("sku"),
-                    "option": offer.get("name"),
-                    "model": node.get("model"),
-                    "manufacturer": (node.get("manufacturer") or {}).get("name") if isinstance(node.get("manufacturer"), dict) else node.get("manufacturer"),
-                }
-                candidate = _candidate_from_mapping(values, locator=locator, method="json_ld_product_offer",
-                                                    evidence_mode="static_html")
-                candidate.source_visibility = "unconfirmed"
-                for proof in candidate.evidence.values():
-                    proof.update(display_state="unconfirmed", proof_kind="embedded_metadata")
-                if offer.get("@type") == "AggregateOffer":
-                    candidate.evidence["_extraction"] = _evidence(locator, "AggregateOffer range is not an exact price")
-                if ambiguous:
-                    candidate.evidence["_selection"] = _evidence(locator, "multiple JSON-LD products or offers require product matching")
-                candidates.append(candidate)
-    return candidates
+    # Share the same bounded parser and review semantics as catalog collection.
+    from .structured_data import extract_jsonld
+
+    return extract_jsonld(result)
 
 
 def _extract_csv(result: FetchResult, source: Source) -> list[Candidate]:
@@ -260,6 +220,51 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
     """Extract only source-supplied values; invalid/unavailable fetches produce no values."""
     if result.status != "fetched":
         return []
+    if result.variant_snapshots:
+        candidates: list[Candidate] = []
+        seen_scroll_rows: set[str] = set()
+        for index, snapshot in enumerate(result.variant_snapshots):
+            content = snapshot.get("content")
+            if not isinstance(content, bytes):
+                continue
+            item = replace(result, content=content, final_url=snapshot.get("final_url", result.final_url),
+                           fetched_at=snapshot.get("fetched_at", result.fetched_at), variant_snapshots=[])
+            selections = snapshot.get("selections") or {}
+            selection_values = snapshot.get("selection_values") or {}
+            for candidate in extract(item, source):
+                if isinstance(selections, dict) and "scroll_items" in selections:
+                    key = json.dumps([candidate.locator, candidate.fields, candidate.specs],
+                                     ensure_ascii=False, sort_keys=True, default=str)
+                    if key in seen_scroll_rows:
+                        continue
+                    seen_scroll_rows.add(key)
+                candidate.locator = f"capture:{index + 1}/{candidate.locator}"
+                candidate.derived_values["capture_snapshot_index"] = index
+                # A visible ready marker may already be visible from the prior
+                # choice. It does not prove that a quoted price has settled.
+                if selection_values:
+                    candidate.review_flags.append("selection_price_settlement_unconfirmed")
+                if isinstance(selections, dict):
+                    for selector, label in selections.items():
+                        if selector in {"page", "scroll_items"}:
+                            continue
+                        candidate.specs[f"selected:{selector}"] = str(label)
+                        candidate.evidence[f"spec:selected:{selector}"] = _evidence(
+                            f"capture:{index + 1} {selector}", str(label),
+                            display="visible", proof_kind="browser_selection"
+                        )
+                        if isinstance(selection_values, dict) and selector in selection_values:
+                            value = str(selection_values[selector])
+                            candidate.specs[f"selected_value:{selector}"] = value
+                            candidate.evidence[f"spec:selected_value:{selector}"] = _evidence(
+                                f"capture:{index + 1} {selector}::value", value,
+                                display="unconfirmed", proof_kind="source_metadata"
+                            )
+                    candidate.evidence["_selection"] = _evidence(
+                        f"capture:{index + 1}", dict(selections), display="visible", proof_kind="browser_selection"
+                    )
+                candidates.append(candidate)
+        return candidates
     if source.adapter:
         from .adapters import extract_adapter
 

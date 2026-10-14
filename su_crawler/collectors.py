@@ -6,7 +6,7 @@ source bytes and observations about the fetch; they never invent fields.
 from __future__ import annotations
 
 import asyncio
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 import hashlib
 import importlib.util
 import ipaddress
@@ -14,6 +14,8 @@ import mimetypes
 import socket
 import re
 import time
+import threading
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlsplit
@@ -23,10 +25,14 @@ import httpx
 
 from .models import FetchResult, Source, resolve_path, utc_now
 from .browser_runtime import browser_headless, select_browser_runtime
+from .browser_enumeration import SnapshotBudgetExceeded, enumerate_buttons, enumerate_options, paginate, scroll_list, validate_enumeration_step
+from .access_challenges import detect_challenge
 
 
 USER_AGENT = "source-ledger/0.3 (+authorized price research)"
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
+MAX_VARIANT_SNAPSHOTS = 200
+MAX_VARIANT_BYTES = 32 * 1024 * 1024
 MAX_REDIRECTS = 10
 WELL_KNOWN_NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _PASSWORD_FIELD = re.compile(r"<input\b[^>]*(?:type\s*=\s*['\"]?password|name\s*=\s*['\"]password['\"]?)", re.I)
@@ -40,6 +46,50 @@ class PolicyError(ValueError):
         self.code = code
 
 
+class RobotsUnavailable(Exception):
+    """The site's robots policy could not be checked safely."""
+
+
+class RobotsPolicyCache:
+    """A bounded cache owned by one collection job, shareable across workers."""
+
+    def __init__(self, ttl_seconds: float = 300.0) -> None:
+        self.ttl_seconds = ttl_seconds
+        self._entries: dict[tuple[Any, ...], tuple[float, RobotFileParser | None, str]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key: tuple[Any, ...]) -> tuple[RobotFileParser | None, str] | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            if entry[0] <= time.monotonic():
+                del self._entries[key]
+                return None
+            return entry[1], entry[2]
+
+    def put(self, key: tuple[Any, ...], parser: RobotFileParser | None, reason: str) -> None:
+        with self._lock:
+            if len(self._entries) >= 256:
+                oldest = min(self._entries, key=lambda item: self._entries[item][0])
+                del self._entries[oldest]
+            self._entries[key] = (time.monotonic() + self.ttl_seconds, parser, reason)
+
+
+_robots_cache: ContextVar[RobotsPolicyCache | None] = ContextVar("robots_policy_cache", default=None)
+
+
+@contextmanager
+def robots_policy_scope(cache: RobotsPolicyCache | None = None) -> Any:
+    """Reuse robots rules within this job only; pass cache to parallel workers."""
+    shared = cache or RobotsPolicyCache()
+    token = _robots_cache.set(shared)
+    try:
+        yield shared
+    finally:
+        _robots_cache.reset(token)
+
+
 def _policy_error(code: str, message: str) -> PolicyError:
     return PolicyError(code, message)
 
@@ -48,10 +98,12 @@ def _policy_trace(error: PolicyError) -> list[dict[str, Any]]:
     return [{"event": "policy_denied", "code": error.code, "at": utc_now()}]
 
 
-def _policy_result(source: Source, backend: str, error: PolicyError, *, trace: list[dict[str, Any]] | None = None) -> FetchResult:
+def _policy_result(source: Source, backend: str, error: PolicyError, *, trace: list[dict[str, Any]] | None = None,
+                   variant_snapshots: list[dict[str, Any]] | None = None) -> FetchResult:
     entries = list(trace or [])
     entries.extend(_policy_trace(error))
-    return _result(source, backend, "policy_denied", message=f"Request denied by policy ({error.code})", trace=entries)
+    return _result(source, backend, "policy_denied", message=f"Request denied by policy ({error.code})",
+                   trace=entries, variant_snapshots=variant_snapshots or [])
 
 
 def _host_allowed(host: str, allowed_domains: list[str]) -> bool:
@@ -190,6 +242,15 @@ def _result(source: Source, backend: str, status: str, **kwargs: Any) -> FetchRe
     return FetchResult(source_id=source.id, backend=backend, status=status, **kwargs)
 
 
+def _challenge_trace(challenge: dict[str, str]) -> dict[str, str]:
+    return {"event": "access_challenge", **challenge, "at": utc_now()}
+
+
+class _AccessChallengeFound(Exception):
+    def __init__(self, challenge: dict[str, str]) -> None:
+        self.challenge = challenge
+
+
 def _file_collect(source: Source, base_dir: str) -> FetchResult:
     configured_root = getattr(source, "file_root", None)
     base = resolve_path(base_dir, configured_root) if configured_root else Path(base_dir).resolve()
@@ -217,11 +278,14 @@ def _file_collect(source: Source, base_dir: str) -> FetchResult:
 
 def _get_following_policy(
     client: httpx.Client, source: Source, url: str, *, headers: dict[str, str] | None = None,
+    enforce_robots: bool = False,
 ) -> tuple[httpx.Response, list[dict[str, Any]]]:
     trace: list[dict[str, Any]] = []
     current = url
     for _ in range(MAX_REDIRECTS + 1):
         _check_url(source, current)
+        if enforce_robots:
+            _require_robots_access(client, source, current)
         # Validators can identify a prior response, so never forward them to a
         # redirect target (including another allowed domain).
         request_headers = headers if current == url else None
@@ -241,10 +305,20 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
     """Return allowed/disallowed/unavailable without treating fetch errors as rules."""
     parsed = urlsplit(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+    cache = _robots_cache.get()
+    key = (parsed.scheme, parsed.netloc.lower(), USER_AGENT, tuple(sorted(source.allowed_domains)), source.internal)
+    cached = cache.get(key) if cache is not None else None
+    if cached is not None:
+        parser, reason = cached
+        if parser is None:
+            return "unavailable" if reason != "robots.txt not found" else "allowed", reason
+        return ("allowed", "robots.txt allows collection") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt disallows collection")
     try:
         response, _ = _get_following_policy(client, source, robots_url)
         if response.status_code in {404, 410}:
             response.close()
+            if cache is not None:
+                cache.put(key, None, "robots.txt not found")
             return "allowed", "robots.txt not found"
         if response.status_code in {401, 403}:
             response.close()
@@ -255,13 +329,26 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
         if response.status_code >= 500:
             response.close()
             return "unavailable", "robots.txt server error"
-        data = _read_limited(response).decode(response.encoding or "utf-8", errors="replace")
+        try:
+            data = _read_limited(response).decode(response.encoding or "utf-8", errors="replace")
+        finally:
+            response.close()
         parser = RobotFileParser()
         parser.set_url(robots_url)
         parser.parse(data.splitlines())
+        if cache is not None:
+            cache.put(key, parser, "robots.txt policy loaded")
         return ("allowed", "robots.txt allows collection") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt disallows collection")
     except (httpx.HTTPError, OSError, ValueError, PolicyError):
         return "unavailable", "Unable to check robots.txt"
+
+
+def _require_robots_access(client: httpx.Client, source: Source, url: str) -> None:
+    decision, reason = _robots_decision(client, source, url)
+    if decision == "disallowed":
+        raise _policy_error("robots_disallowed", "robots.txt does not allow collection")
+    if decision == "unavailable":
+        raise RobotsUnavailable(reason)
 
 
 def _safe_validator(value: Any) -> str | None:
@@ -296,19 +383,13 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
         return _policy_result(source, "http", exc)
     timeout = httpx.Timeout(source.timeout_seconds)
     try:
-        with httpx.Client(
+        with robots_policy_scope(_robots_cache.get()), httpx.Client(
             timeout=timeout,
             follow_redirects=False,
             headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/json,*/*;q=0.8"},
             trust_env=False,
         ) as client:
-            if source.respect_robots:
-                robots, reason = _robots_decision(client, source, source.location)
-                if robots == "disallowed":
-                    return _result(source, "http", "policy_denied", message="robots.txt does not allow collection")
-                if robots == "unavailable":
-                    return _result(source, "http", "failed", message=reason)
-            response, trace = _get_following_policy(client, source, source.location, headers=_conditional_headers(validators))
+            response, trace = _get_following_policy(client, source, source.location, headers=_conditional_headers(validators), enforce_robots=source.respect_robots)
             final_url = str(response.url)
             metadata = _http_metadata(response)
             if response.status_code == 304:
@@ -319,7 +400,16 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
                 return _result(source, "http", "needs_auth", final_url=final_url, message="HTTP 401 authentication required", trace=trace)
             if response.status_code in {403, 429}:
                 status = response.status_code
-                response.close()
+                media = response.headers.get("content-type", "").split(";", 1)[0].lower()
+                try:
+                    challenge = detect_challenge(_read_limited(response), status) if media in {"text/html", "application/xhtml+xml"} else None
+                except ValueError:
+                    challenge = None
+                finally:
+                    response.close()
+                if challenge:
+                    trace.append(_challenge_trace(challenge))
+                    return _result(source, "http", "blocked", final_url=final_url, message=f"HTTP {status} access challenge", trace=trace, http_metadata=metadata)
                 code = "rate_limited" if status == 429 else "access_forbidden"
                 trace.append({"event": "access_blocked", "code": code, "at": utc_now()})
                 return _result(source, "http", "blocked", final_url=final_url, message=f"HTTP {status} {code}", trace=trace, http_metadata=metadata)
@@ -328,13 +418,21 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
                 response.close()
                 return _result(source, "http", "failed", final_url=final_url, message=f"HTTP {status}", trace=trace, http_metadata=metadata)
             content = _read_limited(response)
-            media = response.headers.get("content-type", "").split(";", 1)[0] or _media_type(final_url)
+            media = response.headers.get("content-type", "").split(";", 1)[0].lower() or _media_type(final_url)
             if media in {"text/html", "application/xhtml+xml"}:
+                challenge = detect_challenge(content, response.status_code)
+                if challenge:
+                    trace.append(_challenge_trace(challenge))
+                    return _result(source, "http", "blocked", final_url=final_url, message="Access challenge detected", trace=trace, http_metadata=metadata)
                 if _is_auth_page(content, response.encoding or "utf-8"):
                     return _result(source, "http", "needs_auth", content=content, media_type=media, final_url=final_url, message="Login page detected", trace=trace, http_metadata=metadata)
             return _result(source, "http", "fetched", content=content, media_type=media, final_url=final_url, trace=trace, http_metadata=metadata)
     except PolicyError as exc:
+        if exc.code == "robots_disallowed":
+            return _result(source, "http", "policy_denied", message="robots.txt does not allow collection", trace=_policy_trace(exc))
         return _policy_result(source, "http", exc)
+    except RobotsUnavailable as exc:
+        return _result(source, "http", "failed", message=str(exc))
     except httpx.TimeoutException:
         return _result(source, "http", "timeout", message="Request timed out")
     except (httpx.HTTPError, OSError, ValueError) as exc:
@@ -343,8 +441,14 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
 
 def _safe_step(step: dict[str, Any]) -> tuple[str, str]:
     action = str(step.get("action", ""))
-    if action not in {"click", "select", "fill", "wait_for", "assert_text", "expand_list"}:
+    if action not in {"click", "select", "fill", "wait_for", "assert_text", "expand_list", "enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}:
         raise _policy_error("browser_action_denied", "Browser action is not allowed")
+    if action in {"enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}:
+        try:
+            validate_enumeration_step(step)
+        except ValueError as exc:
+            raise _policy_error("invalid_recipe", str(exc)) from exc
+        return action, step["selectors"][0] if action == "enumerate_options" else step["selector"]
     selector = step.get("selector")
     if not isinstance(selector, str) or not selector.strip():
         raise _policy_error("invalid_recipe", "Browser action requires a selector")
@@ -638,6 +742,110 @@ def _close_browser_resources(context: Any, browser: Any) -> None:
             pass
 
 
+def _close_reusable_context(context: Any, session: "_ReusableBrowser") -> None:
+    """Retire a session if its page isolation could not be torn down."""
+    try:
+        context.unroute_all(behavior="ignoreErrors")
+        context.close()
+    except Exception:
+        session.close()
+
+
+_browser_thread_state = threading.local()
+
+
+class _ReusableBrowser:
+    """A Chromium process owned exclusively by its calling worker thread."""
+
+    def __init__(self) -> None:
+        self.owner = threading.get_ident()
+        self.playwright: Any = None
+        self.browser: Any = None
+        self.last_launch_ms = 0.0
+        self.last_context_ms = 0.0
+
+    def context(self, timeout_ms: float) -> Any:
+        if threading.get_ident() != self.owner:
+            raise RuntimeError("Browser session used from another thread")
+        deadline = time.monotonic() + timeout_ms / 1000
+
+        def remaining_ms() -> float:
+            remaining = (deadline - time.monotonic()) * 1000
+            if remaining <= 0:
+                from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+                raise PlaywrightTimeoutError("Browser session startup exceeded collection deadline")
+            return remaining
+
+        if self.browser is not None and not self.browser.is_connected():
+            self.close()
+        if self.browser is None:
+            from playwright.sync_api import sync_playwright
+
+            self.playwright = sync_playwright().start()
+            try:
+                runtime = select_browser_runtime(self.playwright.chromium)
+                if runtime is None:
+                    raise RuntimeError("No supported Chromium browser executable was found")
+                launch_started = time.monotonic()
+                self.browser = self.playwright.chromium.launch(
+                    timeout=remaining_ms(),
+                    headless=browser_headless(),
+                    **runtime.launch_options(),
+                )
+                self.last_launch_ms = round((time.monotonic() - launch_started) * 1000, 1)
+            except Exception:
+                self.close()
+                raise
+        else:
+            self.last_launch_ms = 0.0
+        remaining_ms()
+        context_started = time.monotonic()
+        context = self.browser.new_context()
+        self.last_context_ms = round((time.monotonic() - context_started) * 1000, 1)
+        return context
+
+    def close(self) -> None:
+        if threading.get_ident() != self.owner:
+            raise RuntimeError("Browser session closed from another thread")
+        browser, playwright = self.browser, self.playwright
+        self.browser = self.playwright = None
+        if browser is not None:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
+
+
+@contextmanager
+def browser_session(reuse: bool = True) -> Any:
+    """Reuse Chromium on this thread; each URL still receives a fresh context.
+
+    The caller must enter and leave on the same worker thread. Profile-backed
+    sources always use their own persistent context outside this process pool.
+    """
+    if not reuse:
+        yield
+        return
+    previous = getattr(_browser_thread_state, "session", None)
+    if previous is not None:
+        # Nested scopes share the same owner and only the outer scope closes it.
+        yield
+        return
+    session = _ReusableBrowser()
+    _browser_thread_state.session = session
+    try:
+        yield
+    finally:
+        _browser_thread_state.session = None
+        session.close()
+
+
 def _browser_collect(source: Source, base_dir: str) -> FetchResult:
     try:
         _check_url(source, source.location)
@@ -650,6 +858,9 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
         return _result(source, "playwright", "tool_unavailable", message="The playwright package is not installed")
 
     trace: list[dict[str, Any]] = []
+    variant_snapshots: list[dict[str, Any]] = []
+    variant_bytes = 0
+    challenge_seen: dict[str, str] | None = None
     deadline = time.monotonic() + source.timeout_seconds
 
     def remaining_ms() -> float:
@@ -658,24 +869,58 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             raise PlaywrightTimeoutError("collection deadline exceeded")
         return remaining
 
+    def challenge_result(challenge: dict[str, str], final_url: str) -> FetchResult:
+        trace.append(_challenge_trace(challenge))
+        return _result(source, "playwright", "blocked", final_url=final_url,
+                       message="Access challenge detected", trace=trace,
+                       variant_snapshots=variant_snapshots)
+
     context = None
     browser = None
+    navigation_robots_failure: list[Exception] = []
+    pending_redirect: list[str] = []
+
+    def require_navigation_policy() -> None:
+        if navigation_robots_failure:
+            raise navigation_robots_failure[-1]
+
     try:
-        with sync_playwright() as pw, ExitStack() as cleanup:
+        session = None if source.profile_dir else getattr(_browser_thread_state, "session", None)
+        with ExitStack() as cleanup:
+            cleanup.enter_context(robots_policy_scope(_robots_cache.get()))
+            robots_client = None
+            if source.respect_robots:
+                robots_client = cleanup.enter_context(httpx.Client(
+                    timeout=httpx.Timeout(min(source.timeout_seconds, max(0.1, deadline - time.monotonic()))),
+                    follow_redirects=False, headers={"User-Agent": USER_AGENT}, trust_env=False,
+                ))
+                _require_robots_access(robots_client, source, source.location)
             # Unroute and close while Playwright's driver is still running.
             # An outer finally executes too late: __exit__ already stops it.
-            cleanup.callback(lambda: _close_browser_resources(context, browser))
-            runtime = select_browser_runtime(pw.chromium)
-            if runtime is None:
-                return _result(source, "playwright", "tool_unavailable", message="No supported Chromium browser executable was found", trace=trace)
-            launch_args: dict[str, Any] = {"headless": browser_headless(), **runtime.launch_options()}
-            if source.profile_dir:
-                profile = resolve_path(base_dir, source.profile_dir)
-                profile.mkdir(parents=True, exist_ok=True)
-                context = pw.chromium.launch_persistent_context(str(profile), timeout=remaining_ms(), **launch_args)
+            if session is not None:
+                startup_started = time.monotonic()
+                context = session.context(remaining_ms())
+                trace.append({"event": "browser_context_ready", "startup_ms": round((time.monotonic() - startup_started) * 1000, 1), "launch_ms": session.last_launch_ms, "context_ms": session.last_context_ms, "reused": session.last_launch_ms == 0, "at": utc_now()})
+                cleanup.callback(lambda: _close_reusable_context(context, session))
             else:
-                browser = pw.chromium.launch(timeout=remaining_ms(), **launch_args)
-                context = browser.new_context()
+                startup_started = time.monotonic()
+                pw = cleanup.enter_context(sync_playwright())
+                cleanup.callback(lambda: _close_browser_resources(context, browser))
+                runtime = select_browser_runtime(pw.chromium)
+                if runtime is None:
+                    return _result(source, "playwright", "tool_unavailable", message="No supported Chromium browser executable was found", trace=trace)
+                launch_args: dict[str, Any] = {"headless": browser_headless(), **runtime.launch_options()}
+                launch_started = time.monotonic()
+                if source.profile_dir:
+                    profile = resolve_path(base_dir, source.profile_dir)
+                    profile.mkdir(parents=True, exist_ok=True)
+                    context = pw.chromium.launch_persistent_context(str(profile), timeout=remaining_ms(), **launch_args)
+                else:
+                    browser = pw.chromium.launch(timeout=remaining_ms(), **launch_args)
+                    launch_ms = round((time.monotonic() - launch_started) * 1000, 1)
+                    context_started = time.monotonic()
+                    context = browser.new_context()
+                trace.append({"event": "browser_context_ready", "startup_ms": round((time.monotonic() - startup_started) * 1000, 1), "launch_ms": launch_ms if not source.profile_dir else round((time.monotonic() - launch_started) * 1000, 1), "context_ms": round((time.monotonic() - context_started) * 1000, 1) if not source.profile_dir else 0.0, "reused": False, "at": utc_now()})
 
             # Recipes may change filters but must never submit a form or create
             # external side effects. This runs before any page JavaScript.
@@ -684,10 +929,41 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             def guard(route: Any, request: Any) -> None:
                 if request.is_navigation_request() and request.frame == request.frame.page.main_frame:
                     try:
+                        if request.method.upper() not in {"GET", "HEAD"}:
+                            raise _policy_error("navigation_method_denied", "Browser navigation method is not allowed")
                         _check_url(source, request.url)
-                    except PolicyError:
+                        if robots_client is not None:
+                            _require_robots_access(robots_client, source, request.url)
+                        # Browser-followed redirects do not reliably trigger a
+                        # route callback. Stop at this response and perform the
+                        # next navigation explicitly so each hop is checked.
+                        response = route.fetch(max_redirects=0, timeout=remaining_ms())
+                        if response.status in {301, 302, 303, 307, 308}:
+                            location = response.headers.get("location")
+                            if location:
+                                destination = urljoin(request.url, location)
+                                _check_url(source, destination)
+                                if robots_client is not None:
+                                    _require_robots_access(robots_client, source, destination)
+                                pending_redirect.append(destination)
+                                trace.append({"event": "navigation_redirect_verified", "url": _safe_url(destination), "at": utc_now()})
+                                route.abort("blockedbyclient")
+                                return
+                        route.fulfill(response=response)
+                        return
+                    except RobotsUnavailable as exc:
+                        navigation_robots_failure.append(exc)
+                        trace.append({"event": "navigation_robots_unavailable", "url": _safe_url(request.url), "at": utc_now()})
+                        route.abort("blockedbyclient")
+                        return
+                    except PolicyError as exc:
+                        navigation_robots_failure.append(exc)
                         trace.append({"event": "navigation_denied", "url": _safe_url(request.url), "at": utc_now()})
                         route.abort("blockedbyclient")
+                        return
+                    except Exception:
+                        trace.append({"event": "navigation_fetch_failed", "url": _safe_url(request.url), "at": utc_now()})
+                        route.abort("failed")
                         return
                 elif urlsplit(request.url).scheme in {"http", "https"}:
                     parsed = urlsplit(request.url)
@@ -716,23 +992,71 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                     return
 
             page.on("response", observe_response)
-            if source.respect_robots:
-                with httpx.Client(timeout=httpx.Timeout(min(source.timeout_seconds, max(0.1, deadline - time.monotonic()))), follow_redirects=False, headers={"User-Agent": USER_AGENT}, trust_env=False) as client:
-                    robots, reason = _robots_decision(client, source, source.location)
-                    if robots == "disallowed":
-                        return _result(source, "playwright", "policy_denied", message="robots.txt does not allow collection", trace=trace)
-                    if robots == "unavailable":
-                        return _result(source, "playwright", "failed", message=reason, trace=trace)
-            navigation = page.goto(source.location, wait_until="domcontentloaded", timeout=remaining_ms())
+
+            def navigate_checked(url: str) -> Any:
+                target = url
+                for _ in range(MAX_REDIRECTS + 1):
+                    try:
+                        response = page.goto(target, wait_until="domcontentloaded", timeout=remaining_ms())
+                    except Exception:
+                        if not pending_redirect:
+                            raise
+                        # Chromium commits its error page after the aborted
+                        # request. Wait for that commit before navigating again
+                        # in the same tab so sessionStorage and window.name stay.
+                        page.wait_for_url(
+                            lambda current: str(current).startswith("chrome-error://"),
+                            wait_until="commit", timeout=remaining_ms(),
+                        )
+                        document_status.clear()
+                        response = None
+                    require_navigation_policy()
+                    if pending_redirect:
+                        target = pending_redirect.pop()
+                        continue
+                    return response
+                raise _policy_error("redirect_limit_exceeded", "Redirect limit exceeded")
+
+            navigation_started = time.monotonic()
+            navigation = navigate_checked(source.location)
+            require_navigation_policy()
+            trace.append({"event": "navigation_timing", "duration_ms": round((time.monotonic() - navigation_started) * 1000, 1), "at": utc_now()})
             _check_url(source, page.url)
             status = navigation.status if navigation else 0
             trace.append({"event": "navigate", "url": _safe_url(page.url), "status": status, "at": utc_now()})
             if status == 401:
                 return _result(source, "playwright", "needs_auth", final_url=page.url, message="HTTP 401 authentication required", trace=trace)
             if status in {403, 429}:
+                challenge = detect_challenge(_evidence_html_snapshot(page), status)
+                if challenge:
+                    return challenge_result(challenge, page.url)
                 return _result(source, "playwright", "blocked", final_url=page.url, message=f"HTTP {status} access restricted", trace=trace)
             if status >= 400:
                 return _result(source, "playwright", "failed", final_url=page.url, message=f"HTTP {status}", trace=trace)
+
+            initial_challenge = detect_challenge(_evidence_html_snapshot(page), status)
+            if initial_challenge:
+                return challenge_result(initial_challenge, page.url)
+
+            def capture_variant(selections: dict[str, str], selection_values: dict[str, str] | None = None) -> None:
+                nonlocal variant_bytes, challenge_seen
+                require_navigation_policy()
+                _check_url(source, page.url)
+                if len(variant_snapshots) >= MAX_VARIANT_SNAPSHOTS:
+                    raise SnapshotBudgetExceeded()
+                html = _evidence_html_snapshot(page)
+                challenge = detect_challenge(html, document_status.get("latest", 200))
+                if challenge:
+                    challenge_seen = challenge
+                    raise _AccessChallengeFound(challenge)
+                if len(html) > MAX_RESPONSE_BYTES or _is_auth_page(html):
+                    raise ValueError("unsafe_or_oversized_snapshot")
+                if variant_bytes + len(html) > MAX_VARIANT_BYTES:
+                    raise SnapshotBudgetExceeded()
+                variant_snapshots.append({"content": html, "final_url": page.url,
+                                          "fetched_at": utc_now(), "selections": selections,
+                                          "selection_values": selection_values or {}})
+                variant_bytes += len(html)
 
             for index, step in enumerate(source.recipe):
                 action, selector = _safe_step(step)
@@ -740,7 +1064,11 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 timeout_ms = min(requested_ms, remaining_ms())
                 locator = page.locator(selector).first
                 if action == "click":
-                    locator.click(timeout=timeout_ms)
+                    try:
+                        locator.click(timeout=timeout_ms)
+                    except Exception:
+                        if not pending_redirect:
+                            raise
                 elif action == "select":
                     value = step.get("value")
                     if not isinstance(value, str):
@@ -762,20 +1090,45 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                         raise AssertionError("Browser text assertion failed")
                 elif action == "expand_list":
                     _expand_list(page, step, remaining_ms, trace)
+                elif action == "enumerate_options":
+                    enumerate_options(page, step, remaining_ms, capture_variant, trace, source.unavailable_markers)
+                elif action == "enumerate_buttons":
+                    enumerate_buttons(page, step, remaining_ms, capture_variant, trace, source.unavailable_markers)
+                elif action == "paginate":
+                    paginate(page, step, remaining_ms, capture_variant, trace)
+                elif action == "scroll_list":
+                    scroll_list(page, step, remaining_ms, capture_variant, trace)
+                if challenge_seen:
+                    return challenge_result(challenge_seen, page.url)
+                if pending_redirect:
+                    navigate_checked(pending_redirect.pop())
                 # Inputs and expected text are deliberately excluded from trace.
                 trace.append({"event": "recipe_step", "index": index, "action": action, "selector": _safe_selector(selector), "url": _safe_url(page.url), "at": utc_now()})
+                require_navigation_policy()
                 _check_url(source, page.url)
                 latest_status = document_status.get("latest", 0)
                 if latest_status == 401:
-                    return _result(source, "playwright", "needs_auth", final_url=page.url, message="HTTP 401 authentication required", trace=trace)
+                    return _result(source, "playwright", "needs_auth", final_url=page.url, message="HTTP 401 authentication required", trace=trace, variant_snapshots=variant_snapshots)
                 if latest_status in {403, 429}:
-                    return _result(source, "playwright", "blocked", final_url=page.url, message=f"HTTP {latest_status} access restricted", trace=trace)
+                    challenge = detect_challenge(_evidence_html_snapshot(page), latest_status)
+                    if challenge:
+                        return challenge_result(challenge, page.url)
+                    return _result(source, "playwright", "blocked", final_url=page.url, message=f"HTTP {latest_status} access restricted", trace=trace, variant_snapshots=variant_snapshots)
                 if latest_status >= 400:
-                    return _result(source, "playwright", "failed", final_url=page.url, message=f"HTTP {latest_status}", trace=trace)
+                    return _result(source, "playwright", "failed", final_url=page.url, message=f"HTTP {latest_status}", trace=trace, variant_snapshots=variant_snapshots)
+                challenge = detect_challenge(_evidence_html_snapshot(page), latest_status or 200)
+                if challenge:
+                    return challenge_result(challenge, page.url)
 
+            evidence_started = time.monotonic()
+            require_navigation_policy()
             html = _evidence_html_snapshot(page)
+            challenge = detect_challenge(html, document_status.get("latest", 200))
+            if challenge:
+                return challenge_result(challenge, page.url)
             if _is_auth_page(html):
-                return _result(source, "playwright", "needs_auth", content=html, media_type="text/html", final_url=page.url, message="Login page detected", trace=trace)
+                return _result(source, "playwright", "needs_auth", final_url=page.url,
+                               message="Login page detected", trace=trace, variant_snapshots=variant_snapshots)
             try:
                 screenshot = page.screenshot(full_page=True, timeout=remaining_ms())
             except PlaywrightTimeoutError:
@@ -788,18 +1141,44 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 trace.append({"event": "selected_control_states", "controls": controls, "at": utc_now()})
             except PlaywrightTimeoutError:
                 trace.append({"event": "selected_control_states_unavailable", "reason": "deadline", "at": utc_now()})
-            return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url, screenshot=screenshot, trace=trace)
+            trace.append({"event": "evidence_timing", "duration_ms": round((time.monotonic() - evidence_started) * 1000, 1), "at": utc_now()})
+            return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url, screenshot=screenshot, trace=trace, variant_snapshots=variant_snapshots)
+    except _AccessChallengeFound as exc:
+        return challenge_result(exc.challenge, page.url)
     except PlaywrightTimeoutError:
-        return _result(source, "playwright", "timeout", message="Browser action timed out", trace=trace)
+        if navigation_robots_failure:
+            failure = navigation_robots_failure[-1]
+            if isinstance(failure, RobotsUnavailable):
+                return _result(source, "playwright", "failed", message=str(failure), trace=trace, variant_snapshots=variant_snapshots)
+            return _policy_result(source, "playwright", failure, trace=trace, variant_snapshots=variant_snapshots)
+        return _result(source, "playwright", "timeout", message="Browser action timed out", trace=trace, variant_snapshots=variant_snapshots)
     except PolicyError as exc:
-        return _policy_result(source, "playwright", exc, trace=trace)
+        if exc.code == "robots_disallowed":
+            return _result(source, "playwright", "policy_denied", message="robots.txt does not allow collection", trace=trace + _policy_trace(exc), variant_snapshots=variant_snapshots)
+        return _policy_result(source, "playwright", exc, trace=trace, variant_snapshots=variant_snapshots)
+    except RobotsUnavailable as exc:
+        return _result(source, "playwright", "failed", message=str(exc), trace=trace, variant_snapshots=variant_snapshots)
     except AssertionError as exc:
-        return _result(source, "playwright", "failed", message=str(exc), trace=trace)
+        return _result(source, "playwright", "failed", message=str(exc), trace=trace, variant_snapshots=variant_snapshots)
     except Exception as exc:
+        if navigation_robots_failure:
+            failure = navigation_robots_failure[-1]
+            if isinstance(failure, RobotsUnavailable):
+                return _result(source, "playwright", "failed", message=str(failure), trace=trace, variant_snapshots=variant_snapshots)
+            return _policy_result(source, "playwright", failure, trace=trace, variant_snapshots=variant_snapshots)
         text = str(exc)
-        if "Executable doesn't exist" in text or "browserType.launch" in text:
-            return _result(source, "playwright", "tool_unavailable", message="Playwright browser executable is unavailable", trace=trace)
-        return _result(source, "playwright", "failed", message=f"Browser collection failed ({type(exc).__name__})", trace=trace)
+        if session is not None:
+            try:
+                if session.browser is not None and not session.browser.is_connected():
+                    session.close()
+            except Exception:
+                session.close()
+        if "Executable doesn't exist" in text or "No supported Chromium browser executable" in text:
+            return _result(source, "playwright", "tool_unavailable", message="Playwright browser executable is unavailable", trace=trace, variant_snapshots=variant_snapshots)
+        if "browsertype.launch" in text.casefold() or "browsertype.launchpersistentcontext" in text.casefold():
+            trace.append({"event": "browser_launch_failed", "code": "browser_launch_failed", "at": utc_now()})
+            return _result(source, "playwright", "failed", message="Chromium could not start in the selected display mode; run the optional browser launch check", trace=trace, variant_snapshots=variant_snapshots)
+        return _result(source, "playwright", "failed", message=f"Browser collection failed ({type(exc).__name__})", trace=trace, variant_snapshots=variant_snapshots)
 
 
 async def _crawl4ai_run(url: str, timeout_seconds: float) -> tuple[str, str]:

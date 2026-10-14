@@ -44,8 +44,9 @@ def build_assistant_server(root: str | Path):
             "URL count, page/time limits, checkpoints, and actual execution mode to the user. "
             "Recommend Sol for Codex and Opus for Claude, but preserve the user's selected model. "
             "State the host model only if actually known; this MCP server cannot switch the host model. "
-            "Recommend bounded concurrency 2 in one workspace, with per-host pacing and browser concurrency 1. "
-            "Show effective limits and use the same concurrency in preview and start. "
+            "Recommend bounded concurrency 2 in one workspace with per-host pacing. Browser concurrency "
+            "defaults to 1; browser reuse and browser concurrency 2 are opt-in. "
+            "Show effective limits and use the same settings in preview and start. "
             "If the user opted into Exa in the host app, prepare_external_discovery normalizes its results; "
             "it never calls Exa or verifies prices. Do not activate external paid services automatically. "
             "Apply additions/removals with update_research_plan. Only after the user approves the displayed "
@@ -63,7 +64,15 @@ def build_assistant_server(root: str | Path):
             " After starting a job, call get_research_progress for small page counts and report readiness. "
             "Use wait_for_job to avoid rapid polling; then fetch observations in bounded pages. "
             "After collection, call get_research_gaps. Use retry_research_pages only for listed retryable URLs. "
+            "Inspect get_collection_issues for persistent causes and next actions. For dynamic pages, inspect the site "
+            "and propose bounded collection_rules through update_research_plan; explain the controls and readiness "
+            "signals before renewed confirmation. Use existing authorized profiles only when explicitly provided. "
+            "Triage does not establish price verification or whole-site completeness. "
             "Use available browser tools to inspect unresolved pages, then submit_browser_evidence with literal source text. "
+            "For a browser-handoff issue call prepare_browser_recovery. Only when your browser tool and its policies "
+            "support the interaction, reserve one attempt with begin_browser_recovery before acting and record it "
+            "with finish_browser_recovery. Never claim access from a checkbox alone. Unsupported or repeated "
+            "challenges require user handoff. Do not use paid solving APIs or assume browser-session transfer. "
             "Submitted evidence is review-only, never proof of independent verification. Never invent missing fields."
         ),
     )
@@ -157,6 +166,9 @@ def build_assistant_server(root: str | Path):
         changes may include request_text, topic, summary, categories, include_terms, exclude_terms,
         conditions [{field,operator,value}],
         selected_candidate_ids, removed_candidate_ids, added_candidates [{url,name?,kind?,reason?}].
+        collection_rules maps exact candidate URLs to reviewed {recipe, selectors, row_selector?, profile_dir?}.
+        Recipes can enumerate bounded lists/options. Explain selectors, scope and limits before confirmation.
+        profile_dir is an existing workspace-relative authorized browser profile, never credentials.
         Keep the full original request when adding refinement. Removals persist across regeneration.
         """
         return plans.revise_plan(base, plan_id, expected_revision, changes)
@@ -165,7 +177,8 @@ def build_assistant_server(root: str | Path):
     def get_research_execution_plan(plan_id: str, expected_revision: int,
                                     provider: str = "connected", model: str = "",
                                     max_pages: int = 10, max_seconds: float = 120,
-                                    follow_links: bool = False, concurrency: int = 2) -> dict[str, Any]:
+                                    follow_links: bool = False, concurrency: int = 2,
+                                    browser_reuse: bool = False, browser_concurrency: int = 1) -> dict[str, Any]:
         """Show model recommendations, selected sites and actual execution mode before collection.
 
         Does not search, call a model, confirm, or start workers. Preserve the user's model choice.
@@ -173,7 +186,8 @@ def build_assistant_server(root: str | Path):
         user to approve the plan. After scope or budget changes, get an updated brief.
         """
         return preview_execution(base, plan_id, expected_revision, provider, model,
-                                 max_pages, max_seconds, follow_links, concurrency)
+                                 max_pages, max_seconds, follow_links, concurrency,
+                                 browser_reuse, browser_concurrency)
 
     @server.tool(annotations=mutate)
     def confirm_research_plan(plan_id: str, expected_revision: int, user_confirmed: bool) -> dict[str, Any]:
@@ -186,7 +200,8 @@ def build_assistant_server(root: str | Path):
 
     @server.tool(annotations=open_world)
     def start_research_plan(plan_id: str, expected_revision: int, max_pages: int = 10,
-                            max_seconds: float = 120, follow_links: bool = False, concurrency: int = 2) -> dict[str, Any]:
+                            max_seconds: float = 120, follow_links: bool = False, concurrency: int = 2,
+                            browser_reuse: bool = False, browser_concurrency: int = 1) -> dict[str, Any]:
         """Start bounded collection of the confirmed revision and its selected URLs; auto-start the worker.
 
         First show get_research_execution_plan, including model, sites and actual execution mode.
@@ -197,12 +212,15 @@ def build_assistant_server(root: str | Path):
         """
         return start_plan_job(base, "research_plan", {"plan_id": plan_id, "expected_revision": expected_revision,
                                                     "max_pages": max_pages, "max_seconds": max_seconds,
-                                                    "follow_links": follow_links, "concurrency": concurrency})
+                                                    "follow_links": follow_links, "concurrency": concurrency,
+                                                    "browser_reuse": browser_reuse,
+                                                    "browser_concurrency": browser_concurrency})
 
     @server.tool(annotations=read_only)
     def get_research_batch_execution_plan(plan_id: str, expected_revision: int,
                                           batch_size: int = 20, max_seconds: float = 600,
-                                          concurrency: int = 2) -> dict[str, Any]:
+                                          concurrency: int = 2, browser_reuse: bool = False,
+                                          browser_concurrency: int = 1) -> dict[str, Any]:
         """Show the selected inventory, exact URL count and server batch settings before approval.
 
         Read only. The plan must be confirmed before start_research_batch_run; no model is invoked.
@@ -214,7 +232,8 @@ def build_assistant_server(root: str | Path):
         from math import ceil
         clean = _validate({"plan_id": plan_id, "expected_revision": expected_revision,
                            "batch_size": batch_size, "max_seconds": max_seconds,
-                           "concurrency": concurrency})
+                           "concurrency": concurrency, "browser_reuse": browser_reuse,
+                           "browser_concurrency": browser_concurrency})
         plan = plans.get_plan(base, plan_id)["plan"]
         if plan["revision"] != expected_revision:
             raise ValueError("Research plan changed; review the latest revision")
@@ -222,14 +241,15 @@ def build_assistant_server(root: str | Path):
         return {"plan_id": plan_id, "revision": expected_revision, "plan_state": plan["state"],
                 "plan_fingerprint": plans.fingerprint(plan), "url_fingerprint": _url_fingerprint(selected),
                 "selected_url_count": len(selected), "selected_hosts": dict(Counter(urlsplit(item["url"]).hostname for item in selected)),
-                "batch_count": ceil(len(selected) / batch_size), **{key: clean[key] for key in ("batch_size", "max_seconds", "concurrency")},
-                "browser_concurrency": 1, "follow_links": False,
+                "batch_count": ceil(len(selected) / batch_size), **{key: clean[key] for key in ("batch_size", "max_seconds", "concurrency", "browser_reuse", "browser_concurrency")},
+                "follow_links": False,
                 "execution": "One durable server job collects all approved URLs; poll one job ID."}
 
     @server.tool(annotations=open_world)
     def start_research_batch_run(plan_id: str, expected_revision: int,
                                  batch_size: int = 20, max_seconds: float = 600,
-                                 concurrency: int = 2) -> dict[str, Any]:
+                                 concurrency: int = 2, browser_reuse: bool = False,
+                                 browser_concurrency: int = 1) -> dict[str, Any]:
         """Collect every selected URL in a confirmed plan with one durable server job.
 
         Show get_research_batch_execution_plan before the user approves. Confirmation
@@ -239,7 +259,8 @@ def build_assistant_server(root: str | Path):
         """
         return start_batch_run(base, {"plan_id": plan_id, "expected_revision": expected_revision,
                                       "batch_size": batch_size, "max_seconds": max_seconds,
-                                      "concurrency": concurrency})
+                                      "concurrency": concurrency, "browser_reuse": browser_reuse,
+                                      "browser_concurrency": browser_concurrency})
 
     @server.tool(annotations=open_world)
     def generate_research_preview(plan_id: str, expected_revision: int, provider: str,
@@ -398,7 +419,8 @@ def build_assistant_server(root: str | Path):
                 payload = result.get("result") if isinstance(result.get("result"), dict) else {}
                 summary = {key: payload[key] for key in ("status", "observations", "observation_count",
                            "review_count", "verified_count", "evidence_status", "target_count",
-                           "batch_count", "completed_batches", "reports_ready", "total_collection_seconds") if key in payload
+                           "batch_count", "completed_batches", "reports_ready", "total_collection_seconds",
+                           "incomplete_sections", "unknown_sections") if key in payload
                            and isinstance(payload[key], (str, int, float, bool))}
                 if isinstance(payload.get("observation_counts"), dict):
                     summary["observation_counts"] = {key: payload["observation_counts"].get(key, 0)
@@ -407,6 +429,9 @@ def build_assistant_server(root: str | Path):
                 if isinstance(payload.get("coverage_counts"), dict):
                     summary["coverage_counts"] = {key: value for key, value in payload["coverage_counts"].items()
                                                    if isinstance(key, str) and isinstance(value, int)}
+                if isinstance(payload.get('coverage_summary'), dict):
+                    summary['coverage_summary'] = {key: payload['coverage_summary'].get(key, 0)
+                                                   for key in ('complete', 'partial', 'unknown', 'excluded')}
                 return {"id": job["id"], "operation": job.get("operation"), "status": status,
                         "updated_at": job.get("updated_at"), "attempt": job.get("attempt"),
                         "completed": status in {"succeeded", "failed", "interrupted"},
@@ -436,6 +461,57 @@ def build_assistant_server(root: str | Path):
         from .research_followup import research_gaps
         return research_gaps(base, job_id, offset=offset, limit=limit)
 
+    @server.tool(annotations=read_only)
+    def get_collection_issues(job_id: str, status: str | None = None,
+                              offset: int = 0, limit: int = 50) -> dict[str, Any]:
+        """Read the SQLite issue ledger, next actions, and retained evidence. No collection."""
+        from .research_followup import list_collection_issues
+        return list_collection_issues(base, job_id, status=status, offset=offset, limit=limit)
+
+    @server.tool(annotations=mutate)
+    def prepare_browser_recovery(job_id: str, issue_id: str) -> dict[str, Any]:
+        """Prepare bounded host-browser instructions for an unresolved challenge. No browser/API calls."""
+        from .browser_recovery import prepare_browser_recovery as prepare
+        return prepare(base, job_id, issue_id)
+
+    @server.tool(annotations=mutate)
+    def begin_browser_recovery(job_id: str, issue_id: str, browser_available: bool = False,
+                               challenge_interaction_supported: bool = False) -> dict[str, Any]:
+        """Reserve one host attempt only if the current app supports it. Max two per run/URL.
+
+        Idempotently returns an unfinished reservation. This server does not drive a browser.
+        """
+        from .browser_recovery import begin_browser_recovery as begin
+        return begin(base, job_id, issue_id, browser_available=browser_available,
+                     challenge_interaction_supported=challenge_interaction_supported)
+
+    @server.tool(annotations=mutate)
+    def finish_browser_recovery(job_id: str, issue_id: str, attempt_id: int, outcome: str,
+                                final_url: str | None = None, evidence_text: str | None = None) -> dict[str, Any]:
+        """Record accessible/blocked/needs_user. Accessible needs approved URL and literal target excerpt.
+
+        Host reports are unverified; no issue is resolved and no price is generated. Keep the same
+        host tab for evidence collection. After an interruption finish the reserved attempt; never reset it.
+        """
+        from .browser_recovery import finish_browser_recovery as finish
+        return finish(base, job_id, issue_id, attempt_id, outcome=outcome,
+                      final_url=final_url, evidence_text=evidence_text)
+
+    @server.tool(annotations=mutate)
+    def triage_collection_issue(job_id: str, issue_id: str, status: str,
+                                evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Track open/needs_review/resolved issues; resolution needs validated relevant evidence.
+
+        Resolution evidence: {kind: revalidated_run, reference: later_run_id}.
+        Changed recipe/plan fingerprints require scope_revision with a review reason
+        and exact changed fields {field: {from: old_value, to: new_value}}.
+        If report_refresh is pending, SQLite saved the change; close the workbook
+        and repeat the action to refresh XLSX.
+        This never upgrades source prices or changes historical coverage to complete.
+        """
+        from .research_followup import triage_collection_issue as triage
+        return triage(base, job_id, issue_id, status=status, evidence=evidence)
+
     @server.tool(annotations=open_world)
     def retry_research_pages(job_id: str, urls: list[str], max_seconds: float = 120) -> dict[str, Any]:
         """Retry only listed failed/unprocessed pages under the same confirmed plan. No link expansion.
@@ -447,7 +523,10 @@ def build_assistant_server(root: str | Path):
         job, _, _ = completed(base, job_id)
         args = job["arguments"]
         return start_plan_job(base, "research_plan", {"plan_id": args["plan_id"], "expected_revision": args["expected_revision"],
-                              "retry_of": job_id, "retry_urls": urls, "max_pages": len(urls), "max_seconds": max_seconds})
+                              "retry_of": job_id, "retry_urls": urls, "max_pages": len(urls), "max_seconds": max_seconds,
+                              "concurrency": args.get("concurrency", 2),
+                              "browser_reuse": args.get("browser_reuse", False),
+                              "browser_concurrency": args.get("browser_concurrency", 1)})
 
     @server.tool(annotations=mutate)
     def submit_browser_evidence(job_id: str, url: str, captured_at: str, page_text: str,

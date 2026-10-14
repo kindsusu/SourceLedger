@@ -6,7 +6,7 @@ from typing import Callable
 from ..models import Candidate, FetchResult, Source
 from . import funrent, gongcar, jetcar
 
-ADAPTER_VERSION = "2"
+ADAPTER_VERSION = "3"
 _ADAPTERS: dict[str, Callable[[FetchResult, Source], list[Candidate]]] = {
     "jetcar": jetcar.extract,
     "gongcar": gongcar.extract,

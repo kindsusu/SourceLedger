@@ -12,6 +12,10 @@ Raw or static HTML prices remain preserved, but are not comparable until rendere
 
 ## How it works
 
+See [collection limits and recovery](docs/LIMITATION_MANAGEMENT.md) for reviewed dynamic recipes, authorized browser profiles, and the SQLite issue ledger. [Implementation review](docs/LIMITATION_IMPLEMENTATION_REVIEW.md) records validation and remaining boundaries.
+
+Read the [collection reliability changes](docs/CROSS_SITE_RELIABILITY_2026-10-14.md) for coverage status, retained-evidence reanalysis, and known limits.
+
 [![SourceLedger collection architecture](docs/architecture/sourceledger.png)](docs/ARCHITECTURE.md)
 
 The bounded agent turns source candidates into extraction proposals, collects fresh evidence, and records validated observations in SQLite before producing an XLSX report. Missing values remain missing. Optional search, model assistance, and activation have explicit limits.
@@ -185,7 +189,7 @@ For a first supported-site collection, create a workspace so the industry, produ
 
 The XLSX report adds a **Rental Quotes** sheet only when a run contains rental observations. It keeps observed monthly prices and calculator estimates in separate columns, then lists deposits, advance payment, and installments separately. **Observation History** also separates observed amount, estimated amount, raw fields, evidence, value origin, visibility, verification level, and rental conditions. Comparison statistics exclude calculator estimates and hidden-source values.
 
-Ordinary `Source.incremental` is off by default and requires `"incremental": true`; it applies only to eligible public HTTP sources. `collect-sites` enables incremental retrieval for its generated public HTTP sources unless `--no-incremental` is supplied. A later run still contacts the source and may reuse retained bytes and extraction only after a matching conditional HTTP response. Browser sources are collected freshly. If retained evidence is missing or altered, SourceLedger does not send validators and obtains a fresh response. See the [collection reliability guide](docs/COLLECTION_RELIABILITY.md) ([한국어](docs/COLLECTION_RELIABILITY.ko.md)) and [Milestone 04](docs/MILESTONE_04.md).
+Ordinary `Source.incremental` is off by default and requires `"incremental": true`; it applies only to eligible public HTTP sources. `collect-sites` enables incremental retrieval for its generated public HTTP sources unless `--no-incremental` is supplied. A later run still contacts the source and may reuse retained bytes and extraction only after a matching conditional HTTP response. Browser sources are collected freshly. If retained evidence is missing or altered, SourceLedger does not send validators and obtains a fresh response. See the [collection reliability guide](docs/CROSS_SITE_RELIABILITY_2026-10-14.md) ([한국어](docs/CROSS_SITE_RELIABILITY_2026-10-14.ko.md)) and [Milestone 04](docs/MILESTONE_04.md).
 
 ### Verify and activate
 
@@ -237,8 +241,10 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 
 ## Current limits
 
+For opt-in, bounded connected-AI assistance on CAPTCHA/access challenges, see [browser recovery](docs/BROWSER_RECOVERY.md). This is not a built-in solver or automatic browser-session transfer.
+
 - Keyword search requires your configured SearXNG instance. No shared/public search endpoint is silently chosen.
-- Selector proposals support structured data and semantic HTML, with optional local model assistance. New browser action plans, automated login, and unattended rule self-repair are not implemented.
+- Selector proposals support structured data and semantic HTML, with optional local model assistance. Reviewed browser recipes can be entered through MCP or the web UI; unattended recipe generation, automated login, and unattended rule self-repair are not implemented.
 - SearXNG/Ollama request paths are tested with controlled responses; actual servers, models, and representative live sites remain to be validated. Loopback transport alone does not establish where a proxy executes a model; configure Ollama with cloud disabled.
 - The local connector's CLI and SDK contract are covered by offline tests; live Codex, Claude Code, and Claude Desktop GUI connections have not been verified. ChatGPT web/mobile use would require an authenticated remote deployment and an artifact download path.
 - Crawl4AI is optional and has not been installed or validated against live sites in this environment.
@@ -266,3 +272,5 @@ MCP follow-up supports coverage-gap inspection, review-only browser evidence, pa
 Gongcar short-rental adapters support monthly/daily catalog cards and explicit detail URLs, including visible rental-period prices. Catalog completeness requires a declared count; missing conditions stay under review. Non-link product-card discovery still needs browser navigation. See [collection performance and optimization criteria](docs/COLLECTION_PERFORMANCE.md) for measured experiments and the limits of engine-only timing.
 
 Checkpoint captures now use lossless, content-addressed storage. Back up the entire output directory, including `checkpoint_blobs/` and `evidence/`, alongside SQLite. See [storage measurements and compatibility](docs/STORAGE_OPTIMIZATION.md).
+
+Optional browser reuse and browser concurrency 2 are available for controlled comparisons through MCP execution settings. See [browser optimization and validation](docs/BROWSER_OPTIMIZATION.md).

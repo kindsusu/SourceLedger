@@ -13,7 +13,8 @@ from .research_plans import canonical_url
 
 def build_execution_brief(plan: dict, provider: str = "connected", model: str = "",
                           max_pages: int = 10, max_seconds: float = 120,
-                          follow_links: bool = False, concurrency: int = 2) -> dict:
+                          follow_links: bool = False, concurrency: int = 2,
+                          browser_reuse: bool = False, browser_concurrency: int = 1) -> dict:
     """Return model and selected-site facts to show before a collection run."""
     if not isinstance(plan, dict):
         raise ValueError("Research plan must be an object")
@@ -27,6 +28,11 @@ def build_execution_brief(plan: dict, provider: str = "connected", model: str = 
         raise ValueError("follow_links must be a boolean")
     if isinstance(concurrency, bool) or not isinstance(concurrency, int) or not 1 <= concurrency <= 4:
         raise ValueError("concurrency must be an integer from 1 to 4")
+    if not isinstance(browser_reuse, bool):
+        raise ValueError("browser_reuse must be a boolean")
+    if (isinstance(browser_concurrency, bool) or not isinstance(browser_concurrency, int)
+            or not 1 <= browser_concurrency <= min(2, concurrency)):
+        raise ValueError("browser_concurrency must be 1 or 2 and cannot exceed concurrency")
     if not isinstance(model, str) or (model and not MODEL_PATTERN.fullmatch(model)):
         raise ValueError("model must be a safe model ID")
     candidates = plan.get("candidates", [])
@@ -67,6 +73,12 @@ def build_execution_brief(plan: dict, provider: str = "connected", model: str = 
         "host_model_note": "Connected AI app model is selected in that app; SourceLedger cannot set or verify it before execution.",
         "collection_model_note": "The collector itself does not call a model. Local AI settings select the preview model; the connected host handles orchestration.",
         "selected_sites": sites, "selected_targets": targets,
+        "collection_rules": [{"url": url, "recipe": rule.get('recipe', []),
+                              "selectors": rule.get('selectors', {}),
+                              "row_selector": rule.get('row_selector'),
+                              "authorized_profile": bool(rule.get('profile_dir'))}
+                             for url, rule in plan.get('collection_rules', {}).items()
+                             if url in {target['url'] for target in targets}],
         "selected_target_count": len(chosen), "within_page_budget": len(chosen) <= max_pages,
         "page_budget_shortfall": max(0, len(chosen) - max_pages),
         "max_pages": max_pages, "max_seconds": max_seconds, "follow_links": follow_links,
@@ -74,7 +86,8 @@ def build_execution_brief(plan: dict, provider: str = "connected", model: str = 
         "execution": {"current_mode": "parallel" if concurrency > 1 else "sequential",
                       "current_concurrency": concurrency,
                       "recommended_mode": "bounded_parallel", "recommended_concurrency": 2,
-                      "per_host_concurrency": min(concurrency, 2), "browser_concurrency": 1,
+                      "per_host_concurrency": min(concurrency, 2), "browser_concurrency": browser_concurrency,
+                      "browser_reuse": browser_reuse,
                       "host_interval_seconds": 0.25 if concurrency > 1 else 0,
                       "max_attempts": 2 if concurrency > 1 else 1},
         "steps": ["Review the selected model and approved URLs",

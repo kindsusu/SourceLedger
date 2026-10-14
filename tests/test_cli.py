@@ -4,6 +4,14 @@ from pathlib import Path
 from su_crawler.cli import main
 
 
+def test_doctor_explicit_launch_probe_options(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr('su_crawler.doctor.doctor', lambda **kwargs: calls.append(kwargs) or [])
+    assert main(['doctor', '--verify-browser-launch', '--browser-display-mode', 'headless']) == 0
+    assert calls == [{'verify_browser_launch': True, 'browser_display_mode': 'headless'}]
+    assert json.loads(capsys.readouterr().out) == []
+
+
 def test_ui_cli_passes_workspace_and_browser_options(tmp_path, monkeypatch):
     from su_crawler import web_server
 

@@ -56,6 +56,60 @@ def test_partial_source_failure_does_not_abort(tmp_path):
     store.close()
 
 
+def test_failed_browser_attempt_persists_prior_capture_without_observations(tmp_path):
+    config = demo(tmp_path)
+    source = next(s for s in config.sources if s.id == "catalog")
+    config = replace(config, sources=[replace(source, kind="web", location="https://example.org/item",
+                                              allowed_domains=["example.org"], backends=["playwright"],
+                                              recipe=[{"action": "enumerate_options", "selectors": ["#size"]}],
+                                      max_attempts=1)])
+    content = b"<html><body><strong>Observed source text</strong></body></html>"
+
+    def collector(item, base, backend):
+        return FetchResult(item.id, "timeout", backend, message="Later option timed out",
+                           variant_snapshots=[{"content": content, "final_url": item.location,
+                                               "fetched_at": "2026-01-01T00:00:00+00:00",
+                                               "selections": {"#size": "Large"}}])
+
+    run = execute(config, collector=collector)
+    store = Store(tmp_path)
+    try:
+        attempts = [dict(row) for row in store.db.execute("SELECT * FROM attempts WHERE run_id=?", (run["id"],))]
+        assert len(attempts) == 1 and attempts[0]["status"] == "timeout"
+        refs = json.loads(attempts[0]["data"])["prior_capture_evidence"]
+        assert len(refs) == 1
+        assert Path(refs[0]["content_path"]).read_bytes() == content
+        assert json.loads(Path(refs[0]["receipt_path"]).read_text(encoding="utf-8"))["hash"] == refs[0]["content_sha256"]
+        assert store.observations(run["id"]) == []
+        assert all(task["status"] == "timeout" for task in store.tasks(run["id"]))
+    finally:
+        store.close()
+
+
+def test_report_reexport_uses_live_issue_status(tmp_path):
+    from openpyxl import load_workbook
+    from su_crawler.collection_issues import sync_coverage_issues
+
+    config = demo(tmp_path)
+    run = execute(config)
+    store = Store(tmp_path)
+    try:
+        coverage = [{"url": "https://example.org/item", "source_id": "catalog", "status": "visited",
+                     "sections": [{"section": "offers", "status": "unknown"}]}]
+        store.save_run_coverage(run["id"], coverage)
+        issue = sync_coverage_issues(store, run["id"], coverage)[0]
+        store.update_collection_issue(issue["id"], status="needs_review")
+        report_for_run(config, store, run["id"])
+        assert store.run_coverage(run["id"]) == coverage
+        workbook = load_workbook(run["report_path"], read_only=True, data_only=True)
+        try:
+            assert workbook["Collection Issues"]["D2"].value == "needs_review"
+        finally:
+            workbook.close()
+    finally:
+        store.close()
+
+
 def test_changed_config_resume_and_lock(tmp_path):
     config = demo(tmp_path)
     run = execute(config, max_tasks=1)
