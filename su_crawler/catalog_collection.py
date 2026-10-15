@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 from queue import Queue, Empty
 from threading import Event, Lock, Semaphore, Thread
 from dataclasses import asdict, replace
+from datetime import datetime, timedelta, timezone
 import json
 import math
 import re
@@ -34,6 +35,10 @@ from .catalog_scheduler import HostGate, PageLedger, fetch_http
 from .storage import Store
 from .coverage import summarize, apply_status, unknown_section
 from .incremental import extraction_version
+from .incremental import conditional_fetch
+from .catalog_refresh import (normalize_refresh_policy, scope_key, read_baseline, write_baseline,
+                              decide, compare, semantic_candidates, validated_http, page_baseline,
+                              save_refresh_run, source_signature)
 
 
 def _url(value: str) -> str:
@@ -145,7 +150,8 @@ def _reanalyse(captures, coverage, includes, excludes, conditions):
                           if any(event.get('event') == 'access_challenge'
                                  for event in raw.get('trace', []))), None)
         products = _products_for(source, candidates, source.name)
-        rebuilt[url] = {'source': asdict(source), 'products': [asdict(p) for p in products], 'responses': responses}
+        rebuilt[url] = {'source': asdict(source), 'products': [asdict(p) for p in products],
+                        'chosen_candidates': [asdict(c) for c in candidates], 'responses': responses}
         page = by_url.get(url)
         if page is not None:
             coverage_status = challenge['status'] if challenge else result.status
@@ -275,6 +281,29 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         binding = stable_id(binding, "browser_pool_v1", browser_reuse, browser_concurrency)
     state = read_checkpoint(destination, checkpoint_id) if checkpoint_id else None
     rules_version = collection_rules_version()
+    # Legacy snapshots omitted this field and retain their historical full-fetch
+    # behavior. The plan editor writes the normalized default for new reviews.
+    refresh_policy = (normalize_refresh_policy(snapshot['refresh_policy'])
+                      if 'refresh_policy' in snapshot else {'mode': 'full', 'full_interval_days': 7})
+    refresh_key = scope_key(snapshot, chosen, follow_links=follow_links)
+    prior_baseline = (state.get('refresh_baseline') if state and 'refresh_baseline' in state
+                      else read_baseline(destination, refresh_key))
+    refresh_decision = (state.get('refresh_decision') if state else None) or decide(
+        refresh_policy, prior_baseline, rules_version,
+        manual_full=bool(retry_urls is not None))
+    baseline_pages = (prior_baseline or {}).get('pages', {})
+    retained_http = {url: validated_http(page, destination) for url, page in baseline_pages.items()}
+    if not state and refresh_decision['effective_mode'] == 'incremental' and any(
+            page.get('http') and retained_http.get(url) is None for url, page in baseline_pages.items()):
+        refresh_decision = decide(refresh_policy, {**prior_baseline, 'valid': False}, rules_version)
+    def current_fetch(source, base_dir, backend):
+        previous_page = baseline_pages.get(source.location) or {}
+        saved = (retained_http.get(source.location) if refresh_decision['effective_mode'] == 'incremental'
+                 and previous_page.get('source_signature') == source_signature(source) else None)
+        if (backend == 'http' and saved and not source.recipe and not source.adapter and not source.selectors
+                and not source.profile_dir and source.account_scope == 'public'):
+            return conditional_fetch(fetch, source, base_dir, backend, saved)
+        return fetch(source, base_dir, backend)
     reanalysed = False
     if state and state["binding"] != binding:
         raise ValueError("Collection checkpoint scope or budget changed")
@@ -349,7 +378,9 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                                for u in parallel_leases), default=0)
             checkpoint_started = time.monotonic()
             write_checkpoint(destination, checkpoint_id, {
-                "binding": binding, "rules_version": rules_version, "captures": captures, "coverage": coverage,
+                "binding": binding, "rules_version": rules_version, "refresh_decision": refresh_decision,
+                "refresh_key": refresh_key, "refresh_baseline": prior_baseline,
+                "captures": captures, "coverage": coverage,
                 "queue": list(queue), "visited": sorted(visited), "queued": sorted(queued),
                 "elapsed": min(max_seconds, elapsed + time.monotonic() - started + reserve),
                 "dispatched": dispatched, "inflight": inflight, "result": result,
@@ -381,7 +412,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             bounded = replace(source, timeout_seconds=max(0.001, min(120 if adapter == 'gongcar' else 30, remaining)),
                               recipe=source.recipe if backend == "playwright" else [])
             if backend == "http" and optimized:
-                result, attempts = fetch_http(url, source=source, fetch=fetch,
+                result, attempts = fetch_http(url, source=source, fetch=current_fetch,
                                               base_dir=base_dir, deadline=deadline, gate=gate)
                 retry_counts[url] = attempts
             elif backend == "http" and prefetched_http is not None:
@@ -413,7 +444,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                                             browser_active += 1
                                             browser_peak = max(browser_peak, browser_active)
                                         counted_browser = True
-                                    result = fetch(replace(bounded, timeout_seconds=min(bounded.timeout_seconds, remaining)),
+                                    result = current_fetch(replace(bounded, timeout_seconds=min(bounded.timeout_seconds, remaining)),
                                                    base_dir, backend)
                             else:
                                 if backend == "playwright":
@@ -421,7 +452,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                                         browser_active += 1
                                         browser_peak = max(browser_peak, browser_active)
                                     counted_browser = True
-                                result = fetch(bounded, base_dir, backend)
+                                result = current_fetch(bounded, base_dir, backend)
                         finally:
                             if counted_browser:
                                 with browser_active_lock:
@@ -468,7 +499,9 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             if any(event.get('event') == 'access_challenge' for event in result.trace):
                 break  # Explicit host-browser recovery owns further challenge attempts.
             extraction_seconds += time.monotonic() - extraction_started
-            if candidates and (not sections or all(s['status'] == 'complete' for s in sections)) and _has_sufficient_evidence(candidates):
+            if (candidates and not (source.recipe or source.adapter or source.selectors or source.profile_dir)
+                    and (not sections or all(s['status'] == 'complete' for s in sections))
+                    and _has_sufficient_evidence(candidates)):
                 break
         if not responses:
             responses = [(FetchResult(source_id, "budget_exhausted", "none", message="Collection time limit reached"), [])]
@@ -494,7 +527,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     def prefetch_http(page_url, pre_source):
         fetch_started = time.monotonic()
         with robots_policy_scope(policy_cache):
-            response, attempts = fetch_http(page_url, source=pre_source, fetch=fetch,
+            response, attempts = fetch_http(page_url, source=pre_source, fetch=current_fetch,
                                             base_dir=base_dir, deadline=deadline, gate=gate)
         return response, attempts, time.monotonic() - fetch_started
 
@@ -617,6 +650,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         products.extend(page_products)
         prefetched[source_id] = responses
         captures[url] = {"source": asdict(source), "products": [asdict(p) for p in page_products],
+                         "chosen_candidates": [asdict(c) for c in candidates],
                          "responses": [(asdict(r), [asdict(c) for c in cs]) for r, cs in responses]}
         status = coverage_result.status if coverage_result.status != "fetched" else "visited" if candidates else "no_data"
         scope_counts = {key: sum(item["status"] == key for item in chosen_assessments)
@@ -777,5 +811,78 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                            "min_host_interval_seconds": 0.25 if concurrency > 1 else 0,
                            "max_transient_attempts": 2 if concurrency > 1 else 1,
                            "transient_retries": retry_total}
+    # Compare only this run's captured observations. A failed page never borrows
+    # the previous values as if they had just been observed.
+    counts = {key: 0 for key in ('added', 'changed', 'unchanged', 'unavailable', 'removed_candidate')}
+    changes = []
+    next_pages = dict(baseline_pages)
+    coverage_by_url = {item['url']: item for item in coverage}
+    checked_at = datetime.now(timezone.utc).isoformat()
+    compared_urls = set(chosen) | set(captures) | set(baseline_pages)
+    all_changes = []
+    for url in sorted(compared_urls):
+        previous = baseline_pages.get(url) or {}
+        captured = captures.get(url)
+        page = coverage_by_url.get(url) or {}
+        successful = bool(captured and page.get('status') in {'visited', 'no_data'})
+        current = semantic_candidates(captured.get('chosen_candidates', [])) if successful else []
+        comparable_inventory = bool(successful and previous.get('inventory_complete') and
+                                    page.get('sections') and all(section.get('status') == 'complete'
+                                                                  for section in page['sections']))
+        delta = (compare(previous.get('candidates', []), current,
+                         inventory_complete=comparable_inventory) if successful else
+                 {**{key: 0 for key in counts}, 'unavailable': len(previous.get('candidates', []))})
+        for key in counts:
+            counts[key] += delta[key]
+        original_at = (previous.get('http') or {}).get('fetched_at')
+        if successful:
+            source = Source(**captured['source'])
+            responses = [(FetchResult(**raw), [Candidate(**candidate) for candidate in candidates])
+                         for raw, candidates in captured['responses']]
+            chosen_candidates = [Candidate(**candidate) for candidate in captured.get('chosen_candidates', [])]
+            page_complete = bool(page.get('sections') and all(
+                section.get('status') == 'complete' for section in page['sections']))
+            # A partial page cannot replace a prior complete inventory: doing
+            # so would erase candidates before the next complete comparison.
+            if not (previous.get('inventory_complete') and not page_complete):
+                next_pages[url] = page_baseline(source, responses, chosen_candidates, destination, previous=previous)
+                next_pages[url]['inventory_complete'] = page_complete
+            original_at = (next_pages[url].get('http') or {}).get('fetched_at') or original_at
+        all_changes.append({'url': url, 'status': 'checked' if successful else 'unavailable',
+                            'checked_at': checked_at if successful else None,
+                            'original_fetched_at': original_at, **delta})
+    changes = all_changes[:50]
+    # A scheduled full baseline advances after all approved pages were fetched.
+    # Unknown site-wide inventory does not prevent a successful URL recheck.
+    full_success = all(coverage_by_url.get(url, {}).get('status') in {'visited', 'no_data'}
+                       for url in chosen) and not any(item.get('status') in {'blocked', 'policy_denied',
+                       'needs_auth', 'failed', 'timeout', 'tool_unavailable', 'budget_exhausted',
+                       'interrupted', 'unprocessed'} or any(section.get('status') == 'partial'
+                       for section in item.get('sections', [])) for item in coverage)
+    last_full_at = refresh_decision['last_full_at']
+    if full_success:
+        if refresh_decision['effective_mode'] == 'full':
+            last_full_at = checked_at
+        write_baseline(destination, refresh_key, {'rules_version': rules_version,
+            'last_full_at': last_full_at, 'valid': bool(last_full_at), 'pages': next_pages})
+    next_due = (datetime.fromisoformat(last_full_at) + timedelta(days=refresh_policy['full_interval_days'])).isoformat() if last_full_at else None
+    inventory_verified = bool(full_success and all(
+        page.get('sections') and all(section.get('status') == 'complete'
+        for section in page['sections']) for page in coverage if page.get('status') in {'visited', 'no_data'}))
+    result['refresh'] = {'policy': refresh_policy, 'effective_mode': refresh_decision['effective_mode'],
+                         'reason': refresh_decision['reason'], 'checked_at': checked_at,
+                         'last_full_at': last_full_at, 'next_full_due_at': next_due,
+                         'full_recheck_succeeded': bool(full_success and refresh_decision['effective_mode'] == 'full'),
+                         'approved_urls_rechecked': full_success,
+                         'inventory_completeness_verified': inventory_verified,
+                         'counts': counts, 'changes': changes,
+                         'changes_truncated': len(all_changes) - len(changes),
+                         'discovered_links': [item['url'] for item in coverage
+                                              if item.get('origin') == 'discovered'][:50],
+                         'scope': 'Approved and visited URLs only; no whole-site completeness claim.'}
+    durable_refresh = {**result['refresh'], 'changes': all_changes, 'changes_truncated': 0}
+    save_refresh_run(destination, run['id'], durable_refresh)
+    from .report import append_refresh_summary
+    append_refresh_summary(run['report_path'], durable_refresh)
     save(result=result)
     return result

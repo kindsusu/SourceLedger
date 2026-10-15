@@ -146,7 +146,20 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
     browser_counts = Counter()
     peak_browser = 0
     coverage_summary = Counter()
+    refresh_counts = Counter()
+    refresh_modes = Counter()
+    refresh_reasons = Counter()
+    refresh_changes = []
+    refresh_total_changes = 0
     for batch in batches:
+        refresh = batch.get("refresh") or {}
+        if refresh:
+            refresh_counts.update(refresh.get("counts", {}))
+            refresh_modes[refresh.get("effective_mode", "unknown")] += 1
+            refresh_reasons[refresh.get("reason", "unknown")] += 1
+            changes = refresh.get("changes", [])
+            refresh_total_changes += len(changes) + refresh.get("changes_truncated", 0)
+            refresh_changes.extend(changes[:max(0, 50 - len(refresh_changes))])
         coverage.update(batch["coverage_counts"])
         observations.update(batch.get("observation_counts", {}))
         if 'coverage_summary' in batch:
@@ -179,6 +192,12 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
             "unknown_sections": sum(batch.get('unknown_sections', batch.get('coverage_counts', {}).get('visited', 0)
                                                + batch.get('coverage_counts', {}).get('no_data', 0)) for batch in batches),
             "coverage_summary": {key: coverage_summary[key] for key in ('complete', 'partial', 'unknown', 'excluded')},
+            "refresh": {"policy": next((batch['refresh']['policy'] for batch in batches if (batch.get('refresh') or {}).get('policy')), None),
+                        "effective_mode": next(iter(refresh_modes)) if len(refresh_modes) == 1 else "mixed" if refresh_modes else "unknown",
+                        "modes": dict(refresh_modes), "reasons": dict(refresh_reasons),
+                        "counts": dict(refresh_counts), "changes": refresh_changes,
+                        "changes_truncated": max(0, refresh_total_changes - len(refresh_changes)),
+                        "scope": "Approved batch URLs only; full details are in each batch report."},
             "pending_targets": max(0, journal["target_count"] - sum(batch["target_count"] for batch in batches)),
             "reports_ready": len(batches), "output_dir": str(output),
             "journal_path": str(output / "batch-runs" / (journal["job_id"] + ".json")),
@@ -202,10 +221,12 @@ def batch_progress(root: str | Path, job_id: str) -> dict:
     if job["operation"] != OPERATION:
         raise ValueError("Job is not a research batch run")
     args = job["arguments"]
+    from .collection_attention import attention_for_job
+    attention = attention_for_job(root, job_id)
     journal = read_batch_journal(root, args["plan_id"], job_id)
     if journal is None:
         return {"id": job_id, "status": job["status"], "completed_batches": 0,
-                "batch_count": None, "target_count": None, "reports_ready": 0}
+                "batch_count": None, "target_count": None, "reports_ready": 0, "attention": attention}
     summary = _summary(journal, output=_output(workspace_root(root), args["plan_id"]))
     current_index = len(journal["batches"]) if job["status"] == "running" and len(journal["batches"]) < journal["batch_count"] else None
     current_pages = None
@@ -217,6 +238,7 @@ def batch_progress(root: str | Path, job_id: str) -> dict:
         except (OSError, ValueError, sqlite3.Error):
             current_pages = None
     return {"id": job_id, "job_status": job["status"], **summary,
+            "attention": attention,
             "current_batch_index": current_index, "current_batch_pages": current_pages,
             **({"error": job["error"]} if job.get("error") else {})}
 
@@ -322,6 +344,7 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
                                    "coverage_summary": result.get('coverage_summary', summarize(result.get('coverage', []))),
                                    "budget_seconds_used": round(float(result["budget"]["seconds_used"]), 3),
                                    "execution": result.get("execution", {}),
+                                   "refresh": result.get("refresh"),
                                    "started_at": started_at, "finished_at": utc_now(),
                                    "report_path": result["report_path"]})
         _atomic_write(path, journal)

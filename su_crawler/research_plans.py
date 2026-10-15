@@ -23,7 +23,7 @@ MAX_CANDIDATES = 1000  # Explicitly reviewed full-site URL inventories; AI previ
 MAX_DOCUMENT_BYTES = 256 * 1024
 _PREVIEW_KEYS = {"summary", "topic", "categories", "candidates", "note", "include_terms", "exclude_terms", "conditions"}
 _EDIT_KEYS = {"request_text", "include_terms", "exclude_terms", "topic", "summary", "categories",
-              "conditions", "selected_candidate_ids", "removed_candidate_ids", "added_candidates", "collection_rules"}
+              "conditions", "selected_candidate_ids", "removed_candidate_ids", "added_candidates", "collection_rules", "refresh_policy"}
 _CANDIDATE_KEYS = {"name", "url", "evidence_url", "reason", "kind"}
 
 
@@ -205,6 +205,7 @@ def create_plan(root: str | Path, request_text: str, include_terms: list[str] | 
         plan = {"id": "plan-" + uuid.uuid4().hex, "revision": 1, "state": "draft",
                 "request_text": request, "include_terms": included, "exclude_terms": excluded,
                 "conditions": [], "conditions_user_edited": False,
+                "refresh_policy": {"mode": "incremental", "full_interval_days": 7},
                 "topic": _topic({}), "summary": "", "categories": [],
                 "candidates": [], "excluded_urls": [], "note": "", "created_at": now,
                 "updated_at": now, "confirmed_at": None}
@@ -245,6 +246,9 @@ def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes:
         if "conditions" in edit:
             plan["conditions"] = normalize_conditions(edit["conditions"])
             plan["conditions_user_edited"] = True
+        if "refresh_policy" in edit:
+            from .catalog_refresh import normalize_refresh_policy
+            plan["refresh_policy"] = normalize_refresh_policy(edit["refresh_policy"])
         if "topic" in edit:
             plan["topic"] = _topic({**plan["topic"], **_object(edit["topic"], "topic", {"industry", "product", "market"})})
         candidates = [dict(item) for item in plan["candidates"]]

@@ -55,6 +55,9 @@ const state = {
   recommendationSelectPending: new Set(),
   sourceActionPending: new Set(),
   resumePending: new Set(),
+  attentionWorkspace: null,
+  attentionSeen: new Set(),
+  attentionFingerprint: null,
 };
 
 const byId = (id) => document.getElementById(id);
@@ -100,6 +103,155 @@ function safeWebUrl(value) {
     return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
   } catch (_error) {
     return null;
+  }
+}
+
+function attentionItems() {
+  const entries = state.bootstrap?.collection_attention?.items;
+  if (!Array.isArray(entries)) return [];
+  const ids = new Set();
+  return entries.filter((entry) => {
+    if (!entry || entry.status !== "awaiting_user" || !entry.id || !entry.job_id ||
+        !["browser_handoff", "authentication_required"].includes(entry.category)) return false;
+    const id = String(entry.id);
+    if (ids.has(id)) return false;
+    ids.add(id);
+    return true;
+  });
+}
+
+function attentionHost(value) {
+  const safe = safeWebUrl(value);
+  return safe ? new URL(safe).host : t("attentionUnknownHost");
+}
+
+function attentionStorageKey() {
+  return `sourceledger:attention-seen:${String(state.bootstrap?.workspace_root || "local")}`;
+}
+
+function syncAttentionSeen() {
+  const key = attentionStorageKey();
+  if (state.attentionWorkspace === key) return;
+  state.attentionWorkspace = key;
+  state.attentionSeen = new Set();
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(key) || "[]");
+    if (Array.isArray(saved)) for (const id of saved) if (typeof id === "string") state.attentionSeen.add(id);
+  } catch (_error) { /* Browser storage is optional. */ }
+}
+
+function markAttentionSeen(id) {
+  state.attentionSeen.add(id);
+  try { sessionStorage.setItem(attentionStorageKey(), JSON.stringify([...state.attentionSeen])); }
+  catch (_error) { /* In-memory deduplication still works in this page. */ }
+}
+
+function attentionAction(entry, className = "button button-secondary") {
+  const href = safeWebUrl(entry.url);
+  if (!href || entry.action !== "open_browser") return node("span", { className: "attention-invalid-url", text: t("attentionUnavailableLink") });
+  return node("a", { className, text: t("attentionOpenBrowser"), attrs: {
+    href, target: "_blank", rel: "noopener noreferrer", "aria-label": t("attentionOpenHost", { host: attentionHost(entry.url) }),
+  } });
+}
+
+function attentionJobButton(entry) {
+  return node("button", { className: "text-button", type: "button", text: t("attentionViewJob"),
+    attrs: { "data-attention-job-id": String(entry.job_id) } });
+}
+
+function ensureAttentionUi() {
+  let panel = byId("collection-attention");
+  if (!panel) {
+    panel = node("section", { className: "attention-panel", attrs: { id: "collection-attention", "aria-labelledby": "attention-heading" } });
+    const shell = document.querySelector(".workspace-shell");
+    shell.insertBefore(panel, shell.querySelector("main"));
+    panel.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-attention-job-id]");
+      if (!button) return;
+      const jobId = button.dataset.attentionJobId;
+      location.hash = "#runs";
+      selectJob(jobId);
+    });
+  }
+  let notices = byId("attention-notifications");
+  if (!notices) {
+    notices = node("div", { className: "attention-notifications", attrs: { id: "attention-notifications", "aria-live": "polite", "aria-relevant": "additions" } });
+    document.body.append(notices);
+    notices.addEventListener("click", (event) => {
+      const close = event.target.closest("[data-attention-dismiss]");
+      if (close) close.closest(".attention-notification")?.remove();
+      const job = event.target.closest("[data-attention-job-id]");
+      if (job) { location.hash = "#runs"; selectJob(job.dataset.attentionJobId); }
+    });
+  }
+  return { panel, notices };
+}
+
+function renderAttention({ announce = true, force = false } = {}) {
+  const { panel, notices } = ensureAttentionUi();
+  syncAttentionSeen();
+  const items = attentionItems();
+  const byAttentionId = new Map(items.map((entry) => [String(entry.id), entry]));
+  const activeIds = new Set(items.map((entry) => String(entry.id)));
+  for (const notice of notices.querySelectorAll(".attention-notification")) {
+    if (!activeIds.has(notice.dataset.attentionId)) notice.remove();
+    else if (force) {
+      const entry = byAttentionId.get(notice.dataset.attentionId);
+      notice.querySelector("strong").textContent = t("attentionNoticeTitle");
+      notice.querySelector("p").textContent = t("attentionNoticeBody", { host: attentionHost(entry.url), category: t(`attentionCategory.${entry.category}`) });
+      const actions = notice.querySelector(".attention-actions");
+      clear(actions);
+      actions.append(attentionAction(entry), attentionJobButton(entry));
+      notice.querySelector(".attention-dismiss").textContent = t("attentionDismiss");
+      notice.querySelector(".attention-dismiss").setAttribute("aria-label", t("attentionDismiss"));
+    }
+  }
+  const attention = state.bootstrap?.collection_attention || {};
+  const fingerprint = JSON.stringify([items, attention.total, attention.truncated, attention.collection_continues, i18n.getLanguage()]);
+  if (force || fingerprint !== state.attentionFingerprint) {
+    state.attentionFingerprint = fingerprint;
+    clear(panel);
+    panel.hidden = items.length === 0;
+    if (items.length) {
+      panel.append(node("div", { className: "attention-panel-head" }, [
+        node("div", {}, [node("h2", { text: t("attentionHeading", { count: attention.total || items.length }), attrs: { id: "attention-heading" } }),
+          node("p", { text: t("attentionIntro") })]),
+        node("span", { className: "badge warning", text: String(attention.total || items.length) }),
+      ]));
+      if (attention.collection_continues === true) panel.append(node("p", { className: "attention-continues", text: t("attentionContinues") }));
+      const groups = new Map();
+      for (const entry of items) {
+        const host = attentionHost(entry.url);
+        const key = JSON.stringify([host, entry.category]);
+        if (!groups.has(key)) groups.set(key, { host, category: entry.category, entries: [] });
+        groups.get(key).entries.push(entry);
+      }
+      for (const group of groups.values()) {
+        const section = node("section", { className: "attention-group" });
+        section.append(node("h3", { text: t("attentionGroup", { host: group.host, category: t(`attentionCategory.${group.category}`), count: group.entries.length }) }));
+        for (const entry of group.entries) {
+          const row = node("div", { className: "attention-row" });
+          row.append(node("span", { className: "attention-url", text: String(entry.url || "") }),
+            node("div", { className: "attention-actions" }, [attentionAction(entry), attentionJobButton(entry)]));
+          section.append(row);
+        }
+        panel.append(section);
+      }
+      if (attention.truncated) panel.append(node("p", { className: "attention-more", text: t("attentionTruncated", { count: attention.total || items.length }) }));
+      panel.append(node("p", { className: "attention-help", text: t("attentionRecovery") }));
+    }
+  }
+  if (!announce) return;
+  for (const entry of items) {
+    const id = String(entry.id);
+    if (state.attentionSeen.has(id)) continue;
+    markAttentionSeen(id);
+    const notice = node("div", { className: "attention-notification", attrs: { role: "status", "data-attention-id": id } });
+    notice.append(node("strong", { text: t("attentionNoticeTitle") }),
+      node("p", { text: t("attentionNoticeBody", { host: attentionHost(entry.url), category: t(`attentionCategory.${entry.category}`) }) }),
+      node("div", { className: "attention-actions" }, [attentionAction(entry), attentionJobButton(entry)]),
+      node("button", { className: "attention-dismiss", type: "button", text: t("attentionDismiss"), attrs: { "data-attention-dismiss": "", "aria-label": t("attentionDismiss") } }));
+    notices.append(notice);
   }
 }
 
@@ -289,6 +441,7 @@ function route({ moveFocus = false } = {}) {
 
 function render({ polling = false } = {}) {
   renderChrome();
+  renderAttention();
   renderOverview();
   renderSources({ preserveForm: polling });
   renderRuns();
@@ -751,6 +904,40 @@ function fact(label, value) {
   return node("div", {}, [node("dt", { text: label }), node("dd", { text: displayValue(value) })]);
 }
 
+function renderRefreshSummary(target, job, result) {
+  const direct = result.result?.refresh || result.refresh;
+  const batches = Array.isArray(result.batches) ? result.batches : Array.isArray(result.result?.batches) ? result.result.batches : [];
+  const records = direct ? [direct] : batches.map((batch) => batch.refresh).filter(Boolean);
+  if (!records.length) return;
+  const configured = direct?.policy?.mode;
+  const section = node("section", { className: "refresh-summary" });
+  section.append(node("h4", { text: t("refreshHeading") }));
+  if (["full", "incremental"].includes(configured)) section.append(node("p", { text: t("refreshConfigured", { mode: t(`refreshMode.${configured}`) }) }));
+  for (const [index, refresh] of records.entries()) {
+    const mode = ["full", "incremental", "mixed"].includes(refresh.effective_mode) ? t(`refreshMode.${refresh.effective_mode}`) : displayValue(refresh.effective_mode);
+    if (records.length > 1) section.append(node("h5", { text: t("refreshBatch", { number: index + 1 }) }));
+    const reasons = refresh.reasons && typeof refresh.reasons === "object" ? Object.entries(refresh.reasons)
+      .filter(([, count]) => Number.isSafeInteger(count) && count > 0) : [];
+    const reasonLabel = (code) => {
+      const key = `refreshReason.${code}`;
+      return i18n.t(`app.${key}`) === `app.${key}` ? displayValue(code) : t(key);
+    };
+    const reason = refresh.reason ? reasonLabel(refresh.reason) : "";
+    section.append(node("p", { text: reason ? t("refreshActual", { mode, reason }) : t("refreshActualMode", { mode }) }));
+    if (reasons.length) section.append(node("p", { text: t("refreshBatchReasons", { reasons: reasons.map(([code, count]) =>
+      t("refreshReasonCount", { reason: reasonLabel(code), count })).join(" · ") }) }));
+    const counts = refresh.counts || {};
+    section.append(node("p", { text: t("refreshCounts", {
+      added: Number(counts.added || 0), changed: Number(counts.changed || 0), unchanged: Number(counts.unchanged || 0),
+      unavailable: Number(counts.unavailable || 0), removed: Number(counts.removed_candidate || 0),
+    }) }));
+    if (refresh.last_full_at) section.append(node("p", { text: t("refreshLastFull", { date: formatDate(refresh.last_full_at) }) }));
+    if (refresh.next_full_due_at) section.append(node("p", { text: t("refreshNextFull", { date: formatDate(refresh.next_full_due_at) }) }));
+  }
+  section.append(node("p", { className: "hint", text: t("refreshScope") }));
+  target.append(section);
+}
+
 function renderJobDetail() {
   const target = byId("job-detail");
   clear(target);
@@ -781,6 +968,7 @@ function renderJobDetail() {
     fact(t("jobState"), statusText(job.status)), fact(t("execution"), statusText(executionStatus)), fact(t("evidence"), evidence ? statusText(evidence) : t("notAvailable")),
     fact(t("attempt"), job.attempt ?? 0), fact(t("created"), formatDate(job.created_at)), fact(t("updated"), formatDate(job.updated_at)),
   ]));
+  renderRefreshSummary(target, job, result);
   if (job.operation === "recommend") target.append(node("dl", { className: "detail-facts" }, [
     fact(t("requestedProvider"), job.arguments?.provider), fact(t("requestedModel"), aiModelLabel(job.arguments?.provider, job.arguments?.model)),
     fact(t("actualModel"), result.result?.actual_model || t("notReported")),
@@ -1175,10 +1363,12 @@ function onLanguageChange() {
   state.sourceFingerprint = null;
   state.recommendationFingerprint = null;
   state.jobFingerprint = null;
+  state.attentionFingerprint = null;
   byId("page-title").textContent = routeTitle(state.route);
   document.title = `${routeTitle(state.route)} · SourceLedger`;
   if (state.bootstrap) {
     render({ polling: true });
+    renderAttention({ announce: false, force: true });
     renderJobDetail();
   } else renderPendingChrome();
   refreshKeyValueLabels();

@@ -229,6 +229,18 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
         path = research_path(self.server.workspace)
         configured = path.is_file()
         workspace = load_workspace(path) if configured else None
+        recent_jobs = list_jobs(self.server.workspace, limit=20)
+        from .collection_attention import attention_for_job
+        attention_items = []
+        attention_total = 0
+        collection_continues = False
+        for job in recent_jobs:
+            if job.get('operation') not in {'research_plan', 'research_batch'}:
+                continue
+            attention = attention_for_job(self.server.workspace, job['id'])
+            attention_items.extend(attention['items'])
+            attention_total += attention['total']
+            collection_continues = collection_continues or attention['collection_continues']
         return {
             "csrf_token": self.server.csrf_token,
             "version": __version__,
@@ -238,7 +250,9 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             "recommendations": list_recommendations(self.server.workspace) if configured else {"requests": []},
             "research": research_status(path) if configured else None,
             "worker": runtime_status(self.server.workspace),
-            "jobs": list_jobs(self.server.workspace, limit=20),
+            "jobs": recent_jobs,
+            "collection_attention": {"items": attention_items[:50], "total": attention_total,
+                                     "truncated": attention_total > 50, "collection_continues": collection_continues},
             "mcp_available": importlib.util.find_spec("mcp") is not None,
             "ai": get_ai_configuration(self.server.workspace),
             "recommendation_jobs": latest_recommendation_jobs(self.server.workspace),
@@ -290,6 +304,11 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             if query:
                 raise ValueError("This endpoint does not accept query parameters")
             self._json(200, job)
+        elif parts[3] == "progress":
+            if query:
+                raise ValueError("This endpoint does not accept query parameters")
+            from .job_progress import research_progress
+            self._json(200, research_progress(self.server.workspace, parts[2]))
         elif parts[3] == "observations":
             unknown = set(query) - {"offset", "limit"}
             if unknown or any(len(values) != 1 for values in query.values()):

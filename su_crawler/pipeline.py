@@ -211,6 +211,11 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
     if coverage or issue_rows:
         from .report import append_collection_issues
         append_collection_issues(path, issue_rows)
+    from .catalog_refresh import refresh_for_run
+    refresh = refresh_for_run(Path(config.output_dir), run_id)
+    if refresh:
+        from .report import append_refresh_summary
+        append_refresh_summary(path, refresh)
     with store.db:
         store.db.execute("UPDATE runs SET report_path=? WHERE id=?", (str(path), run_id))
     return store.run(run_id)

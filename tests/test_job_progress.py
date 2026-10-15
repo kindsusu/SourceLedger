@@ -85,3 +85,16 @@ def test_research_progress_terminal_status_does_not_claim_verified_prices(tmp_pa
 def test_unknown_job_progress_fails_closed(tmp_path):
     with pytest.raises(FileNotFoundError):
         research_progress(tmp_path, "c" * 32)
+
+
+def test_progress_returns_bounded_refresh_without_losing_counts(tmp_path, monkeypatch):
+    from su_crawler import job_progress
+    monkeypatch.setattr(job_progress, 'get_job', lambda *_: {
+        'id': 'd' * 32, 'operation': 'research_plan', 'status': 'succeeded',
+        'arguments': {}, 'result': {'result': {'refresh': {
+            'effective_mode': 'incremental', 'counts': {'unchanged': 55},
+            'changes': [{'url': f'https://example.test/{i}'} for i in range(55)],
+            'changes_truncated': 0}}}})
+    result = research_progress(tmp_path, 'd' * 32)['refresh']
+    assert result['counts'] == {'unchanged': 55}
+    assert len(result['changes']) == 50 and result['changes_truncated'] == 5

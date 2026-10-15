@@ -28,6 +28,8 @@ Recommended host models are **Sol for Codex** and **Opus for Claude**; existing 
 
 For a large fixed inventory, approve the full plan once and use `start_research_batch_run`. The server processes bounded batches and persists checkpoints without a separate AI approval cycle for each batch. See [approved inventory collection](docs/SERVER_BATCH_COLLECTION.md).
 
+New research plans default to incremental collection with a full recheck due every 7 days; you can select full mode or change the interval before execution. The first run, a due interval, changed rules, or an invalid baseline triggers a full recheck. The due date is checked when another run starts; it does not start a background schedule. Each run compares only approved and visited URLs. Detailed per-URL changes are retained in SQLite and XLSX, while MCP progress returns at most 50 change entries. An unavailable page is a gap, never an inferred removal or a copied current observation. See [collection reliability](docs/COLLECTION_RELIABILITY.md).
+
 SourceLedger supports Python 3.11 or later; Python 3.12 is recommended. Clone this repository, or download and extract its GitHub ZIP. The default setup installs the local core only. See [installation](docs/INSTALLATION.md) for macOS/Linux, browser, MCP, developer-test, Linux dependency, headless browser mode, and moving-computer instructions.
 
 ```bat
@@ -73,6 +75,8 @@ Research plans ask for a missing research region before suggesting sources. Edit
 The advanced guided-research path uses only registered sources you select (up to 50) and has a 120-second budget. Plan collection uses a separate page budget (10 by default). Existing collection model calls remain opt-in and default to zero; the CLI agent example below retains its separate default of three sources.
 
 Start and stop the independent worker from the UI when queued work is needed. Closing the browser tab or the UI web server does not cancel jobs already owned by that worker. The UI and Codex/Claude MCP connector can share the same workspace and job history. A job marked `succeeded` completed its program execution; inspect its separate evidence status before treating a price as verified.
+
+During collection, confirmed CAPTCHA/access challenges and required authentication appear as nonblocking browser alerts and in the Runs attention list. Other URLs keep collecting. `get_research_progress` also returns bounded attention items. Opening the affected URL does not transfer your browser session to the worker, resolve the issue automatically, or verify missing values. Use [browser recovery](docs/BROWSER_RECOVERY.md) or [MCP follow-up](docs/MCP_FOLLOWUP.md) for evidence and triage.
 
 Advanced launch options are available from the installed command or repository launcher:
 

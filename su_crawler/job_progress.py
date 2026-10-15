@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
@@ -9,6 +10,7 @@ from typing import Any
 
 from .assistant_runtime import get_job
 from .assistant_workspace import workspace_root
+from .collection_attention import attention_for_job
 
 
 _FAILED = {"blocked", "policy_denied", "needs_auth", "failed", "timeout",
@@ -58,7 +60,7 @@ def _checkpoint_summary(root: Path, plan_id: str, job_id: str) -> dict[str, Any]
         return None
     # JSON1 reads scalar metadata directly from SQLite. Binary capture blobs are
     # never decoded, and the raw checkpoint JSON is never returned to MCP clients.
-    with sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True, timeout=2) as db:
+    with closing(sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True, timeout=2)) as db:
         row = db.execute("""
             SELECT json_extract(data, '$.elapsed'), json_extract(data, '$.inflight'),
                    json_array_length(data, '$.queue'), json_extract(data, '$.collection_finished')
@@ -149,6 +151,12 @@ def research_progress(root: str | Path, job_id: str) -> dict[str, Any]:
     if checkpoint is not None:
         output["checkpoint_elapsed_seconds"] = checkpoint["checkpoint_elapsed_seconds"]
         output["collection_finished"] = checkpoint["collection_finished"]
+    output["attention"] = attention_for_job(base, job_id, _job=job)
+    refresh = payload.get('refresh')
+    if isinstance(refresh, dict):
+        rows = refresh.get('changes', [])
+        output['refresh'] = {**refresh, 'changes': rows[:50],
+                             'changes_truncated': refresh.get('changes_truncated', 0) + max(0, len(rows) - 50)}
     if job.get("error"):
         output["error"] = str(job["error"])[:500]
     return output

@@ -1,6 +1,14 @@
 (() => {
   "use strict";
   const rows = [
+    ["refreshTitle", "Repeat collection", "반복 수집 설정", "繰り返し収集"],
+    ["refreshMode", "Collection mode", "수집 방식", "収集方法"],
+    ["refreshIncremental", "Check changes", "변경분 확인", "変更を確認"],
+    ["refreshFull", "Full approved-scope recheck", "승인 범위 전체 대조", "承認範囲の全件再確認"],
+    ["refreshDays", "Full recheck interval (days)", "전체 대조 주기 (일)", "全件再確認の間隔（日）"],
+    ["refreshInvalid", "Enter a whole number from 1 to 365 days.", "주기는 1~365일의 정수로 입력하세요.", "間隔は1〜365日の整数で入力してください。"],
+    ["refreshExecution", "Repeat collection: {mode}; full recheck due after {days} days.", "반복 수집: {mode} · 전체 대조 주기 {days}일", "繰り返し収集：{mode}・全件再確認の間隔{days}日"],
+    ["refreshHint", "Check approved sources each run. After the interval, the next run performs a full recheck. This does not schedule background runs. Dynamic pages still need rendering; new URLs require review.", "매 실행 시 승인된 출처의 변경을 확인합니다. 주기가 지나면 다음 실행에서 전체 대조합니다. 백그라운드 자동 실행 예약은 아닙니다. 동적 페이지는 다시 열어 확인하며 새 URL은 검토가 필요합니다.", "毎回、承認された情報源の変更を確認します。間隔が過ぎた次の実行で全件を再確認します。バックグラウンド実行の予約ではありません。動的ページは再表示し、新しいURLは確認が必要です。"],
     ["catalogSections", "Catalog sections", "카탈로그 섹션", "カタログのセクション"],
     ["catalogSectionCounts", "{observed} offers found · {extracted} extracted · {prices} current prices · {unparsed} need review · {clicks} expansions", "상품 {observed}건 발견 · {extracted}건 추출 · 현재 가격 {prices}건 · 검토 필요 {unparsed}건 · 펼침 {clicks}회", "商品{observed}件発見・{extracted}件抽出・現在価格{prices}件・要確認{unparsed}件・展開{clicks}回"],
     ["catalogExpected", "Expected offers from a recorded enumeration: {count}", "확인된 목록에서 예상되는 상품: {count}건", "記録済み一覧から予想される商品: {count}件"],

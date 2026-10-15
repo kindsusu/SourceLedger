@@ -62,6 +62,11 @@ def build_assistant_server(root: str | Path):
             "The user selects recommendations in the web UI; do not bypass that selection by adding or collecting them. "
             "SourceLedger does not trigger assistant conversations or supply a search/model service."
             " After starting a job, call get_research_progress for small page counts and report readiness. "
+            "Inspect its attention items for user-required login or browser challenges. Notify the user, "
+            "but keep the worker collecting other pages; closing an alert does not resolve the issue. "
+            "Preserve the reviewed refresh_policy: new plans default to incremental with a 7-day full check interval. "
+            "The next run after the interval rechecks the approved scope; no background schedule is installed. "
+            "Dynamic pages still require rendering. Explain actual refresh mode and change counts in the final result. "
             "Use wait_for_job to avoid rapid polling; then fetch observations in bounded pages. "
             "After collection, call get_research_gaps. Use retry_research_pages only for listed retryable URLs. "
             "Inspect get_collection_issues for persistent causes and next actions. For dynamic pages, inspect the site "
@@ -167,6 +172,9 @@ def build_assistant_server(root: str | Path):
         conditions [{field,operator,value}],
         selected_candidate_ids, removed_candidate_ids, added_candidates [{url,name?,kind?,reason?}].
         collection_rules maps exact candidate URLs to reviewed {recipe, selectors, row_selector?, profile_dir?}.
+        refresh_policy is {mode: 'incremental' or 'full', full_interval_days: 1..365}.
+        New plans default to incremental checks and a full approved-scope recheck due after 7 days.
+        This is evaluated on execution, not a background schedule. Dynamic pages still render.
         Recipes can enumerate bounded lists/options. Explain selectors, scope and limits before confirmation.
         profile_dir is an existing workspace-relative authorized browser profile, never credentials.
         Keep the full original request when adding refinement. Removals persist across regeneration.
@@ -243,6 +251,8 @@ def build_assistant_server(root: str | Path):
                 "selected_url_count": len(selected), "selected_hosts": dict(Counter(urlsplit(item["url"]).hostname for item in selected)),
                 "batch_count": ceil(len(selected) / batch_size), **{key: clean[key] for key in ("batch_size", "max_seconds", "concurrency", "browser_reuse", "browser_concurrency")},
                 "follow_links": False,
+                "refresh_policy": plan.get("refresh_policy", {"mode": "full", "full_interval_days": 7}),
+                "refresh_note": "Due-on-run full comparison within each approved batch scope. New URLs require review; no background scheduling or automatic deletion inference.",
                 "execution": "One durable server job collects all approved URLs; poll one job ID."}
 
     @server.tool(annotations=open_world)

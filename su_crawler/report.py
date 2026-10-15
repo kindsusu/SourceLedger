@@ -260,6 +260,53 @@ def append_collection_issues(path: str | Path, issues: list[dict[str, Any]]) -> 
     return path
 
 
+def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
+    """Present revalidation separately from prices; source strings remain literal."""
+    from openpyxl import load_workbook
+    from openpyxl.styles import Font
+    path = Path(path)
+    wb = load_workbook(path)
+    title = "Collection Changes"
+    if title in wb:
+        del wb[title]
+    ws = wb.create_sheet(title)
+    ws.append(["Scope", refresh.get('scope')])
+    ws.append(["Mode", refresh.get('effective_mode'), "Reason", refresh.get('reason')])
+    ws.append(["Last full check (UTC)", refresh.get('last_full_at'), "Next full due (UTC)", refresh.get('next_full_due_at')])
+    ws.append(["Note", "Removed candidates are review items, not confirmed discontinued products. Revalidated evidence is not a fresh source capture.",
+               "Approved URLs rechecked", refresh.get('approved_urls_rechecked'),
+               "Inventory completeness verified", refresh.get('inventory_completeness_verified')])
+    headers = ["Page URL", "Check status", "Added", "Changed", "Unchanged", "Unavailable", "Removed candidate",
+               "Original capture (UTC)", "Last checked (UTC)"]
+    ws.append(headers)
+    for item in refresh.get('changes', []):
+        ws.append([item.get(key) for key in ('url', 'status', 'added', 'changed', 'unchanged', 'unavailable',
+                    'removed_candidate', 'original_fetched_at', 'checked_at')])
+    for row in ws:
+        for cell in row:
+            if isinstance(cell.value, str):
+                cell.data_type = 's'
+    for cell in ws[5]:
+        cell.font = Font(bold=True)
+    ws.freeze_panes = 'A6'
+    ws.auto_filter.ref = f'A5:I{max(5, ws.max_row)}'
+    for col in ('A', 'H', 'I'):
+        ws.column_dimensions[col].width = 38
+    for col in ('B', 'C', 'D', 'E', 'F', 'G'):
+        ws.column_dimensions[col].width = 18
+    fd, name = tempfile.mkstemp(prefix=path.stem + '.', suffix='.xlsx', dir=path.parent)
+    os.close(fd)
+    temp = Path(name)
+    try:
+        wb.save(temp)
+        _validate_xlsx(temp)
+        os.replace(temp, path)
+    finally:
+        wb.close()
+        temp.unlink(missing_ok=True)
+    return path
+
+
 def export_report(
     config: CollectionConfig,
     run: dict[str, Any],
