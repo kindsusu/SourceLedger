@@ -249,6 +249,13 @@ def extract_monthly_detail(result: FetchResult, path: str, mode: str, visibility
             fields["upfront_payment_amount"] = upfront[1]
             proofs["upfront_payment_label"] = evidence("gongcar:monthly-detail:rental-info", "선납/보증금", "선납/보증금")
             proofs["upfront_payment_amount"] = evidence("gongcar:monthly-detail:rental-info", upfront[1], upfront[0])
+        age_notes = [node for node in soup.select("p") if is_visible(node)
+                     and re.search(r"만\s*\d+\s*세\s*이상\s*기준\s*요금", visible_text(node) or "")]
+        if len(age_notes) == 1:
+            raw = visible_text(age_notes[0]) or ""
+            age_basis = re.search(r"만\s*\d+\s*세\s*이상\s*기준\s*요금", raw).group(0)
+            fields["price_age_basis"] = age_basis
+            proofs["price_age_basis"] = evidence(f"{locator}/price-age-note", age_basis, raw)
         annotate_evidence(proofs, mode, source_identity={"item_id", "section"},
                           displayed_fields=set(proofs) - {"item_id", "section"})
         candidates.append(Candidate(fields=fields, evidence=proofs, locator=locator,

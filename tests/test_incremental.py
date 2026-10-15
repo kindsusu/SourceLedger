@@ -185,3 +185,33 @@ def test_cached_content_still_runs_fresh_validation(monkeypatch, tmp_path):
     store = Store(tmp_path)
     assert store.observations(first["id"])[0]["status"] == store.observations(second["id"])[0]["status"] == "review"
     store.close()
+
+
+def test_non_validator_metadata_does_not_trigger_conditional_collector_call():
+    from su_crawler.incremental import conditional_fetch
+    calls = []
+
+    def fetch(source, _base, backend, *, validators=None):
+        calls.append(validators)
+        return FetchResult(source.id, 'fetched', backend, content=b'current')
+
+    source = _source()
+    conditional_fetch(fetch, source, '.', 'http', {
+        'http_metadata': {'retry_after': '1'}, 'final_url': source.location,
+    })
+    assert calls == [None]
+
+
+def test_reused_candidates_are_independent_of_snapshot_mutations():
+    import hashlib
+    from su_crawler.incremental import extract_current
+    candidate = _candidate()
+    source = _source()
+    result = FetchResult(source.id, 'fetched', 'http', content=b'current', final_url=source.location)
+    saved = {'sha256': hashlib.sha256(b'current').hexdigest(), 'final_url': source.location,
+             'media_type': result.media_type, 'parsed_candidates': [candidate]}
+    current = extract_current(result, source, saved, lambda *_: pytest.fail('unexpected extraction'))
+    current[0].review_flags.append('fresh validation')
+    current[0].evidence['price']['raw'] = 'changed'
+    assert candidate.review_flags == []
+    assert candidate.evidence['price']['raw'] == '10'

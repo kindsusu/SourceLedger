@@ -441,6 +441,8 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
 
 def _safe_step(step: dict[str, Any]) -> tuple[str, str]:
     action = str(step.get("action", ""))
+    if 'if_visible' in step and (action != 'click' or not isinstance(step['if_visible'], bool)):
+        raise _policy_error("invalid_recipe", "if_visible requires a boolean on a click action")
     if action not in {"click", "select", "fill", "wait_for", "assert_text", "expand_list", "enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}:
         raise _policy_error("browser_action_denied", "Browser action is not allowed")
     if action in {"enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}:
@@ -1074,6 +1076,16 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 timeout_ms = min(requested_ms, remaining_ms())
                 locator = page.locator(selector).first
                 if action == "click":
+                    if step.get('if_visible'):
+                        visible = page.locator(f':is({selector}):visible')
+                        count = visible.count()
+                        if count == 0:
+                            trace.append({'event': 'recipe_step_skipped', 'index': index,
+                                          'action': action, 'reason': 'not_visible', 'at': utc_now()})
+                            continue
+                        if count != 1:
+                            raise _policy_error('invalid_recipe', 'Optional click target is ambiguous')
+                        locator = visible
                     try:
                         locator.click(timeout=timeout_ms)
                     except Exception:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -65,7 +66,8 @@ def load_snapshot(store, directory: Path, source: Source, backend: str) -> dict 
 
 def conditional_fetch(collector: Callable, source: Source, base_dir: str,
                       backend: str, saved: dict | None) -> FetchResult:
-    validators = saved.get('http_metadata', {}) if saved else {}
+    validators = {key: value for key, value in (saved.get('http_metadata', {}) if saved else {}).items()
+                  if key in {'etag', 'last_modified'} and value}
     # Do not conditionally fetch an originally redirected URL. A 304 at another
     # location cannot revalidate the original representation.
     if saved and saved.get('final_url') != source.location:
@@ -92,7 +94,7 @@ def extract_current(result: FetchResult, source: Source, saved: dict | None, ext
     if (saved and digest == saved['sha256'] and result.final_url == saved['final_url']
             and result.media_type == saved['media_type']):
         result.trace.append({'code': 'extraction_reused', 'sha256': digest})
-        return saved['parsed_candidates']
+        return deepcopy(saved['parsed_candidates'])
     return extractor(result, source)
 
 

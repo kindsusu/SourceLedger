@@ -52,7 +52,10 @@ def test_scope_exclusions_do_not_turn_discovered_sections_into_missing_cards(tmp
     assert sections["rentpass_promotion"]["observed_count"] == 1
     assert sections["rentpass_promotion"]["status"] == "complete"
     assert seen[0] == ("http", [])
-    assert seen[1][0] == "playwright" and seen[1][1][0]["action"] == "expand_list"
+    assert seen[1][0] == "playwright"
+    assert any(step["action"] == "expand_list" for step in seen[1][1])
+    assert seen[1][1][0] == {"action": "click", "selector": '#promo.is-on button[data-act="promo-close"]',
+                             "if_visible": True, "timeout_seconds": 2}
 
     store = Store(tmp_path / "out")
     try:
