@@ -12,6 +12,7 @@ import mimetypes
 import os
 import secrets
 import socket
+import time
 import webbrowser
 
 from . import __version__
@@ -446,7 +447,18 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
         if path == "/api/worker":
             self._fields(value, allowed={"action"}, required={"action"})
             if value["action"] == "start":
-                return start_worker(base)
+                # The dashboard's read-only status poll briefly owns these
+                # non-blocking locks. A start request racing it should wait
+                # for that short read instead of requiring another click.
+                transient = {f"Workspace is busy: {base / 'runtime' / name}"
+                             for name in ("start", "worker")}
+                for attempt in range(8):
+                    try:
+                        return start_worker(base)
+                    except RuntimeError as exc:
+                        if str(exc) not in transient or attempt == 7:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
             if value["action"] == "stop":
                 return stop_worker(base)
             raise ValueError("action must be start or stop")

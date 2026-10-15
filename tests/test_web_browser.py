@@ -81,7 +81,11 @@ def test_browser_onboarding_job_and_report(tmp_path):
             page.locator('#advanced-fields input[name="config_path"]').fill("verification.json")
             page.get_by_role("button", name="Queue advanced job").click()
             playwright.expect(page.locator("#job-list")).to_contain_text("Queued", ignore_case=True)
-            page.get_by_role("button", name="Start worker", exact=True).click()
+            with page.expect_response(lambda response: response.url.endswith("/api/worker") and response.request.method == "POST") as worker_response:
+                page.get_by_role("button", name="Start worker", exact=True).click()
+            response = worker_response.value
+            assert response.status == 200, response.text()
+            assert response.json()["status"] in {"idle", "running"}
             playwright.expect(page.locator("#job-detail")).to_contain_text("Succeeded", ignore_case=True, timeout=30000)
             with page.expect_download() as download_event:
                 page.get_by_role("link", name="Download XLSX").click()

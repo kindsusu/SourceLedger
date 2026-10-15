@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from http.client import HTTPConnection
 from pathlib import Path
 import json
@@ -9,6 +10,7 @@ import threading
 import pytest
 
 from su_crawler import web_server
+from su_crawler.research import _locked
 
 
 @contextmanager
@@ -49,6 +51,48 @@ def json_response(result):
 
 def authorized(server, method, path, body):
     return request(server, method, path, body, token=server.csrf_token, origin=server.url)
+
+
+def test_worker_start_retries_real_start_lock_contention(tmp_path, monkeypatch):
+    start = tmp_path / "runtime" / "start"
+    entered = threading.Event()
+    attempts = []
+
+    def start_while_reading(root):
+        attempts.append(1)
+        try:
+            with _locked(start):
+                return {"status": "idle", "pid": 1, "current_job_id": None}
+        except RuntimeError:
+            entered.set()
+            raise
+
+    monkeypatch.setattr(web_server, "start_worker", start_while_reading)
+    with running_server(tmp_path) as server, ThreadPoolExecutor(max_workers=1) as pool:
+        with _locked(start):
+            future = pool.submit(authorized, server, "POST", "/api/worker", {"action": "start"})
+            assert entered.wait(2)
+        status, value = json_response(future.result(timeout=3))
+    assert status == 200 and value["status"] == "idle"
+    assert len(attempts) >= 2
+
+
+@pytest.mark.parametrize("transient,expected_attempts", [(True, 8), (False, 1)])
+def test_worker_start_retry_is_bounded_and_other_errors_propagate(tmp_path, monkeypatch, transient, expected_attempts):
+    attempts = []
+    message = (f"Workspace is busy: {tmp_path / 'runtime' / 'start'}" if transient
+               else "Assistant worker exited before it became ready")
+
+    def failing_start(root):
+        attempts.append(1)
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(web_server, "start_worker", failing_start)
+    monkeypatch.setattr(web_server.time, "sleep", lambda _delay: None)
+    with running_server(tmp_path) as server:
+        status, value = json_response(authorized(server, "POST", "/api/worker", {"action": "start"}))
+    assert status == 409 and value["error"] == message
+    assert len(attempts) == expected_attempts
 
 
 def test_bootstrap_and_onboarding_round_trip(tmp_path):
