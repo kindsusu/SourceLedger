@@ -278,3 +278,5 @@ Gongcar short-rental adapters support monthly/daily catalog cards and explicit d
 Checkpoint captures now use lossless, content-addressed storage. Back up the entire output directory, including `checkpoint_blobs/` and `evidence/`, alongside SQLite. See [storage measurements and compatibility](docs/STORAGE_OPTIMIZATION.md).
 
 Optional browser reuse and browser concurrency 2 are available for controlled comparisons through MCP execution settings. See [browser optimization and validation](docs/BROWSER_OPTIMIZATION.md).
+
+Before publishing a version, require the [CI and verified release checks](docs/CI_RELEASE.md) for the exact commit.

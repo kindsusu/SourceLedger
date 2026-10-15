@@ -10,6 +10,22 @@ class SnapshotBudgetExceeded(Exception):
     """The collection-wide snapshot count or byte limit was reached."""
 
 
+class ListingChanged(Exception):
+    """The observed listing no longer matches the DOM being preserved."""
+
+
+def _listing_items(items: Any) -> list[dict[str, str]]:
+    # One browser evaluation observes the visible rows and their attributes.
+    # Text alone would miss a changed product link, ID, or price attribute.
+    return items.evaluate_all("els => els.map(el => ({text: el.innerText, html: el.outerHTML}))")
+
+
+def _capture_listing(capture: Callable[..., None], selected: dict[str, str],
+                     step: dict[str, Any], entries: list[dict[str, str]]) -> None:
+    capture(selected, None, {"selector": step["selector"],
+                             "item_selector": step["item_selector"], "entries": entries})
+
+
 def validate_enumeration_step(step: dict[str, Any]) -> None:
     action = step.get("action")
     if action == "enumerate_options":
@@ -176,28 +192,34 @@ def paginate(
                     status, reason = ("partial" if count else "unknown"), "deadline"
                     break
                 items = container.locator(step["item_selector"] + ":visible")
-                texts = items.all_inner_texts()
-                if not texts:
+                entries = _listing_items(items)
+                if not entries:
                     status, reason = ("partial" if count else "unknown"), "missing_items"
                     break
-                signature = hashlib.sha256(repr(texts).encode("utf-8")).hexdigest()
+                signature = hashlib.sha256(repr(entries).encode("utf-8")).hexdigest()
                 if signature in seen:
                     status, reason = "partial", "repeated_page"
                     break
                 seen.add(signature)
-                capture({"page": str(index + 1)})
+                try:
+                    _capture_listing(capture, {"page": str(index + 1)}, step, entries)
+                except ListingChanged:
+                    status, reason = ("partial" if count else "unknown"), "list_changed_during_capture"
+                    break
                 count += 1
                 next_control = container.locator(step["next_selector"] + ":visible")
                 if next_control.count() == 0:
                     page.wait_for_timeout(min(wait_ms, max(1, remaining_ms() - 1000)))
                     if next_control.count() == 0:
-                        status, reason = "complete", "next_absent"
+                        status, reason = (("complete", "next_absent") if _listing_items(items) == entries
+                                          else ("partial", "list_changed_after_capture"))
                         break
                 if next_control.count() != 1:
                     status, reason = "partial", "ambiguous_next"
                     break
                 if next_control.is_disabled():
-                    status, reason = "complete", "next_disabled"
+                    status, reason = (("complete", "next_disabled") if _listing_items(items) == entries
+                                      else ("partial", "list_changed_after_capture"))
                     break
                 if index + 1 >= step.get("max_pages", 20):
                     status, reason = "partial", "page_budget"
@@ -230,7 +252,7 @@ def scroll_list(
     container = page.locator(step["selector"])
     count = 0
     status, reason = "unknown", "missing_items"
-    previous: list[str] = []
+    previous: list[dict[str, str]] = []
     captured = 0
     start_url = page.url
     wait_ms = int(step.get("progress_wait_seconds", 1) * 1000)
@@ -246,7 +268,7 @@ def scroll_list(
                     status, reason = ("partial" if count else "unknown"), "unexpected_navigation"
                     break
                 cards = container.locator(step["item_selector"] + ":visible")
-                current = cards.all_inner_texts()
+                current = _listing_items(cards)
                 if len(current) > step.get("max_items", 1000):
                     status, reason = "partial", "item_budget"
                     break
@@ -256,23 +278,28 @@ def scroll_list(
                 if previous and (len(current) < len(previous) or current[:len(previous)] != previous):
                     status, reason = "partial", "list_replaced"
                     break
-                count = len(current)
-                previous = current
                 # Save each verified append-only state before scrolling. A site
                 # may replace the list on the next interaction; in that case
                 # the final DOM is not evidence of previously observed cards.
-                capture({"scroll_items": str(count)})
+                try:
+                    _capture_listing(capture, {"scroll_items": str(len(current))}, step, current)
+                except ListingChanged:
+                    status, reason = ("partial" if captured else "unknown"), "list_changed_during_capture"
+                    break
+                count = len(current)
+                previous = current
                 captured += 1
                 end_selector = step.get("end_selector")
                 if end_selector and container.locator(end_selector + ":visible").count() == 1:
-                    status, reason = "complete", "explicit_end"
+                    status, reason = (("complete", "explicit_end") if _listing_items(cards) == current
+                                      else ("partial", "list_changed_after_capture"))
                     break
                 if index == step.get("max_scrolls", 20):
                     status, reason = "partial", "scroll_budget"
                     break
                 cards.last.scroll_into_view_if_needed(timeout=remaining_ms())
                 page.wait_for_timeout(min(wait_ms, max(1, remaining_ms() - 1000)))
-                if cards.count() == count and cards.all_inner_texts() == previous:
+                if cards.count() == count and _listing_items(cards) == previous:
                     status, reason = "partial", "no_growth_unconfirmed"
                     break
     except SnapshotBudgetExceeded:

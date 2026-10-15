@@ -25,7 +25,7 @@ import httpx
 
 from .models import FetchResult, Source, resolve_path, utc_now
 from .browser_runtime import browser_headless, select_browser_runtime
-from .browser_enumeration import SnapshotBudgetExceeded, enumerate_buttons, enumerate_options, paginate, scroll_list, validate_enumeration_step
+from .browser_enumeration import ListingChanged, SnapshotBudgetExceeded, enumerate_buttons, enumerate_options, paginate, scroll_list, validate_enumeration_step
 from .access_challenges import detect_challenge
 
 
@@ -679,10 +679,17 @@ def _selected_control_states(page: Any, timeout_ms: float) -> list[dict[str, Any
     return states if isinstance(states, list) else []
 
 
-def _evidence_html_snapshot(page: Any) -> bytes:
+def _evidence_html_snapshot(page: Any, listing_expectation: dict[str, Any] | None = None) -> bytes:
     """Serialize live selection state without retaining free-form input values."""
-    html = page.evaluate(
-        """() => {
+    listing = (page.locator(listing_expectation["selector"]).locator(
+        listing_expectation["item_selector"] + ":visible") if listing_expectation else page.locator("html"))
+    snapshot = listing.evaluate_all(
+        """(elements, expectation) => {
+          if (expectation) {
+            const entries = elements.map(el => ({text: el.innerText, html: el.outerHTML}));
+            if (elements.some(el => !document.documentElement.contains(el)) ||
+                JSON.stringify(entries) !== JSON.stringify(expectation.entries)) return { changed: true };
+          }
           const clone = document.documentElement.cloneNode(true);
           const originals = Array.from(document.querySelectorAll('select, input, textarea'));
           const copies = Array.from(clone.querySelectorAll('select, input, textarea'));
@@ -716,10 +723,12 @@ def _evidence_html_snapshot(page: Any) -> bytes:
               copy.setAttribute('data-sourceledger-computed-hidden', 'true');
             }
           });
-          return '<!doctype html>\\n' + clone.outerHTML;
-        }"""
+          return { html: '<!doctype html>\\n' + clone.outerHTML };
+        }""", listing_expectation
     )
-    return str(html).encode("utf-8")
+    if snapshot.get("changed"):
+        raise ListingChanged("Listing changed before its evidence was captured")
+    return str(snapshot["html"]).encode("utf-8")
 
 
 def _close_browser_resources(context: Any, browser: Any) -> None:
@@ -1038,13 +1047,14 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             if initial_challenge:
                 return challenge_result(initial_challenge, page.url)
 
-            def capture_variant(selections: dict[str, str], selection_values: dict[str, str] | None = None) -> None:
+            def capture_variant(selections: dict[str, str], selection_values: dict[str, str] | None = None,
+                                listing_expectation: dict[str, Any] | None = None) -> None:
                 nonlocal variant_bytes, challenge_seen
                 require_navigation_policy()
                 _check_url(source, page.url)
                 if len(variant_snapshots) >= MAX_VARIANT_SNAPSHOTS:
                     raise SnapshotBudgetExceeded()
-                html = _evidence_html_snapshot(page)
+                html = _evidence_html_snapshot(page, listing_expectation)
                 challenge = detect_challenge(html, document_status.get("latest", 200))
                 if challenge:
                     challenge_seen = challenge

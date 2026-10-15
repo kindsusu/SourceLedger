@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import time
 import threading
+import os
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from bs4 import BeautifulSoup
+from browser_diagnostics import capture_browser_diagnostics
 
 from su_crawler.browser_enumeration import enumerate_buttons, enumerate_options, paginate, scroll_list, validate_enumeration_step
 from su_crawler.browser_runtime import select_browser_runtime
@@ -16,20 +19,25 @@ from su_crawler.models import FetchResult, Source
 
 
 @pytest.fixture
-def page():
+def page(request):
     pytest.importorskip("playwright")
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
         runtime = select_browser_runtime(pw.chromium)
         if runtime is None:
+            if os.environ.get("CI") == "true":
+                pytest.fail("Chromium unavailable in CI")
             pytest.skip("Chromium unavailable")
         try:
             browser = pw.chromium.launch(headless=True, timeout=5000, **runtime.launch_options())
         except Exception as exc:
+            if os.environ.get("CI") == "true":
+                pytest.fail(f"Chromium launch failed in CI: {type(exc).__name__}")
             pytest.skip(f"Chromium unavailable: {type(exc).__name__}")
         try:
-            yield browser.new_page()
+            with capture_browser_diagnostics(browser.new_page(), request) as test_page:
+                yield test_page
         finally:
             browser.close()
 
@@ -119,7 +127,7 @@ def test_paginate_captures_replaced_pages_and_stops_at_disabled_next(page):
     snapshots, trace = [], []
     paginate(page, {"action": "paginate", "selector": "#list", "item_selector": ".item",
                     "next_selector": ".next", "progress_wait_seconds": 0.01},
-             _remaining(), lambda selected: snapshots.append((_evidence_html_snapshot(page), selected)), trace)
+             _remaining(), lambda selected, values, expected: snapshots.append((_evidence_html_snapshot(page, expected), selected)), trace)
     assert [b"A" in entry[0] for entry in snapshots] == [True, False]
     assert [entry[1]["page"] for entry in snapshots] == ["1", "2"]
     assert (trace[-1]["status"], trace[-1]["reason"]) == ("complete", "next_disabled")
@@ -129,7 +137,8 @@ def test_scroll_without_sentinel_is_partial_and_single_snapshot(page):
     page.set_content("""<div id=list><article class=item>A</article></div>""")
     snapshots, trace = [], []
     scroll_list(page, {"action": "scroll_list", "selector": "#list", "item_selector": ".item",
-                       "progress_wait_seconds": 0.01}, _remaining(), snapshots.append, trace)
+                       "progress_wait_seconds": 0.01}, _remaining(),
+                lambda selected, values, expected: snapshots.append(selected), trace)
     assert len(snapshots) == 1
     assert (trace[-1]["status"], trace[-1]["reason"]) == ("partial", "no_growth_unconfirmed")
 
@@ -138,21 +147,114 @@ def test_scroll_explicit_end_is_complete(page):
     page.set_content("""<div id=list><article class=item>A</article><div class=end>End</div></div>""")
     snapshots, trace = [], []
     scroll_list(page, {"action": "scroll_list", "selector": "#list", "item_selector": ".item",
-                       "end_selector": ".end"}, _remaining(), snapshots.append, trace)
+                       "end_selector": ".end"}, _remaining(),
+                lambda selected, values, expected: snapshots.append(selected), trace)
     assert (len(snapshots), trace[-1]["status"]) == (1, "complete")
 
 
 def test_scroll_replacement_preserves_prior_evidence(page):
-    page.set_content("""<div id=list><article class=item>A</article><article class=item style='height:900px'>B</article></div>
-      <script>new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting))
-        document.querySelector('#list').innerHTML='<article class=item>C</article>'})
-        .observe(document.querySelectorAll('.item')[1])</script>""")
+    page.set_viewport_size({"width": 320, "height": 240})
+    page.set_content("""<div id=list><article class=item>A</article>
+      <article class=item style='margin-top:700px;height:40px'>B</article></div>
+      <script>addEventListener('scroll', () => {
+        if (scrollY > 0) document.querySelector('#list').innerHTML='<article class=item>C</article>';
+      }, {once:true})</script>""")
+    assert page.evaluate("window.scrollY") == 0
+    assert page.locator(".item").last.evaluate("el => el.getBoundingClientRect().top > innerHeight")
     snapshots, trace = [], []
     scroll_list(page, {"action": "scroll_list", "selector": "#list", "item_selector": ".item",
                        "progress_wait_seconds": 0.05}, _remaining(),
-                lambda selected: snapshots.append(_evidence_html_snapshot(page)), trace)
-    assert trace[-1]["status"] == "partial"
-    assert snapshots and b">A</article>" in snapshots[0]
+                lambda selected, values, expected: snapshots.append(_evidence_html_snapshot(page, expected)), trace)
+    assert (trace[-1]["status"], trace[-1]["reason"]) == ("partial", "list_replaced")
+    assert len(snapshots) == 1
+    assert [node.get_text(strip=True) for node in BeautifulSoup(snapshots[0], "html.parser").select("#list .item")] == ["A", "B"]
+
+
+def test_scroll_mutation_between_count_and_snapshot_keeps_no_mixed_evidence(page):
+    page.set_content("<div id=list><article class=item>A</article></div>")
+    snapshots, trace = [], []
+
+    def mutate_then_capture(selected, values, expected):
+        page.locator(".item").evaluate("el => el.textContent = 'B'")
+        snapshots.append(_evidence_html_snapshot(page, expected))
+
+    scroll_list(page, {"action": "scroll_list", "selector": "#list", "item_selector": ".item",
+                       "progress_wait_seconds": 0.01}, _remaining(), mutate_then_capture, trace)
+    assert snapshots == []
+    assert (trace[-1]["status"], trace[-1]["reason"], trace[-1]["captured_count"]) == (
+        "unknown", "list_changed_during_capture", 0)
+
+
+def test_paginate_mutation_between_count_and_snapshot_keeps_no_mixed_evidence(page):
+    page.set_content("<div id=list><article class=item>A</article><button class=next>Next</button></div>")
+    snapshots, trace = [], []
+
+    def mutate_then_capture(selected, values, expected):
+        page.locator(".item").evaluate("el => el.textContent = 'B'")
+        snapshots.append(_evidence_html_snapshot(page, expected))
+
+    paginate(page, {"action": "paginate", "selector": "#list", "item_selector": ".item",
+                    "next_selector": ".next", "progress_wait_seconds": 0.01},
+             _remaining(), mutate_then_capture, trace)
+    assert snapshots == []
+    assert (trace[-1]["status"], trace[-1]["reason"], trace[-1]["captured_count"]) == (
+        "unknown", "list_changed_during_capture", 0)
+
+
+def test_same_text_changed_product_attributes_are_not_mixed_into_snapshot(page):
+    page.set_content("<div id=list><article class=item data-price='100'><a href='/a'>Same</a></article></div>")
+    snapshots, trace = [], []
+
+    def mutate_then_capture(selected, values, expected):
+        page.locator(".item").evaluate("el => { el.dataset.price = '200'; el.querySelector('a').href = '/b'; }")
+        snapshots.append(_evidence_html_snapshot(page, expected))
+
+    scroll_list(page, {"action": "scroll_list", "selector": "#list", "item_selector": ".item",
+                       "progress_wait_seconds": 0.01}, _remaining(), mutate_then_capture, trace)
+    assert snapshots == []
+    assert (trace[-1]["status"], trace[-1]["reason"]) == ("unknown", "list_changed_during_capture")
+
+
+def test_scroll_after_saved_state_detects_same_text_attribute_replacement(page):
+    page.set_viewport_size({"width": 320, "height": 240})
+    page.set_content("""<div id=list><article class=item><a href='/a'>Same</a></article>
+      <article class=item style='margin-top:700px;height:40px'>B</article></div>
+      <script>addEventListener('scroll', () => {
+        if (scrollY > 0) document.querySelector('a').href='/b';
+      }, {once:true})</script>""")
+    snapshots, trace = [], []
+    scroll_list(page, {"action": "scroll_list", "selector": "#list", "item_selector": ".item",
+                       "progress_wait_seconds": 0.05}, _remaining(),
+                lambda selected, values, expected: snapshots.append(_evidence_html_snapshot(page, expected)), trace)
+    assert len(snapshots) == 1
+    soup = BeautifulSoup(snapshots[0], "html.parser")
+    assert soup.select_one("#list a")["href"] == "/a"
+    assert (trace[-1]["status"], trace[-1]["reason"]) == ("partial", "list_replaced")
+
+
+@pytest.mark.parametrize("mode", ["scroll_end", "next_disabled", "next_absent"])
+def test_completion_rechecks_listing_after_evidence_capture(page, mode):
+    if mode == "scroll_end":
+        page.set_content("<div id=list><article class=item data-price='100'>Same</article><div class=end>End</div></div>")
+        step = {"action": "scroll_list", "selector": "#list", "item_selector": ".item",
+                "end_selector": ".end", "progress_wait_seconds": 0.01}
+        run = scroll_list
+    else:
+        button = "<button class=next disabled>Next</button>" if mode == "next_disabled" else ""
+        page.set_content(f"<div id=list><article class=item data-price='100'>Same</article>{button}</div>")
+        step = {"action": "paginate", "selector": "#list", "item_selector": ".item",
+                "next_selector": ".next", "progress_wait_seconds": 0.01}
+        run = paginate
+    snapshots, trace = [], []
+
+    def capture_then_mutate(selected, values, expected):
+        snapshots.append(_evidence_html_snapshot(page, expected))
+        page.locator(".item").evaluate("el => el.dataset.price = '200'")
+
+    run(page, step, _remaining(), capture_then_mutate, trace)
+    assert len(snapshots) == 1
+    assert BeautifulSoup(snapshots[0], "html.parser").select_one("#list .item")["data-price"] == "100"
+    assert (trace[-1]["status"], trace[-1]["reason"]) == ("partial", "list_changed_after_capture")
 
 
 def test_scroll_snapshots_deduplicate_existing_rows():

@@ -2,6 +2,9 @@ name: Tests
 
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
@@ -20,6 +23,7 @@ jobs:
     env:
       PYTHONUTF8: '1'
       SOURCELEDGER_HEADLESS: '1'
+      SOURCELEDGER_TEST_ARTIFACTS: .tmp/test-artifacts
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -30,12 +34,29 @@ jobs:
       - name: Install Linux browser libraries
         if: runner.os == 'Linux'
         run: .venv/bin/python -m playwright install-deps chromium
+      - name: Record runtime versions
+        shell: bash
+        run: |
+          mkdir -p .tmp/test-artifacts
+          if [ "$RUNNER_OS" = "Windows" ]; then TEST_PYTHON=.venv/Scripts/python.exe; else TEST_PYTHON=.venv/bin/python; fi
+          "$TEST_PYTHON" -c "import sys, platform; print(sys.version); print(platform.platform())" > .tmp/test-artifacts/runtime.txt
+          "$TEST_PYTHON" -m pip freeze >> .tmp/test-artifacts/runtime.txt
+          "$TEST_PYTHON" -m playwright --version >> .tmp/test-artifacts/runtime.txt
       - name: Run Windows tests
         if: runner.os == 'Windows'
-        run: .venv/Scripts/python.exe -m pytest tests -q
+        run: .venv/Scripts/python.exe -m pytest tests -q --junitxml=.tmp/test-artifacts/junit.xml
       - name: Run macOS and Linux tests
         if: runner.os != 'Windows'
-        run: .venv/bin/python -m pytest tests -q
+        run: .venv/bin/python -m pytest tests -q --junitxml=.tmp/test-artifacts/junit.xml
+      - name: Preserve test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-diagnostics-${{ matrix.os }}-py${{ matrix.python }}
+          path: .tmp/test-artifacts/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
 
   package:
     name: Build and install distribution
@@ -59,3 +80,17 @@ jobs:
         with:
           name: python-distributions
           path: dist/*
+
+  ci-gate:
+    name: All environments passed
+    if: always()
+    needs: [test, package]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every test environment and package check
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          test "$TEST_RESULT" = success
+          test "$PACKAGE_RESULT" = success
