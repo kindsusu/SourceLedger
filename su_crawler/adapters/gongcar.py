@@ -10,6 +10,13 @@ from ..models import Candidate, FetchResult, Source, stable_id
 from .common import annotate_evidence, decimal_string, evidence, evidence_mode, html_soup, is_visible, text, visible_text, won
 
 
+def _rental_path(path: str) -> str:
+    """Keep legacy observation locators stable across the site's redirects."""
+    path = path.strip("/")
+    head, separator, tail = path.partition("/")
+    return {"monthly": "monthly-rent", "daily": "daily-rent"}.get(head, head) + separator + tail
+
+
 def _expanded_rows(table: Tag) -> list[list[tuple[Tag, str]]]:
     pending: dict[int, tuple[int, Tag, str]] = {}
     result: list[list[tuple[Tag, str]]] = []
@@ -327,7 +334,13 @@ def _catalog_candidates(soup, path: str, visibility: str, mode: str) -> list[Can
 def section_coverage(result: FetchResult, candidates: list[Candidate]) -> list[dict[str, object]]:
     """Report discovery separately from extraction and browser list completion."""
     soup = html_soup(result.content)
-    path = urlparse(result.final_url).path.rstrip("/").lstrip("/")
+    path = _rental_path(urlparse(result.final_url).path)
+    from .gongcar_price_sheet import matches as sheet_matches, coverage as sheet_coverage
+    if sheet_matches(soup):
+        return sheet_coverage(result, candidates, path)
+    from .gongcar_landing import matches, coverage as landing_coverage
+    if matches(soup):
+        return landing_coverage(result, candidates, path)
     if path in {"monthly-rent", "daily-rent"}:
         from .gongcar_short_rental import section_coverage as short_coverage
         return short_coverage(result, candidates, path)
@@ -383,7 +396,13 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
     soup = html_soup(result.content)
     mode = evidence_mode(result)
     visibility = "visible" if mode == "rendered_dom" else "unconfirmed"
-    path = urlparse(result.final_url or source.location).path.rstrip("/").lstrip("/")
+    path = _rental_path(urlparse(result.final_url or source.location).path)
+    from .gongcar_price_sheet import matches as sheet_matches, extract as sheet_extract
+    if sheet_matches(soup):
+        return sheet_extract(result, path, mode, visibility)
+    from .gongcar_landing import matches, extract as landing_extract
+    if matches(soup):
+        return landing_extract(result, path, mode, visibility)
     if re.fullmatch(r"monthly-rent/[^/]+", path):
         from .gongcar_short_rental import extract_monthly_detail
         return extract_monthly_detail(result, path, mode, visibility)

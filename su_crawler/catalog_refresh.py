@@ -184,18 +184,26 @@ def validated_http(page: dict, directory: Path) -> dict | None:
         content = evidence.read_bytes()
         if hashlib.sha256(content).hexdigest() != saved.get('sha256'):
             return None
-        return {**saved, 'content': content}
+        restored = {**saved, 'content': content}
+        raw = saved.get('raw_candidates')
+        if raw is not None and stable_id(raw) == saved.get('candidate_fingerprint'):
+            restored['parsed_candidates'] = [Candidate(**item) for item in raw]
+        return restored
     except (OSError, ValueError, TypeError):
         return None
 
 
 def page_baseline(source: Source, responses: list[tuple[FetchResult, list[Candidate]]],
-                  chosen: list[Candidate], directory: Path, *, previous: dict | None = None) -> dict:
+                  chosen: list[Candidate], directory: Path, *, previous: dict | None = None,
+                  raw_http_candidates: list[dict] | None = None) -> dict:
     from .pipeline import _save_evidence
     data = {'candidates': semantic_candidates(chosen), 'source_signature': source_signature(source),
             'http': None}
     http = next((result for result, _ in responses if result.backend == 'http' and result.status == 'fetched'), None)
-    if http and not source.recipe and not source.adapter and not source.selectors and not source.profile_dir:
+    if (http and not http.variant_snapshots and not source.recipe and not source.adapter
+            and not source.selectors and not source.profile_dir):
+        if any(event.get('code') == 'extraction_error' for event in http.trace):
+            return data
         path, digest = _save_evidence(directory, http, source)
         prior = (previous or {}).get('http') or {}
         revalidated = next((event for event in http.trace if event.get('code') == 'http_not_modified'), None)
@@ -204,4 +212,9 @@ def page_baseline(source: Source, responses: list[tuple[FetchResult, list[Candid
                         'fetched_at': (prior.get('fetched_at') or revalidated.get('original_fetched_at'))
                                       if revalidated else http.fetched_at,
                         'checked_at': http.fetched_at}
+        if raw_http_candidates is not None:
+            data['http'].update(raw_candidates=raw_http_candidates,
+                                candidate_fingerprint=stable_id(raw_http_candidates),
+                                extraction_trace=[event for event in http.trace if event.get('event') in
+                                                  {'extraction_gap', 'jsonld_truncated'}])
     return data

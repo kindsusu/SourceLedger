@@ -60,3 +60,23 @@ The address classifier handles the well-known NAT64 prefix by checking the
 embedded IPv4 destination. Public destinations are allowed; private, loopback,
 link-local, multicast, and reserved destinations remain denied. This follows
 the filtering principle in [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052#section-3.1).
+
+
+### Choosing a refresh mode
+
+Both modes compare the current observations with the last valid baseline. Incremental mode can reduce transfer and extraction work for eligible HTTP sources with valid retained evidence; it does not identify changed dynamic pages without visiting them. For browser-heavy targets, choose full mode unless a same-inventory measurement shows an incremental benefit. Time spent comparing results alone is not a speed improvement.
+
+Catalog HTTP extraction reuse requires matching bytes, final URL, media type, source configuration and extraction rules. Raw candidates are restored before applying the current scope filters and validation. Extraction errors are explicit failures: they must not overwrite the last valid comparison baseline or advance the successful full-check timestamp. A failed page remains a gap, even if another response preserved some observations.
+
+Browser workers receive a shared 15-second teardown grace period. This avoids treating ordinary Chromium shutdown beyond two seconds as a collection failure. A worker still alive after the grace period remains an error; no overlapping retry or detached browser is accepted as completed.
+
+### Optional UI dismissal
+
+A reviewed `click` recipe may set `if_visible: true`. An optional `appearance_wait_seconds` (0–5) allows a delayed overlay to appear within the collection deadline. A missing visible target is recorded as a skipped step; one visible target is clicked, and multiple matches fail closed. This is used to close a known promotion overlay before opening Gongcar's read-only price sheet. It does not submit quote forms or skip CAPTCHA/authentication checks.
+
+
+### Current Gongcar price sheets
+
+Current `/monthly` and `/daily` redirects are supported alongside the legacy rental paths. For long-term rental, rentpass and monthly rental, the collector opens the visible full-price sheet and extracts each displayed period and payment-condition cell separately. Declared vehicle counts are checked against visible vehicle groups; hidden, missing or unparsed cells leave a partial result. Inquiry-only cells remain observations without a price. Starting-price cards retain their `from` qualifier and review status, and are not substituted for the detailed sheet.
+
+A unique source `data-id` anchors condition-specific identity where present. Missing or duplicate identifiers fall back to explicitly uncertain local observations. Public quote tables do not establish vehicle stock or a binding offer; source dates and commercial conditions stay attached to the observations.

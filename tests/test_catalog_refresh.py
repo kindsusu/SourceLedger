@@ -226,3 +226,139 @@ def test_xlsx_preserves_all_changes_and_never_executes_source_text(tmp_path):
         assert sheet['A6'].value == '=unsafe()' and sheet['A6'].data_type == 's'
     finally:
         book.close()
+
+
+@pytest.mark.parametrize('conditional', [True, False])
+def test_identical_http_reuses_raw_extraction_and_reassesses_scope(monkeypatch, tmp_path, conditional):
+    import su_crawler.catalog_collection as collection
+    url = 'https://shop.example/item'
+    extracted = []
+    original = collection._jsonld_candidates
+    content = _html('10') + _html('20').replace(b'Item', b'Other').replace(b'SKU-1', b'SKU-2')
+
+    def tracked(result):
+        extracted.append(result.content)
+        return original(result)
+
+    monkeypatch.setattr(collection, '_jsonld_candidates', tracked)
+    calls = []
+
+    def fetch(source, _base, backend, *, validators=None):
+        calls.append((backend, validators))
+        if backend != 'http':
+            return FetchResult(source.id, 'tool_unavailable', backend)
+        return FetchResult(source.id, 'not_modified' if conditional and validators else 'fetched',
+                           backend, content=b'' if conditional and validators else content,
+                           final_url=url, http_metadata={'etag': 'v1'})
+
+    plan = _plan(url)
+    plan['exclude_terms'] = ['Other']
+    first = collect_plan(tmp_path, plan, output_dir=tmp_path / 'out', collector=fetch,
+                         max_pages=1, follow_links=False)
+    second = collect_plan(tmp_path, plan, output_dir=tmp_path / 'out', collector=fetch,
+                          max_pages=1, follow_links=False)
+    assert len(extracted) == 1
+    assert second['execution']['extraction_reused_responses'] == 1
+    assert second['execution']['http_not_modified_responses'] == int(conditional)
+    assert first['coverage'][0]['scope_assessments'] == second['coverage'][0]['scope_assessments']
+    assert second['coverage'][0]['scope_counts']['excluded'] == 1
+    assert second['refresh']['counts']['unchanged'] == 1
+    # Reusing static extraction must not suppress required browser coverage.
+    assert [backend for backend, _ in calls] == ['http', 'playwright', 'http', 'playwright']
+
+
+def test_extraction_failure_preserves_baseline_and_full_timestamp_then_recovers(monkeypatch, tmp_path):
+    import su_crawler.catalog_collection as collection
+    url = 'https://shop.example/item'
+    state = {'price': '10', 'fail': False}
+    original = collection._jsonld_candidates
+
+    def extraction(result):
+        if state['fail']:
+            raise RuntimeError('controlled failure')
+        return original(result)
+
+    monkeypatch.setattr(collection, '_jsonld_candidates', extraction)
+
+    def fetch(source, _base, backend, *, validators=None):
+        if backend != 'http':
+            return FetchResult(source.id, 'tool_unavailable', backend)
+        return FetchResult(source.id, 'fetched', backend, content=_html(state['price']), final_url=url,
+                           http_metadata={'etag': state['price']})
+
+    plan = _plan(url)
+    out = tmp_path / 'out'
+    collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=1, follow_links=False)
+    key = scope_key(plan, [url], follow_links=False)
+    baseline = read_baseline(out, key)
+    baseline['last_full_at'] = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+    write_baseline(out, key, baseline)
+    state.update(price='11', fail=True)
+    failed = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=1, follow_links=False)
+    assert failed['coverage'][0]['status'] == 'failed'
+    assert any(event.get('code') == 'extraction_error' for event in failed['coverage'][0]['trace'])
+    assert failed['refresh']['counts']['unavailable'] == 1
+    assert not failed['refresh']['full_recheck_succeeded']
+    assert read_baseline(out, key) == baseline
+    state['fail'] = False
+    recovered = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=1, follow_links=False)
+    assert recovered['refresh']['counts']['changed'] == 1
+    assert recovered['refresh']['counts']['added'] == 0
+    assert recovered['refresh']['full_recheck_succeeded']
+    assert recovered['refresh']['last_full_at'] != baseline['last_full_at']
+
+
+def test_retained_reanalysis_rebuilds_cache_and_recovers_extraction_failure(monkeypatch):
+    from dataclasses import asdict
+    import su_crawler.catalog_collection as collection
+    from su_crawler.models import Source
+    url = 'https://shop.example/item'
+    source = Source('one', 'Item', 'web', url, [], allowed_domains=['shop.example'])
+    response = FetchResult(source.id, 'fetched', 'http', content=_html('10'), final_url=url,
+                           trace=[{'code': 'extraction_reused'}])
+    captures = {url: {'source': asdict(source), 'responses': [(asdict(response), [])],
+                      'raw_http_candidates': [{'stale': True}]}}
+    coverage = [{'url': url}]
+    original = collection._jsonld_candidates
+
+    def fail(_result):
+        raise RuntimeError('controlled reanalysis failure')
+
+    monkeypatch.setattr(collection, '_jsonld_candidates', fail)
+    failed = collection._reanalyse(captures, coverage, [], [], [])
+    assert coverage[0]['status'] == 'failed'
+    assert failed[url]['raw_http_candidates'] is None
+    assert not any(event.get('code') == 'extraction_reused' for event in coverage[0]['trace'])
+    assert any(event.get('code') == 'extraction_error' for event in coverage[0]['trace'])
+    monkeypatch.setattr(collection, '_jsonld_candidates', original)
+    recovered = collection._reanalyse(failed, coverage, [], [], [])
+    assert coverage[0]['status'] == 'visited'
+    assert len(recovered[url]['raw_http_candidates']) == 1
+    assert not any(event.get('code') == 'extraction_error' for event in coverage[0]['trace'])
+
+
+def test_unsupported_empty_page_preserves_nonempty_baseline_until_recovery(tmp_path):
+    url = 'https://shop.example/item'
+    state = {'content': _html('10')}
+
+    def fetch(source, _base, backend, *, validators=None):
+        if backend != 'http':
+            return FetchResult(source.id, 'tool_unavailable', backend)
+        return FetchResult(source.id, 'fetched', backend, content=state['content'], final_url=url)
+
+    plan = _plan(url)
+    out = tmp_path / 'out'
+    collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=1, follow_links=False)
+    key = scope_key(plan, [url], follow_links=False)
+    baseline = read_baseline(out, key)
+    assert not baseline['pages'][url]['inventory_complete']
+    state['content'] = b'<html><body>New unsupported layout</body></html>'
+    empty = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=1, follow_links=False)
+    assert empty['coverage'][0]['status'] == 'no_data'
+    assert not empty['refresh']['approved_urls_rechecked']
+    assert empty['refresh']['counts']['unavailable'] == 1
+    assert read_baseline(out, key) == baseline
+    state['content'] = _html('11')
+    recovered = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=1, follow_links=False)
+    assert recovered['refresh']['counts']['changed'] == 1
+    assert recovered['refresh']['counts']['added'] == 0

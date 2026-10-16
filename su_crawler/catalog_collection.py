@@ -35,7 +35,7 @@ from .catalog_scheduler import HostGate, PageLedger, fetch_http
 from .storage import Store
 from .coverage import summarize, apply_status, unknown_section
 from .incremental import extraction_version
-from .incremental import conditional_fetch
+from .incremental import conditional_fetch, extract_current
 from .catalog_refresh import (normalize_refresh_policy, scope_key, read_baseline, write_baseline,
                               decide, compare, semantic_candidates, validated_http, page_baseline,
                               save_refresh_run, source_signature)
@@ -91,7 +91,7 @@ def collection_rules_version():
     digest = hashlib.sha256(extraction_version().encode())
     for name in ('catalog_collection.py', 'site_collection.py', 'coverage.py', 'validation.py',
                  'pipeline.py', 'report.py', 'result_view.py', 'collection_rules.py', 'collection_issues.py',
-                 'browser_enumeration.py'):
+                 'browser_enumeration.py', 'browser_workers.py', 'catalog_refresh.py', 'incremental.py', 'collectors.py'):
         digest.update((root / name).read_bytes())
     return digest.hexdigest()
 
@@ -128,17 +128,31 @@ def _reanalyse(captures, coverage, includes, excludes, conditions):
     for url, data in captures.items():
         source = Source(**{**data['source'], 'product_ids': []})
         responses, best, best_score = [], None, (-1,)
+        raw_http_candidates = None
         for raw_result, _ in data['responses']:
             result = FetchResult(**raw_result)
-            result.trace = [e for e in result.trace if e.get('event') not in {'extraction_gap', 'jsonld_truncated'}]
+            prior_extraction_failure = any(e.get('code') == 'extraction_error' for e in result.trace)
+            result.trace = [e for e in result.trace if e.get('event') not in {'extraction_gap', 'jsonld_truncated'}
+                            and e.get('code') not in {'extraction_reused', 'extraction_error'}]
+            if prior_extraction_failure:
+                # The retained fetch succeeded; only its old extraction failed.
+                result.status, result.message = 'fetched', ''
             candidates = []
             if result.status == 'fetched':
-                candidates = extract(result, source) if source.adapter or source.selectors or getattr(result, 'variant_snapshots', []) else []
-                if not candidates:
-                    candidates = _jsonld_candidates(result)
-            sections = _sections(result, candidates, source.adapter)
+                try:
+                    candidates = extract(result, source) if source.adapter or source.selectors or getattr(result, 'variant_snapshots', []) else []
+                    if not candidates:
+                        candidates = _jsonld_candidates(result)
+                    if result.backend == 'http':
+                        raw_http_candidates = [asdict(candidate) for candidate in candidates]
+                except Exception as exc:
+                    candidates = []
+                    result.status = 'failed'
+                    result.message = f'Extraction needs review: {type(exc).__name__}'
+                    result.trace.append({'code': 'extraction_error', 'type': type(exc).__name__})
+            sections = _sections(result, candidates, source.adapter) if result.status == 'fetched' else []
             candidates, assessments = _scope_candidates(candidates, includes, excludes, conditions)
-            score = (bool(candidates), sum(s['status'] == 'complete' for s in sections),
+            score = (result.status == 'fetched', bool(candidates), sum(s['status'] == 'complete' for s in sections),
                      max((_candidate_quality(c) for c in candidates), default=(-1,)), len(candidates))
             if best is None or score > best_score:
                 best, best_score = (result, candidates, assessments, sections), score
@@ -151,6 +165,7 @@ def _reanalyse(captures, coverage, includes, excludes, conditions):
                                  for event in raw.get('trace', []))), None)
         products = _products_for(source, candidates, source.name)
         rebuilt[url] = {'source': asdict(source), 'products': [asdict(p) for p in products],
+                        'raw_http_candidates': raw_http_candidates,
                         'chosen_candidates': [asdict(c) for c in candidates], 'responses': responses}
         page = by_url.get(url)
         if page is not None:
@@ -304,6 +319,16 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 and not source.profile_dir and source.account_scope == 'public'):
             return conditional_fetch(fetch, source, base_dir, backend, saved)
         return fetch(source, base_dir, backend)
+
+    def extraction_snapshot(source, backend):
+        previous = baseline_pages.get(source.location) or {}
+        if (backend != 'http' or refresh_decision['effective_mode'] != 'incremental'
+                or previous.get('source_signature') != source_signature(source)
+                or source.recipe or source.adapter or source.selectors or source.profile_dir
+                or source.internal or source.account_scope != 'public'):
+            return None
+        saved = retained_http.get(source.location)
+        return saved if saved and 'parsed_candidates' in saved else None
     reanalysed = False
     if state and state["binding"] != binding:
         raise ValueError("Collection checkpoint scope or budget changed")
@@ -403,6 +428,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         source = apply_rule(source, collection_rules, base_dir)
         adapter = source.adapter
         responses = []
+        raw_http_candidates = None
         chosen_result, chosen_candidates, chosen_assessments, chosen_sections, best_score = None, [], [], [], (-1,)
         for backend in source.backends:
             backend_started = time.monotonic()
@@ -480,18 +506,30 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 result.trace.append({"event": "collection_recipe", "recipe": bounded.recipe})
             if result.status == "fetched":
                 try:
-                    candidates = extract(result, source) if adapter or source.selectors or getattr(result, 'variant_snapshots', []) else []
-                    if not candidates:
-                        candidates = _jsonld_candidates(result)
+                    def extract_page(response, configured_source):
+                        found = extract(response, configured_source) if adapter or configured_source.selectors or getattr(response, 'variant_snapshots', []) else []
+                        return found or _jsonld_candidates(response)
+
+                    saved_extraction = extraction_snapshot(source, backend) if not result.variant_snapshots else None
+                    candidates = extract_current(result, source, saved_extraction, extract_page)
+                    if saved_extraction and any(event.get('code') == 'extraction_reused' for event in result.trace):
+                        result.trace.extend(saved_extraction.get('extraction_trace', []))
+                    if backend == 'http':
+                        # Cache before scope filtering/mutation so excluded rows
+                        # and their assessments are reconstructed on every run.
+                        raw_http_candidates = [asdict(candidate) for candidate in candidates]
                 except Exception as exc:
+                    candidates = []
+                    result.status = 'failed'
                     result.message = f"Extraction needs review: {type(exc).__name__}"
+                    result.trace.append({'code': 'extraction_error', 'type': type(exc).__name__})
                 # Section discovery describes the public page. Scope exclusions
                 # affect retained observations, never the observed card count.
-                sections = _sections(result, candidates, adapter)
+                sections = _sections(result, candidates, adapter) if result.status == 'fetched' else []
                 candidates, assessments = _scope_candidates(candidates, includes, excludes, conditions)
             responses.append((result, candidates))
             sections = sections if result.status == 'fetched' else []
-            score = (bool(candidates), sum(s['status'] == 'complete' for s in sections), max((_candidate_quality(c) for c in candidates), default=(-1,)), len(candidates))
+            score = (result.status == 'fetched', bool(candidates), sum(s['status'] == 'complete' for s in sections), max((_candidate_quality(c) for c in candidates), default=(-1,)), len(candidates))
             if chosen_result is None or score > best_score:
                 chosen_result, chosen_candidates, chosen_assessments, chosen_sections, best_score = result, candidates, assessments, sections, score
             if result.status in {"policy_denied", "needs_auth"}:
@@ -511,7 +549,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             source.recipe_version = 'catalog-expansion-v2'
         result.trace.append({"event": "catalog_page_timing", "elapsed_seconds": round(time.monotonic() - page_started, 3),
                              "fetch_seconds": round(fetch_seconds, 3), "extraction_seconds": round(extraction_seconds, 3)})
-        return source, responses, candidates, chosen_assessments, chosen_sections, result
+        return source, responses, candidates, chosen_assessments, chosen_sections, result, raw_http_candidates
 
     def capture_page(url, prefetched_http=None, prefetched_http_seconds=0.0):
         with robots_policy_scope(policy_cache):
@@ -636,7 +674,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             # the page. Completed pages refund unused time in the next checkpoint.
             page_budget = 240 if HOST_ADAPTERS.get(urlsplit(url).hostname) == 'gongcar' else 60
             save(inflight=url, reserve=min(page_budget, max(0, deadline - time.monotonic())))
-        source, responses, candidates, chosen_assessments, chosen_sections, result = captured if captured is not None else capture_page(url, prefetched_http, prefetched_http_seconds)
+        source, responses, candidates, chosen_assessments, chosen_sections, result, raw_http_candidates = captured if captured is not None else capture_page(url, prefetched_http, prefetched_http_seconds)
         # A later access challenge limits page coverage even when an earlier
         # response supplied safe candidates. Keep that response for extraction.
         challenge_result = next((response for response, _ in reversed(responses)
@@ -650,6 +688,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         products.extend(page_products)
         prefetched[source_id] = responses
         captures[url] = {"source": asdict(source), "products": [asdict(p) for p in page_products],
+                         "raw_http_candidates": raw_http_candidates,
                          "chosen_candidates": [asdict(c) for c in candidates],
                          "responses": [(asdict(r), [asdict(c) for c in cs]) for r, cs in responses]}
         status = coverage_result.status if coverage_result.status != "fetched" else "visited" if candidates else "no_data"
@@ -689,12 +728,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         save()
     finally:
         if workers:
-            stop_workers.set()
-            for _ in workers:
-                tasks.put(None)
-            for thread in workers:
-                thread.join(timeout=2)
-            if any(thread.is_alive() for thread in workers):
+            from .browser_workers import stop_and_join_workers
+            if not stop_and_join_workers(workers, tasks, stop_workers, timeout=15.0):
                 if ledger is not None:
                     ledger.close()
                 raise RuntimeError("Browser worker cleanup did not finish; stop this worker process before retrying")
@@ -728,9 +763,12 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                      "browser_launch_seconds_sum": 0.0, "navigation_seconds_sum": 0.0,
                      "evidence_seconds_sum": 0.0}
     browser_launches = browser_reused_contexts = browser_pages = 0
+    http_not_modified_responses = extraction_reused_responses = 0
     for capture in captures.values():
         for response, _ in capture["responses"]:
             for event in response.get("trace", []):
+                http_not_modified_responses += event.get('code') == 'http_not_modified'
+                extraction_reused_responses += event.get('code') == 'extraction_reused'
                 kind = event.get("event")
                 if kind == "catalog_page_timing":
                     for key, field in (("page_seconds_sum", "elapsed_seconds"),
@@ -804,6 +842,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                            "browser_pages": browser_pages,
                            "browser_launches": browser_launches,
                            "browser_reused_contexts": browser_reused_contexts,
+                           "http_not_modified_responses": http_not_modified_responses,
+                           "extraction_reused_responses": extraction_reused_responses,
                            "timings": {"collection_wall_seconds": round(collection_wall_seconds, 3),
                                        "checkpoint_seconds": round(checkpoint_seconds, 3),
                                        "pipeline_report_seconds": round(time.monotonic() - report_started, 3),
@@ -820,11 +860,20 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     checked_at = datetime.now(timezone.utc).isoformat()
     compared_urls = set(chosen) | set(captures) | set(baseline_pages)
     all_changes = []
+    unverified_empty_urls = set()
     for url in sorted(compared_urls):
         previous = baseline_pages.get(url) or {}
         captured = captures.get(url)
         page = coverage_by_url.get(url) or {}
-        successful = bool(captured and page.get('status') in {'visited', 'no_data'})
+        successful = bool(captured and page.get('status') in {'visited', 'no_data'} and not any(
+            event.get('code') == 'extraction_error' for event in page.get('trace', [])))
+        page_complete = bool(page.get('sections') and all(
+            section.get('status') == 'complete' for section in page['sections']))
+        # An unsupported/changed page structure is not proof of an empty
+        # inventory, even when no extractor raised an exception.
+        if successful and previous.get('candidates') and not captured.get('chosen_candidates') and not page_complete:
+            unverified_empty_urls.add(url)
+            successful = False
         current = semantic_candidates(captured.get('chosen_candidates', [])) if successful else []
         comparable_inventory = bool(successful and previous.get('inventory_complete') and
                                     page.get('sections') and all(section.get('status') == 'complete'
@@ -840,12 +889,11 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             responses = [(FetchResult(**raw), [Candidate(**candidate) for candidate in candidates])
                          for raw, candidates in captured['responses']]
             chosen_candidates = [Candidate(**candidate) for candidate in captured.get('chosen_candidates', [])]
-            page_complete = bool(page.get('sections') and all(
-                section.get('status') == 'complete' for section in page['sections']))
             # A partial page cannot replace a prior complete inventory: doing
             # so would erase candidates before the next complete comparison.
             if not (previous.get('inventory_complete') and not page_complete):
-                next_pages[url] = page_baseline(source, responses, chosen_candidates, destination, previous=previous)
+                next_pages[url] = page_baseline(source, responses, chosen_candidates, destination, previous=previous,
+                                               raw_http_candidates=captured.get('raw_http_candidates'))
                 next_pages[url]['inventory_complete'] = page_complete
             original_at = (next_pages[url].get('http') or {}).get('fetched_at') or original_at
         all_changes.append({'url': url, 'status': 'checked' if successful else 'unavailable',
@@ -854,10 +902,11 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     changes = all_changes[:50]
     # A scheduled full baseline advances after all approved pages were fetched.
     # Unknown site-wide inventory does not prevent a successful URL recheck.
-    full_success = all(coverage_by_url.get(url, {}).get('status') in {'visited', 'no_data'}
+    full_success = not unverified_empty_urls and all(coverage_by_url.get(url, {}).get('status') in {'visited', 'no_data'}
                        for url in chosen) and not any(item.get('status') in {'blocked', 'policy_denied',
                        'needs_auth', 'failed', 'timeout', 'tool_unavailable', 'budget_exhausted',
-                       'interrupted', 'unprocessed'} or any(section.get('status') == 'partial'
+                       'interrupted', 'unprocessed'} or any(event.get('code') == 'extraction_error'
+                       for event in item.get('trace', [])) or any(section.get('status') == 'partial'
                        for section in item.get('sections', [])) for item in coverage)
     last_full_at = refresh_decision['last_full_at']
     if full_success:

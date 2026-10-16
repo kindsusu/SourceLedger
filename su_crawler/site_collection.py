@@ -32,22 +32,34 @@ HOST_ADAPTERS = {
 
 def _ready_recipe(adapter: str, url: str = '') -> list[dict]:
     path = urlsplit(url).path.rstrip('/')
+    path = path.replace('/monthly/', '/monthly-rent/').replace('/daily/', '/daily-rent/')
+    if path == '/monthly':
+        path = '/monthly-rent'
+    elif path == '/daily':
+        path = '/daily-rent'
+    price_sheet_steps = []
+    if adapter == 'gongcar' and path in {'/longterm', '/rentpass', '/monthly-rent'}:
+        price_sheet_steps = [
+            {'action': 'click', 'selector': '#promo.is-on button[data-act="promo-close"]',
+             'if_visible': True, 'appearance_wait_seconds': 2, 'timeout_seconds': 2},
+            {'action': 'click', 'selector': '#deals > button[data-act="price-page"]',
+             'if_visible': True, 'timeout_seconds': 5}]
     if adapter == 'gongcar' and path in {'/monthly-rent', '/daily-rent'}:
         monthly = path == '/monthly-rent'
         return [{'action': 'expand_list',
                  'section': 'monthly_catalog' if monthly else 'daily_catalog',
-                 'selector': 'main',
-                 'item_selector': 'div.grid div.cursor-pointer:has(> div > h4)',
+                 'selector': 'body',
+                 'item_selector': ':is(div.grid div.cursor-pointer:has(> div > h4), #deals > button.deal:not(.deal-all))',
                  'button_selector': 'p:text-is("더 보기...")' if monthly else 'button:has(> span:text-is("펼쳐보기"))',
                  'trigger': 'scroll' if monthly else 'click',
-                 'max_clicks': 100, 'max_items': 1000}]
+                 'max_clicks': 100, 'max_items': 1000}] + (price_sheet_steps if monthly else [])
     if adapter == 'gongcar' and (path.startswith('/monthly-rent/') or path.startswith('/daily-rent/')):
         return [{'action': 'wait_for', 'selector': 'main h1', 'state': 'visible'},
                 {'action': 'wait_for', 'selector': 'main h3:text-is("렌트 가격")', 'state': 'visible'}]
     if adapter == 'gongcar' and urlsplit(url).path.rstrip('/') in {'/rentpass', '/longterm'}:
-        return [{'action': 'expand_list',
+        return price_sheet_steps + [{'action': 'expand_list',
                  'selector': 'section:has(h2:has-text("인기 차량")):not(:has(section h2:has-text("인기 차량")))',
-                 'item_selector': ':scope > div > div.grid > button',
+                 'item_selector': ':is(:scope > div > div.grid > button, #deals > button.deal:not(.deal-all))',
                  'button_selector': 'button:text-is("더보기"), button:text-is("더 보기")',
                  'max_clicks': 100, 'max_items': 1000},
                 {'action': 'expand_list', 'section': 'promotion',

@@ -30,6 +30,8 @@ For a large fixed inventory, approve the full plan once and use `start_research_
 
 New research plans default to incremental collection with a full recheck due every 7 days; you can select full mode or change the interval before execution. The first run, a due interval, changed rules, or an invalid baseline triggers a full recheck. The due date is checked when another run starts; it does not start a background schedule. Each run compares only approved and visited URLs. Detailed per-URL changes are retained in SQLite and XLSX, while MCP progress returns at most 50 change entries. An unavailable page is a gap, never an inferred removal or a copied current observation. See [collection reliability](docs/COLLECTION_RELIABILITY.md).
 
+Incremental mode is not a promise to visit only changed URLs. Browser-dependent pages still require fresh rendering; full mode also reports changes against the last valid baseline. Use full mode for browser-heavy collections unless a measured comparison demonstrates a benefit.
+
 SourceLedger supports Python 3.11 or later; Python 3.12 is recommended. Clone this repository, or download and extract its GitHub ZIP. The default setup installs the local core only. See [installation](docs/INSTALLATION.md) for macOS/Linux, browser, MCP, developer-test, Linux dependency, headless browser mode, and moving-computer instructions.
 
 ```bat

@@ -407,3 +407,32 @@ def test_browser_session_start_failure_is_reported_without_waiting_budget(tmp_pa
                      concurrency=2, browser_reuse=True, checkpoint_id="start-failed",
                      collector=lambda source, base, backend: _result(source, backend))
     assert time.monotonic() - start < 10
+
+
+def test_slow_browser_session_cleanup_finishes_before_final_checkpoint(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    workers = []
+    exited = threading.Event()
+
+    @contextmanager
+    def slow_session(**kwargs):
+        workers.append(threading.current_thread())
+        try:
+            yield
+        finally:
+            # Chromium teardown can legitimately exceed the old two-second join.
+            time.sleep(2.1)
+            exited.set()
+
+    monkeypatch.setattr('su_crawler.catalog_collection.browser_session', slow_session)
+    output = tmp_path / 'out'
+    result = collect_plan(tmp_path, _plan(['https://shop.example/a']), output_dir=output,
+                          max_pages=1, max_seconds=30, concurrency=2, browser_reuse=True,
+                          follow_links=False, checkpoint_id='slow-cleanup',
+                          collector=lambda source, base, backend: _result(source, backend))
+    assert exited.is_set()
+    assert workers and all(not worker.is_alive() for worker in workers)
+    checkpoint = read_checkpoint(output, 'slow-cleanup')
+    assert checkpoint['result'] == result
+    assert not checkpoint['parallel_leases']
+    assert len(_observations(output, result['run_id'])) == 1
