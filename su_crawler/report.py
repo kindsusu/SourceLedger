@@ -273,7 +273,10 @@ def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
     ws = wb.create_sheet(title)
     ws.append(["Scope", refresh.get('scope')])
     ws.append(["Mode", refresh.get('effective_mode'), "Reason", refresh.get('reason')])
-    ws.append(["Last full check (UTC)", refresh.get('last_full_at'), "Next full due (UTC)", refresh.get('next_full_due_at')])
+    incremental = (refresh.get('policy') or {}).get('mode', refresh.get('effective_mode')) == 'incremental'
+    ws.append(["Last full check (UTC)", refresh.get('last_full_at'),
+               "Next interval full check (incremental only, UTC)",
+               refresh.get('next_full_due_at') if incremental else None])
     ws.append(["Note", "Removed candidates are review items, not confirmed discontinued products. Revalidated evidence is not a fresh source capture.",
                "Approved URLs rechecked", refresh.get('approved_urls_rechecked'),
                "Inventory completeness verified", refresh.get('inventory_completeness_verified')])

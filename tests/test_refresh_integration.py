@@ -189,6 +189,7 @@ def test_full_default_retains_all_item_changes_and_regenerates_report(tmp_path):
         store.close()
     book = load_workbook(second['report_path'])
     try:
+        assert book['Collection Changes']['D3'].value is None
         sheet = book['Item Changes']
         assert sheet.max_row == 106
         assert sheet['A2'].value == 'Price changed'
