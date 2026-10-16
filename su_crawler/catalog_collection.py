@@ -935,6 +935,15 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             last_full_at = checked_at
         write_baseline(destination, refresh_key, {'rules_version': rules_version,
             'last_full_at': last_full_at, 'valid': bool(last_full_at), 'pages': next_pages})
+    elif next_pages != baseline_pages:
+        # Each successfully checked page advances its own comparison baseline,
+        # even if another page fails. Global full-check validation metadata
+        # advances only after the entire scope succeeds. Failed and incomplete
+        # pages retain their last trustworthy candidates above.
+        partial_baseline = dict(prior_baseline or {
+            'rules_version': None, 'last_full_at': None, 'valid': False})
+        partial_baseline['pages'] = next_pages
+        write_baseline(destination, refresh_key, partial_baseline)
     next_due = (datetime.fromisoformat(last_full_at) + timedelta(days=refresh_policy['full_interval_days'])).isoformat() if last_full_at else None
     inventory_verified = bool(full_success and all(
         page.get('sections') and all(section.get('status') == 'complete'

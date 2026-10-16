@@ -364,3 +364,68 @@ def test_unsupported_empty_page_preserves_nonempty_baseline_until_recovery(tmp_p
     recovered = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=1, follow_links=False)
     assert recovered['refresh']['counts']['changed'] == 1
     assert recovered['refresh']['counts']['added'] == 0
+
+
+def test_partial_failure_advances_only_successful_page_comparison_baseline(tmp_path):
+    a, e = 'https://shop.example/a', 'https://shop.example/e'
+    plan = _plan(a, {'mode': 'full', 'full_interval_days': 7})
+    plan['candidates'].append({'id': 'two', 'name': 'item', 'url': e, 'selected': True})
+    state = {'price': '100', 'fail_e': False}
+
+    def fetch(source, _base, backend, **kwargs):
+        if backend != 'http' or (source.location == e and state['fail_e']):
+            return FetchResult(source.id, 'failed', backend, final_url=source.location)
+        price = state['price'] if source.location == a else '200'
+        return FetchResult(source.id, 'fetched', backend, content=_html(price), final_url=source.location)
+
+    out = tmp_path / 'out'
+    first = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    key = scope_key(plan, [a, e], follow_links=False)
+    original = read_baseline(out, key)
+    state.update(price='120', fail_e=True)
+    second = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    partial = read_baseline(out, key)
+    assert second['refresh']['item_counts']['price_changed'] == 1
+    assert second['refresh']['item_counts']['unavailable'] == 1
+    assert not second['refresh']['full_recheck_succeeded']
+    assert {name: partial[name] for name in ('last_full_at', 'rules_version', 'valid')} == {
+        name: original[name] for name in ('last_full_at', 'rules_version', 'valid')}
+    assert partial['pages'][e] == original['pages'][e]
+    assert partial['pages'][a]['checked_at'] == second['refresh']['checked_at']
+    assert partial['pages'][a]['candidates'][0]['fields']['price'] == '120'
+    state['fail_e'] = False
+    third = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    assert third['refresh']['item_counts']['unchanged'] == 2
+    assert third['refresh']['item_counts']['price_changed'] == 0
+    a_change = next(row for row in third['refresh']['item_changes'] if row['url'] == a)
+    e_change = next(row for row in third['refresh']['item_changes'] if row['url'] == e)
+    assert a_change['previous_checked_at'] == second['refresh']['checked_at']
+    assert e_change['previous_checked_at'] == first['refresh']['checked_at']
+    assert a_change['before']['fields']['price'] == a_change['after']['fields']['price'] == '120'
+
+
+def test_first_partial_run_retains_successful_page_without_validating_whole_scope(tmp_path):
+    a, e = 'https://shop.example/a', 'https://shop.example/e'
+    plan = _plan(a, {'mode': 'full', 'full_interval_days': 7})
+    plan['candidates'].append({'id': 'two', 'name': 'item', 'url': e, 'selected': True})
+    state = {'fail_e': True}
+
+    def fetch(source, _base, backend, **kwargs):
+        if backend != 'http' or (source.location == e and state['fail_e']):
+            return FetchResult(source.id, 'failed', backend, final_url=source.location)
+        return FetchResult(source.id, 'fetched', backend, content=_html('100'), final_url=source.location)
+
+    out = tmp_path / 'out'
+    first = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    partial = read_baseline(out, scope_key(plan, [a, e], follow_links=False))
+    assert partial['valid'] is False and partial['last_full_at'] is None
+    assert partial.get('rules_version') is None
+    assert set(partial['pages']) == {a}
+    state['fail_e'] = False
+    second = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    assert second['refresh']['item_counts']['unchanged'] == 1
+    assert second['refresh']['item_counts']['baseline'] == 1
+    assert second['refresh']['item_counts']['added'] == 0
+    a_change = next(row for row in second['refresh']['item_changes'] if row['url'] == a)
+    assert a_change['previous_checked_at'] == first['refresh']['checked_at']
+    assert second['refresh']['full_recheck_succeeded']

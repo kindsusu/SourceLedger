@@ -22,7 +22,7 @@ from test_web_server import running_server, request, json_response
 
 
 def test_real_http_price_addition_condition_and_failure(tmp_path, monkeypatch):
-    state = {'changed': False, 'requests': []}
+    state = {'changed': False, 'failure': False, 'requests': []}
 
     def product(sku, price, brand='Maker A'):
         return {'@type': 'Product', 'sku': sku, 'name': f'Test part {sku}', 'brand': brand,
@@ -36,7 +36,7 @@ def test_real_http_price_addition_condition_and_failure(tmp_path, monkeypatch):
             state['requests'].append((state['changed'], self.path))
             if self.path == '/robots.txt':
                 body, status = b'User-agent: *\nAllow: /\n', 200
-            elif self.path == '/unavailable' and state['changed']:
+            elif self.path == '/unavailable' and state['failure']:
                 body, status = b'Temporary server failure', 503
             else:
                 if self.path == '/unavailable':
@@ -92,6 +92,7 @@ def test_real_http_price_addition_condition_and_failure(tmp_path, monkeypatch):
         initial = list_collection_changes(tmp_path, first_id)
         assert initial['counts']['baseline'] == 3 and initial['counts']['added'] == 0
         state['changed'] = True
+        state['failure'] = True
         second_id, second = run()
         changed = list_collection_changes(tmp_path, second_id, status='changes')
         assert Counter(row['status'] for row in changed['items']) == {
@@ -119,11 +120,23 @@ def test_real_http_price_addition_condition_and_failure(tmp_path, monkeypatch):
             wb.close()
         assert (False, '/catalog') in state['requests'] and (True, '/catalog') in state['requests']
         assert (True, '/unavailable') in state['requests']
+        # A failure elsewhere must not make the successful page report the
+        # same price change again when the unavailable page recovers.
+        state['failure'] = False
+        recovered_id, recovered = run()
+        recovery = list_collection_changes(tmp_path, recovered_id)
+        assert recovery['counts']['unchanged'] == 4
+        assert recovery['counts']['price_changed'] == recovery['counts']['added'] == 0
+        recovered_a = next(row for row in recovery['items'] if row['identity'] == 'sku:A')
+        assert recovered_a['before']['fields']['price'] == '120'
+        assert recovered_a['previous_checked_at'] == by_id['sku:A']['checked_at']
         (tmp_path / 'experiment-summary.json').write_text(json.dumps({
             'kind': 'controlled_local_http_not_external_market_change', 'requests': state['requests'],
             'initial_job': first_id, 'changed_job': second_id,
             'counts': changed['counts'], 'changes': changed['items'],
             'first_report': first['report_path'], 'changed_report': second['report_path'],
+            'recovered_job': recovered_id, 'recovered_counts': recovery['counts'],
+            'recovered_report': recovered['report_path'],
         }, ensure_ascii=False, indent=2), encoding='utf-8')
     finally:
         httpd.shutdown()
