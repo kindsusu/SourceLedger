@@ -5,7 +5,7 @@ Other page content remains source evidence and an explicit coverage gap.
 """
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 from queue import Queue, Empty
 from threading import Event, Lock, Semaphore, Thread
@@ -37,7 +37,7 @@ from .coverage import summarize, apply_status, unknown_section
 from .incremental import extraction_version
 from .incremental import conditional_fetch, extract_current
 from .catalog_refresh import (normalize_refresh_policy, scope_key, read_baseline, write_baseline,
-                              decide, compare, semantic_candidates, validated_http, page_baseline,
+                              decide, item_changes, semantic_candidates, validated_http, page_baseline,
                               save_refresh_run, source_signature)
 
 
@@ -860,6 +860,9 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     checked_at = datetime.now(timezone.utc).isoformat()
     compared_urls = set(chosen) | set(captures) | set(baseline_pages)
     all_changes = []
+    all_item_changes = []
+    item_counts = {key: 0 for key in ('baseline', 'added', 'price_changed', 'conditions_changed',
+                                    'unchanged', 'unavailable', 'removed_candidate')}
     unverified_empty_urls = set()
     for url in sorted(compared_urls):
         previous = baseline_pages.get(url) or {}
@@ -878,9 +881,22 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         comparable_inventory = bool(successful and previous.get('inventory_complete') and
                                     page.get('sections') and all(section.get('status') == 'complete'
                                                                   for section in page['sections']))
-        delta = (compare(previous.get('candidates', []), current,
-                         inventory_complete=comparable_inventory) if successful else
-                 {**{key: 0 for key in counts}, 'unavailable': len(previous.get('candidates', []))})
+        rows = item_changes(previous.get('candidates', []), current, url=url,
+                            inventory_complete=comparable_inventory, baseline=not bool(previous),
+                            successful=successful, checked_at=checked_at,
+                            previous_checked_at=previous.get('checked_at') or (previous.get('http') or {}).get('checked_at'),
+                            failure_reason='unverified_empty_capture' if url in unverified_empty_urls else
+                                           ('page_not_rechecked' if not captured else 'page_unavailable'))
+        all_item_changes.extend(rows)
+        for item in rows:
+            item_counts[item['status']] += 1
+        row_counts = Counter(item['status'] for item in rows)
+        delta = {key: row_counts[key] for key in counts}
+        delta['changed'] = row_counts['price_changed'] + row_counts['conditions_changed']
+        # Preserve the historical page aggregate's count of prior unavailable
+        # items; item_counts also exposes failed pages with no prior products.
+        if not successful:
+            delta['unavailable'] = len(previous.get('candidates', []))
         for key in counts:
             counts[key] += delta[key]
         original_at = (previous.get('http') or {}).get('fetched_at')
@@ -895,11 +911,16 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 next_pages[url] = page_baseline(source, responses, chosen_candidates, destination, previous=previous,
                                                raw_http_candidates=captured.get('raw_http_candidates'))
                 next_pages[url]['inventory_complete'] = page_complete
+                next_pages[url]['checked_at'] = checked_at
             original_at = (next_pages[url].get('http') or {}).get('fetched_at') or original_at
         all_changes.append({'url': url, 'status': 'checked' if successful else 'unavailable',
                             'checked_at': checked_at if successful else None,
                             'original_fetched_at': original_at, **delta})
     changes = all_changes[:50]
+    # Keep actionable changes visible when a large inventory response is capped.
+    item_order = {name: index for index, name in enumerate(
+        ('price_changed', 'added', 'conditions_changed', 'unavailable', 'removed_candidate', 'baseline', 'unchanged'))}
+    all_item_changes.sort(key=lambda item: item_order[item['status']])
     # A scheduled full baseline advances after all approved pages were fetched.
     # Unknown site-wide inventory does not prevent a successful URL recheck.
     full_success = not unverified_empty_urls and all(coverage_by_url.get(url, {}).get('status') in {'visited', 'no_data'}
@@ -914,6 +935,15 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             last_full_at = checked_at
         write_baseline(destination, refresh_key, {'rules_version': rules_version,
             'last_full_at': last_full_at, 'valid': bool(last_full_at), 'pages': next_pages})
+    elif next_pages != baseline_pages:
+        # Each successfully checked page advances its own comparison baseline,
+        # even if another page fails. Global full-check validation metadata
+        # advances only after the entire scope succeeds. Failed and incomplete
+        # pages retain their last trustworthy candidates above.
+        partial_baseline = dict(prior_baseline or {
+            'rules_version': None, 'last_full_at': None, 'valid': False})
+        partial_baseline['pages'] = next_pages
+        write_baseline(destination, refresh_key, partial_baseline)
     next_due = (datetime.fromisoformat(last_full_at) + timedelta(days=refresh_policy['full_interval_days'])).isoformat() if last_full_at else None
     inventory_verified = bool(full_success and all(
         page.get('sections') and all(section.get('status') == 'complete'
@@ -925,11 +955,15 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                          'approved_urls_rechecked': full_success,
                          'inventory_completeness_verified': inventory_verified,
                          'counts': counts, 'changes': changes,
+                         'item_counts': item_counts, 'item_changes': all_item_changes[:100],
+                         'item_changes_total': len(all_item_changes),
+                         'item_changes_truncated': max(0, len(all_item_changes) - 100),
                          'changes_truncated': len(all_changes) - len(changes),
                          'discovered_links': [item['url'] for item in coverage
                                               if item.get('origin') == 'discovered'][:50],
                          'scope': 'Approved and visited URLs only; no whole-site completeness claim.'}
-    durable_refresh = {**result['refresh'], 'changes': all_changes, 'changes_truncated': 0}
+    durable_refresh = {**result['refresh'], 'changes': all_changes, 'changes_truncated': 0,
+                       'item_changes': all_item_changes, 'item_changes_truncated': 0}
     save_refresh_run(destination, run['id'], durable_refresh)
     from .report import append_refresh_summary
     append_refresh_summary(run['report_path'], durable_refresh)

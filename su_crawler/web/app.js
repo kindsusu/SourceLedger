@@ -29,6 +29,9 @@ const state = {
   observations: null,
   collectionIssues: null,
   issueOffset: 0,
+  itemChanges: null,
+  changeOffset: 0,
+  changeStatus: "all",
   issuePending: new Set(),
   issueReportPending: false,
   browserRecoveryPending: new Set(),
@@ -768,6 +771,8 @@ function renderJobList() {
 
 async function selectJob(id, { keepOffset = false } = {}) {
   state.selectedJobId = id;
+  state.itemChanges = null;
+  if (!keepOffset) { state.changeOffset = 0; state.changeStatus = "all"; }
   if (!keepOffset) state.observationOffset = 0;
   if (!keepOffset) state.issueOffset = 0;
   if (!keepOffset) state.issueReportPending = false;
@@ -782,6 +787,7 @@ async function selectJob(id, { keepOffset = false } = {}) {
     state.collectionIssues = null;
     if (state.selectedJob?.result?.run_id && state.selectedJob?.result?.output_dir) await loadObservations();
     if (canLoadCollectionIssues(state.selectedJob)) await loadCollectionIssues();
+    await loadItemChanges();
   } catch (error) {
     if (state.selectedJobId !== id) return;
     state.selectedJob = { id, loadError: error.rawMessage || error.message };
@@ -795,13 +801,14 @@ async function selectJob(id, { keepOffset = false } = {}) {
 async function refreshSelectedJob() {
   const requestedId = state.selectedJobId;
   try {
-    const before = JSON.stringify([state.selectedJob, state.observations, state.collectionIssues]);
+    const before = JSON.stringify([state.selectedJob, state.observations, state.collectionIssues, state.itemChanges]);
     const job = await api(`/api/jobs/${encodeURIComponent(requestedId)}`);
     if (state.selectedJobId !== requestedId) return;
     state.selectedJob = job;
     if (job?.result?.run_id && job?.result?.output_dir) await loadObservations();
     if (canLoadCollectionIssues(job)) await loadCollectionIssues();
-    if (before !== JSON.stringify([state.selectedJob, state.observations, state.collectionIssues])) renderJobDetail();
+    await loadItemChanges();
+    if (before !== JSON.stringify([state.selectedJob, state.observations, state.collectionIssues, state.itemChanges])) renderJobDetail();
   } catch (_error) {
     // Keep the last durable receipt visible during a transient poll failure.
   }
@@ -904,6 +911,104 @@ function fact(label, value) {
   return node("div", {}, [node("dt", { text: label }), node("dd", { text: displayValue(value) })]);
 }
 
+const CHANGE_STATUSES = ["baseline", "added", "price_changed", "conditions_changed", "unavailable", "removed_candidate", "unchanged"];
+const CHANGE_PAGE_SIZE = 50;
+function refreshRecords(result) {
+  const direct = result?.result?.refresh || result?.refresh;
+  const batches = result?.batches || result?.result?.batches || [];
+  return direct ? [direct] : batches.map(batch => batch.refresh).filter(Boolean);
+}
+async function loadItemChanges() {
+  const id = state.selectedJobId, offset = state.changeOffset, status = state.changeStatus;
+  if (!refreshRecords(state.selectedJob?.result).length) return;
+  try {
+    const payload = await api(`/api/jobs/${encodeURIComponent(id)}/changes?offset=${offset}&limit=${CHANGE_PAGE_SIZE}&status=${encodeURIComponent(status)}`);
+    if (state.selectedJobId === id && state.changeOffset === offset && state.changeStatus === status && Array.isArray(payload.items)) state.itemChanges = payload;
+  } catch (_error) {
+    // Older receipts retain their embedded comparison, including its explicit truncation warning.
+    if (state.selectedJobId === id && state.changeOffset === offset && state.changeStatus === status) state.itemChanges = null;
+  }
+}
+function changeFieldLabel(key) {
+  const translated = i18n.t(`plan.field.${key}`);
+  return translated === `plan.field.${key}` ? key : translated;
+}
+function observedValue(value) {
+  if (value === null || value === undefined || value === "") return t("changesNotObserved");
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+function renderChangeSnapshot(snapshot, checkedAt, keys) {
+  const cell = node("td");
+  const fields = snapshot?.fields || {};
+  cell.append(node("strong", { text: `${observedValue(fields.price)} · ${observedValue(fields.currency)}` }));
+  if (snapshot) {
+    for (const key of keys) {
+      const value = key === "specs" ? snapshot.specs : fields[key];
+      cell.append(node("p", { text: `${changeFieldLabel(key)}: ${observedValue(value)}` }));
+    }
+  }
+  if (checkedAt) cell.append(node("p", { className: "hint", text: t(snapshot ? "changesCheckedAt" : "changesCheckWithoutObservation", { date: formatDate(checkedAt) }) }));
+  return cell;
+}
+function renderItemChanges(target, result) {
+  const records = refreshRecords(result);
+  if (!records.length) return;
+  const endpoint = state.itemChanges?.available === false ? null : state.itemChanges;
+  const embedded = records.flatMap(record => Array.isArray(record.item_changes) ? record.item_changes : []);
+  const filtered = embedded.filter(item => state.changeStatus === "all" || (state.changeStatus === "changes" ? !["baseline", "unchanged"].includes(item.status) : item.status === state.changeStatus));
+  const items = endpoint?.items || filtered.slice(state.changeOffset, state.changeOffset + CHANGE_PAGE_SIZE);
+  const total = endpoint ? endpoint.total : filtered.length;
+  const section = node("section", { className: "item-changes observation-section", attrs: { "aria-label": t("changesHeading") } });
+  section.append(node("h4", { text: t("changesHeading") }), node("p", { className: "hint", text: t("changesScope") }));
+  const totals = {};
+  for (const record of records) for (const [status, count] of Object.entries(record.item_counts || {})) totals[status] = (totals[status] || 0) + count;
+  if (endpoint?.counts) Object.assign(totals, endpoint.counts);
+  if (Object.keys(totals).length) section.append(node("p", { className: "change-counts", text: CHANGE_STATUSES.map(status => `${t(`changeStatus.${status}`)} ${totals[status] || 0}`).join(" · ") }));
+  const filter = node("select", { attrs: { "data-change-filter": "", "aria-label": t("changesFilter") } });
+  for (const status of ["all", "changes", ...CHANGE_STATUSES]) {
+    const option = node("option", { text: t(`changeStatus.${status}`), attrs: { value: status } });
+    option.selected = status === state.changeStatus;
+    filter.append(option);
+  }
+  section.append(node("label", { className: "change-filter" }, [node("span", { text: t("changesFilter") }), filter]));
+  if (state.itemChanges?.available === false || state.itemChanges?.missing_runs > 0) section.append(node("p", { className: "plan-scope-notice", attrs: { role: "status" }, text: t(state.itemChanges.available === false ? "changesHistoryUnavailable" : "changesPartialHistory") }));
+  if (!endpoint && records.some(record => record.item_changes_truncated || Number(record.item_changes_total || 0) > (record.item_changes || []).length)) section.append(node("p", { className: "plan-scope-notice", attrs: { role: "status" }, text: t("changesTruncated") }));
+  if (!items.length) section.append(node("p", { className: "empty-inline", text: t(state.changeStatus === "changes" && endpoint ? "changesNone" : embedded.length || endpoint ? "changesEmpty" : "changesNotRecorded") }));
+  else {
+    const table = node("table", { className: "change-table" });
+    table.append(node("caption", { text: t("changesPriceHint") }));
+    table.append(node("thead", {}, [node("tr", {}, ["changesProduct", "changesPrevious", "changesCurrent", "changesDetails"].map(key => node("th", { text: t(key), attrs: { scope: "col" } })))]));
+    const body = node("tbody");
+    for (const item of items) {
+      const status = CHANGE_STATUSES.includes(item.status) ? item.status : "unavailable";
+      const identity = item.identity !== null && typeof item.identity === "object" ? JSON.stringify(item.identity) : item.identity;
+      const product = node("td", {}, [node("strong", { text: observedValue(item.product_name || identity) }), node("p", { className: `change-status change-status-${status}`, text: t(`changeStatus.${status}`) })]);
+      if (identity && item.product_name) product.append(node("p", { text: identity }));
+      const safe = safeWebUrl(item.url);
+      if (safe) product.append(node("a", { text: item.url, attrs: { href: safe, target: "_blank", rel: "noopener noreferrer" } }));
+      else if (item.url) product.append(node("p", { text: item.url }));
+      const changedFields = Array.isArray(item.changed_fields) ? item.changed_fields : [];
+      const repeatedIdentityFields = ["name", "sku", "item_id", "mpn", "gtin"];
+      const keys = [...new Set([...changedFields, ...Object.keys(item.before?.fields || {}), ...Object.keys(item.after?.fields || {})])]
+        .filter(key => !["price", "currency"].includes(key) && (!repeatedIdentityFields.includes(key) || changedFields.includes(key)));
+      if ((item.before?.specs && Object.keys(item.before.specs).length || item.after?.specs && Object.keys(item.after.specs).length) && !keys.includes("specs")) keys.push("specs");
+      const reasonKey = `app.changeReason.${item.reason}`;
+      const reason = i18n.t(reasonKey) === reasonKey ? observedValue(item.reason) : t(`changeReason.${item.reason}`);
+      const details = node("td", {}, [node("p", { text: reason })]);
+      if (item.changed_fields?.length) details.append(node("p", { text: t("changesFields", { fields: item.changed_fields.map(changeFieldLabel).join(", ") }) }));
+      body.append(node("tr", {}, [product, renderChangeSnapshot(item.before, item.previous_checked_at, keys), renderChangeSnapshot(item.after, item.checked_at, keys), details]));
+    }
+    table.append(body);
+    section.append(node("div", { className: "change-table-scroll", attrs: { tabindex: "0", role: "region", "aria-label": t("changesHeading") } }, [table]));
+  }
+  section.append(node("p", { className: "hint", attrs: { "aria-live": "polite" }, text: t("pagination", { start: items.length ? state.changeOffset + 1 : 0, end: state.changeOffset + items.length, total }) }));
+  if (total > CHANGE_PAGE_SIZE || state.changeOffset) section.append(node("div", { className: "detail-actions" }, [
+    node("button", { type: "button", className: "button button-secondary", text: t("previous"), disabled: state.changeOffset <= 0, attrs: { "data-change-page": "previous" } }),
+    node("button", { type: "button", className: "button button-secondary", text: t("next"), disabled: state.changeOffset + items.length >= total, attrs: { "data-change-page": "next" } }),
+  ]));
+  target.append(section);
+}
+
 function renderRefreshSummary(target, job, result) {
   const direct = result.result?.refresh || result.refresh;
   const batches = Array.isArray(result.batches) ? result.batches : Array.isArray(result.result?.batches) ? result.result.batches : [];
@@ -927,12 +1032,12 @@ function renderRefreshSummary(target, job, result) {
     if (reasons.length) section.append(node("p", { text: t("refreshBatchReasons", { reasons: reasons.map(([code, count]) =>
       t("refreshReasonCount", { reason: reasonLabel(code), count })).join(" · ") }) }));
     const counts = refresh.counts || {};
-    section.append(node("p", { text: t("refreshCounts", {
+    if (!refresh.item_counts) section.append(node("p", { text: t("refreshCounts", {
       added: Number(counts.added || 0), changed: Number(counts.changed || 0), unchanged: Number(counts.unchanged || 0),
       unavailable: Number(counts.unavailable || 0), removed: Number(counts.removed_candidate || 0),
     }) }));
     if (refresh.last_full_at) section.append(node("p", { text: t("refreshLastFull", { date: formatDate(refresh.last_full_at) }) }));
-    if (refresh.next_full_due_at) section.append(node("p", { text: t("refreshNextFull", { date: formatDate(refresh.next_full_due_at) }) }));
+    if (refresh.policy?.mode === "incremental" && refresh.next_full_due_at) section.append(node("p", { text: t("refreshNextFull", { date: formatDate(refresh.next_full_due_at) }) }));
   }
   section.append(node("p", { className: "hint", text: t("refreshScope") }));
   target.append(section);
@@ -969,6 +1074,7 @@ function renderJobDetail() {
     fact(t("attempt"), job.attempt ?? 0), fact(t("created"), formatDate(job.created_at)), fact(t("updated"), formatDate(job.updated_at)),
   ]));
   renderRefreshSummary(target, job, result);
+  renderItemChanges(target, result);
   if (job.operation === "recommend") target.append(node("dl", { className: "detail-facts" }, [
     fact(t("requestedProvider"), job.arguments?.provider), fact(t("requestedModel"), aiModelLabel(job.arguments?.provider, job.arguments?.model)),
     fact(t("actualModel"), result.result?.actual_model || t("notReported")),
@@ -1659,6 +1765,13 @@ function installEvents() {
       finally { state.issuePending.delete(issueId); }
       return;
     }
+    const changePage = event.target.closest("[data-change-page]");
+    if (changePage) {
+      state.changeOffset = Math.max(0, state.changeOffset + (changePage.dataset.changePage === "next" ? CHANGE_PAGE_SIZE : -CHANGE_PAGE_SIZE));
+      changePage.disabled = true;
+      await loadItemChanges(); renderJobDetail();
+      return;
+    }
     const issuePage = event.target.closest("[data-issue-page]");
     if (issuePage) {
       state.issueOffset = Math.max(0, state.issueOffset + (issuePage.dataset.issuePage === "next" ? ISSUE_PAGE_SIZE : -ISSUE_PAGE_SIZE));
@@ -1683,6 +1796,13 @@ function installEvents() {
   byId("connection-form").addEventListener("submit", (event) => {
     event.preventDefault(); const form = event.currentTarget; const data = new FormData(form);
     submit(form, async () => { const result = await api("/api/connections", { method: "POST", body: { client: String(data.get("client")) } }); byId("connection-snippet").textContent = String(result.snippet || ""); byId("connection-result").hidden = false; }, t("snippetGenerated"));
+  });
+  byId("job-detail").addEventListener("change", async event => {
+    if (!event.target.matches("[data-change-filter]")) return;
+    state.changeStatus = event.target.value;
+    state.changeOffset = 0;
+    event.target.disabled = true;
+    await loadItemChanges(); renderJobDetail();
   });
   byId("ai-settings-form").addEventListener("input", () => { state.aiSettingsDirty = true; });
   byId("ai-settings-form").addEventListener("change", () => { state.aiSettingsDirty = true; });

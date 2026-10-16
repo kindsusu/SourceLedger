@@ -145,3 +145,69 @@ def test_browser_recipe_click_keeps_redirect_destination(monkeypatch, tmp_path):
     assert result.status == "fetched", (result.message, result.trace)
     assert result.final_url == url + "/catalog/product/"
     assert "/catalog/product/" in visited
+
+
+def test_browser_recipe_redirect_waits_for_aborted_navigation_commit(monkeypatch, tmp_path):
+    pytest.importorskip('playwright')
+    from playwright.sync_api import Page
+    browser = next(item for item in doctor() if item['backend'] == 'playwright')
+    if browser['status'] != 'available':
+        pytest.skip(browser['reason'])
+    monkeypatch.setenv('SOURCELEDGER_HEADLESS', '1')
+    original_wait, original_goto = Page.wait_for_url, Page.goto
+    settled = []
+
+    def observe_wait(page, *args, **kwargs):
+        value = original_wait(page, *args, **kwargs)
+        if page.url.startswith('chrome-error://') and kwargs.get('wait_until') == 'commit':
+            settled.append(page.url)
+        return value
+
+    def require_settled_before_redirect(page, target, **kwargs):
+        if target.endswith('/catalog/product/'):
+            assert settled, 'Redirect destination was started before synchronizing the aborted navigation commit'
+        return original_goto(page, target, **kwargs)
+
+    monkeypatch.setattr(Page, 'wait_for_url', observe_wait)
+    monkeypatch.setattr(Page, 'goto', require_settled_before_redirect)
+    with _site() as (url, visited):
+        source = Source('ordered-click', 'ordered-click', 'web', url + '/start-page', [],
+                        allowed_domains=['127.0.0.1'], internal=True, respect_robots=True, timeout_seconds=12,
+                        recipe=[{'action': 'click', 'selector': '#go'},
+                                {'action': 'assert_text', 'selector': '#session', 'text': 'kept'},
+                                {'action': 'assert_text', 'selector': '#name', 'text': 'kept-name'}])
+        result = collect(source, str(tmp_path), 'playwright')
+    assert result.status == 'fetched', (result.message, result.trace)
+    assert len(settled) == 1
+    assert result.final_url == url + '/catalog/product/'
+    assert '/catalog/product/' in visited and '/forbidden' not in visited
+
+
+def test_browser_navigation_error_reports_safe_classification(monkeypatch, tmp_path):
+    pytest.importorskip('playwright')
+    from playwright.sync_api import Error, Page
+    browser = next(item for item in doctor() if item['backend'] == 'playwright')
+    if browser['status'] != 'available':
+        pytest.skip(browser['reason'])
+    monkeypatch.setenv('SOURCELEDGER_HEADLESS', '1')
+    original_goto = Page.goto
+
+    def interrupt_destination(page, target, **kwargs):
+        if target.endswith('/catalog/product/'):
+            raise Error('Navigation was interrupted by another navigation to https://secret.example/?token=private-value')
+        return original_goto(page, target, **kwargs)
+
+    monkeypatch.setattr(Page, 'goto', interrupt_destination)
+    with _site() as (url, visited):
+        source = Source('failed-click', 'failed-click', 'web', url + '/start-page', [],
+                        allowed_domains=['127.0.0.1'], internal=True, respect_robots=True, timeout_seconds=12,
+                        recipe=[{'action': 'click', 'selector': '#go'}])
+        result = collect(source, str(tmp_path), 'playwright')
+    assert result.status == 'failed'
+    assert result.message == 'Browser collection failed (navigation_interrupted)'
+    event = next(row for row in result.trace if row['event'] == 'browser_error')
+    assert event['code'] == 'navigation_interrupted'
+    assert event['phase'] == 'recipe_redirect'
+    assert event['exception_type'] == 'Error'
+    assert 'private-value' not in repr(result)
+    assert 'secret.example' not in repr(result)

@@ -161,7 +161,11 @@ def test_connected_preview_to_confirmed_collection_and_report(tmp_path, monkeypa
                 playwright.expect(coverage_rows).to_have_count(2)
                 playwright.expect(coverage_rows.last).to_contain_text("List completion unknown")
                 playwright.expect(page.locator("#job-detail")).to_contain_text("do not prove that the entire site was found")
-                playwright.expect(page.locator("#job-detail table tbody tr")).to_have_count(1)
+                # Observations and comparisons are distinct tables: the first
+                # capture must not duplicate observations or claim a new product.
+                playwright.expect(page.locator("#job-detail .table-scroll table tbody tr")).to_have_count(1)
+                playwright.expect(page.locator("#job-detail .change-table tbody tr")).to_have_count(1)
+                playwright.expect(page.locator("#job-detail .change-table")).to_contain_text("First capture")
                 detail_text = page.locator("#job-detail").inner_text()
                 assert "Product condition checks" in detail_text
                 assert "matched" in detail_text.lower()

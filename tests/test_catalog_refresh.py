@@ -4,13 +4,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from su_crawler.catalog_refresh import (compare, decide, normalize_refresh_policy, scope_key,
-                                       read_baseline, write_baseline, refresh_for_run, save_refresh_run)
+                                       read_baseline, write_baseline, refresh_for_run, save_refresh_run, item_changes)
 from su_crawler.catalog_collection import collect_plan
 from su_crawler.models import FetchResult
 
 
 def test_policy_defaults_and_bounds():
-    assert normalize_refresh_policy(None) == {'mode': 'incremental', 'full_interval_days': 7}
+    assert normalize_refresh_policy(None) == {'mode': 'full', 'full_interval_days': 7}
+    assert normalize_refresh_policy({})['mode'] == 'full'
+    assert normalize_refresh_policy({'mode': 'incremental'})['mode'] == 'incremental'
     assert normalize_refresh_policy({'mode': 'full', 'full_interval_days': 30})['mode'] == 'full'
     for value in ({'mode': 'other'}, {'full_interval_days': True}, {'full_interval_days': 0},
                   {'full_interval_days': 366}, {'unknown': 1}):
@@ -20,7 +22,7 @@ def test_policy_defaults_and_bounds():
 
 def test_due_rule_change_and_failed_full_remains_due():
     now = datetime(2026, 10, 15, tzinfo=timezone.utc)
-    policy = normalize_refresh_policy(None)
+    policy = normalize_refresh_policy({'mode': 'incremental'})
     last = (now - timedelta(days=8)).isoformat()
     baseline = {'last_full_at': last, 'rules_version': 'v1', 'valid': True}
     assert decide(policy, baseline, 'v1', now=now)['reason'] == 'interval_elapsed'
@@ -43,8 +45,8 @@ def test_scope_separates_selected_batches_and_ignores_order():
 def test_semantic_multiset_preserves_duplicates_and_does_not_infer_removal():
     old = [{'fields': {'sku': '1', 'price': '10'}, 'specs': {'size': 'M'}}] * 2
     new = [old[0], {'fields': {'sku': '1', 'price': '11'}, 'specs': {'size': 'M'}}]
-    assert compare(old, new) == {'added': 0, 'changed': 1, 'unchanged': 1,
-                                 'removed_candidate': 0, 'unavailable': 0}
+    assert compare(old, new) == {'added': 1, 'changed': 0, 'unchanged': 1,
+                                 'removed_candidate': 0, 'unavailable': 1}
     assert compare(old, [old[0]])['unavailable'] == 1
     assert compare(old, [old[0]], inventory_complete=True)['removed_candidate'] == 1
 
@@ -62,7 +64,7 @@ def _plan(url, policy=None):
     return {'id': 'plan', 'revision': 1, 'state': 'confirmed',
             'topic': {'industry': 'retail', 'product': 'item', 'market': 'public'},
             'candidates': [{'id': 'one', 'name': 'item', 'url': url, 'selected': True}],
-            'refresh_policy': policy or normalize_refresh_policy(None)}
+            'refresh_policy': policy or normalize_refresh_policy({'mode': 'incremental'})}
 
 
 def _html(price):
@@ -362,3 +364,68 @@ def test_unsupported_empty_page_preserves_nonempty_baseline_until_recovery(tmp_p
     recovered = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=1, follow_links=False)
     assert recovered['refresh']['counts']['changed'] == 1
     assert recovered['refresh']['counts']['added'] == 0
+
+
+def test_partial_failure_advances_only_successful_page_comparison_baseline(tmp_path):
+    a, e = 'https://shop.example/a', 'https://shop.example/e'
+    plan = _plan(a, {'mode': 'full', 'full_interval_days': 7})
+    plan['candidates'].append({'id': 'two', 'name': 'item', 'url': e, 'selected': True})
+    state = {'price': '100', 'fail_e': False}
+
+    def fetch(source, _base, backend, **kwargs):
+        if backend != 'http' or (source.location == e and state['fail_e']):
+            return FetchResult(source.id, 'failed', backend, final_url=source.location)
+        price = state['price'] if source.location == a else '200'
+        return FetchResult(source.id, 'fetched', backend, content=_html(price), final_url=source.location)
+
+    out = tmp_path / 'out'
+    first = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    key = scope_key(plan, [a, e], follow_links=False)
+    original = read_baseline(out, key)
+    state.update(price='120', fail_e=True)
+    second = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    partial = read_baseline(out, key)
+    assert second['refresh']['item_counts']['price_changed'] == 1
+    assert second['refresh']['item_counts']['unavailable'] == 1
+    assert not second['refresh']['full_recheck_succeeded']
+    assert {name: partial[name] for name in ('last_full_at', 'rules_version', 'valid')} == {
+        name: original[name] for name in ('last_full_at', 'rules_version', 'valid')}
+    assert partial['pages'][e] == original['pages'][e]
+    assert partial['pages'][a]['checked_at'] == second['refresh']['checked_at']
+    assert partial['pages'][a]['candidates'][0]['fields']['price'] == '120'
+    state['fail_e'] = False
+    third = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    assert third['refresh']['item_counts']['unchanged'] == 2
+    assert third['refresh']['item_counts']['price_changed'] == 0
+    a_change = next(row for row in third['refresh']['item_changes'] if row['url'] == a)
+    e_change = next(row for row in third['refresh']['item_changes'] if row['url'] == e)
+    assert a_change['previous_checked_at'] == second['refresh']['checked_at']
+    assert e_change['previous_checked_at'] == first['refresh']['checked_at']
+    assert a_change['before']['fields']['price'] == a_change['after']['fields']['price'] == '120'
+
+
+def test_first_partial_run_retains_successful_page_without_validating_whole_scope(tmp_path):
+    a, e = 'https://shop.example/a', 'https://shop.example/e'
+    plan = _plan(a, {'mode': 'full', 'full_interval_days': 7})
+    plan['candidates'].append({'id': 'two', 'name': 'item', 'url': e, 'selected': True})
+    state = {'fail_e': True}
+
+    def fetch(source, _base, backend, **kwargs):
+        if backend != 'http' or (source.location == e and state['fail_e']):
+            return FetchResult(source.id, 'failed', backend, final_url=source.location)
+        return FetchResult(source.id, 'fetched', backend, content=_html('100'), final_url=source.location)
+
+    out = tmp_path / 'out'
+    first = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    partial = read_baseline(out, scope_key(plan, [a, e], follow_links=False))
+    assert partial['valid'] is False and partial['last_full_at'] is None
+    assert partial.get('rules_version') is None
+    assert set(partial['pages']) == {a}
+    state['fail_e'] = False
+    second = collect_plan(tmp_path, plan, output_dir=out, collector=fetch, max_pages=2, follow_links=False)
+    assert second['refresh']['item_counts']['unchanged'] == 1
+    assert second['refresh']['item_counts']['baseline'] == 1
+    assert second['refresh']['item_counts']['added'] == 0
+    a_change = next(row for row in second['refresh']['item_changes'] if row['url'] == a)
+    assert a_change['previous_checked_at'] == first['refresh']['checked_at']
+    assert second['refresh']['full_recheck_succeeded']

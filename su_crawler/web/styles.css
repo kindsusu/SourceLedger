@@ -464,3 +464,15 @@ pre { max-height: 360px; overflow: auto; margin: 10px 0 0; padding: 17px; color:
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Keep wide evidence comparisons inside the run detail at small viewport sizes. */
+.item-changes { min-width: 0; }
+.change-filter { display: flex; gap: .75rem; align-items: center; margin: 1rem 0; flex-wrap: wrap; }
+.change-table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+.change-table { width: 100%; min-width: 700px; border-collapse: collapse; text-align: left; }
+.change-table caption { text-align: left; padding: .75rem; }
+.change-table th, .change-table td { padding: .75rem; vertical-align: top; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; max-width: 24rem; }
+.change-table th { font-weight: 700; }
+.change-table p { margin: .3rem 0; }
+.change-status { font-weight: 700; }
+.change-counts { overflow-wrap: anywhere; }

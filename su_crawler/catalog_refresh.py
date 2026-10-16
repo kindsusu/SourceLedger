@@ -5,7 +5,7 @@ mode. Newly reviewed plans should write the normalized default explicitly.
 """
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict, deque
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -19,10 +19,10 @@ from .storage import Store
 
 def normalize_refresh_policy(value: dict | None) -> dict:
     if value is None:
-        return {'mode': 'incremental', 'full_interval_days': 7}
+        return {'mode': 'full', 'full_interval_days': 7}
     if not isinstance(value, dict) or set(value) - {'mode', 'full_interval_days'}:
         raise ValueError('refresh_policy must be an object with mode and full_interval_days')
-    mode = value.get('mode', 'incremental')
+    mode = value.get('mode', 'full')
     days = value.get('full_interval_days', 7)
     if mode not in {'incremental', 'full'} or isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 365:
         raise ValueError('refresh_policy requires incremental/full mode and full_interval_days from 1 to 365')
@@ -138,38 +138,91 @@ def source_signature(source: Source) -> str:
                      source.profile_dir, source.account_scope)
 
 
+def item_changes(previous: list[dict], current: list[dict], *, url='', inventory_complete=False,
+                 baseline=False, successful=True, previous_checked_at=None, checked_at=None,
+                 failure_reason='page_unavailable') -> list[dict]:
+    """Pair only unique observed identifiers with identical offer variants.
+
+    A duplicate identifier/variant group cannot establish a one-to-one match,
+    even if subtracting unchanged rows would leave only one possible partner.
+    """
+    def identity(item):
+        fields = item.get('fields', {})
+        return next((f'{key}:{fields[key]}' for key in ('sku', 'item_id', 'mpn', 'gtin')
+                     if fields.get(key) is not None and str(fields[key]).strip()), None)
+
+    def key(item):
+        observed = identity(item)
+        # Contract durations are separately offered rows for the same source
+        # product. The explicit duration identifies that variant; mutable
+        # commercial conditions such as deposits and mileage never do.
+        term = item.get('fields', {}).get('term_months')
+        return (observed, _canonical(item.get('specs', {})), _canonical(term)) if observed else None
+
+    old_keys = [key(item) for item in previous]
+    new_keys = [key(item) for item in current]
+    old_counts, new_counts = Counter(old_keys), Counter(new_keys)
+    exact_indices = defaultdict(deque)
+    identity_indices = {}
+    for index, (item, item_key) in enumerate(zip(previous, old_keys)):
+        exact_indices[_canonical(item)].append(index)
+        if item_key and old_counts[item_key] == 1:
+            identity_indices[item_key] = index
+    matched = set()
+    rows = []
+
+    def row(status, before, after, reason):
+        item = after or before or {}
+        old_fields, new_fields = (before or {}).get('fields', {}), (after or {}).get('fields', {})
+        changed = ([name for name in sorted(set(old_fields) | set(new_fields))
+                    if old_fields.get(name) != new_fields.get(name)] if before and after else [])
+        if before and after and before.get('specs', {}) != after.get('specs', {}):
+            changed.append('specs')
+        rows.append({'status': status, 'url': url, 'identity': identity(item),
+                     'product_name': item.get('fields', {}).get('name') or '',
+                     'before': before, 'after': after, 'changed_fields': changed, 'reason': reason,
+                     'previous_checked_at': previous_checked_at, 'checked_at': checked_at})
+
+    if not successful:
+        for item in previous or [None]:
+            row('unavailable', item, None, failure_reason)
+        return rows
+    for item, item_key in zip(current, new_keys):
+        exact = exact_indices.get(_canonical(item))
+        while exact and exact[0] in matched:
+            exact.popleft()
+        if exact:
+            index = exact.popleft()
+            matched.add(index)
+            row('unchanged', previous[index], item, 'same_observed_fields')
+            continue
+        index = identity_indices.get(item_key) if item_key and new_counts[item_key] == 1 else None
+        if index is not None and index not in matched:
+            matched.add(index)
+            old = previous[index]
+            old_fields, new_fields = old.get('fields', {}), item.get('fields', {})
+            price_changed = any(old_fields.get(name) != new_fields.get(name)
+                                for name in ('price', 'currency'))
+            row('price_changed' if price_changed else 'conditions_changed', old, item,
+                'observed_price_or_currency_changed' if price_changed else 'observed_conditions_changed')
+        else:
+            row('baseline' if baseline else 'added', None, item,
+                'first_successful_capture' if baseline else 'new_observed_item')
+    for index, item in enumerate(previous):
+        if index in matched:
+            continue
+        row('removed_candidate' if inventory_complete else 'unavailable', item, None,
+            'absent_from_complete_inventory_review_required' if inventory_complete else 'not_observed_in_current_capture')
+    return rows
+
+
 def compare(previous: list[dict], current: list[dict], *, inventory_complete=False) -> dict:
     """Compare multisets; locator, evidence path and capture time do not affect change."""
-    before, after = Counter(map(_canonical, previous)), Counter(map(_canonical, current))
-    same = before & after
-    added = after - same
-    missing = before - same
-    unchanged = sum(same.values())
-    # A changed item requires a stable observed identifier. Otherwise report
-    # separate added/unavailable items instead of guessing identity.
-    def identity(raw):
-        fields = json.loads(raw).get('fields', {})
-        return next(((key, str(fields[key])) for key in ('sku', 'item_id', 'mpn', 'gtin')
-                     if fields.get(key) is not None and str(fields[key]).strip()), None)
-    changed = 0
-    for new in list(added):
-        possible = [old for old in missing if missing[old] > 0 and identity(new)
-                    and identity(new) == identity(old)]
-        # Sellers sometimes reuse a SKU across variants. Prefer matching specs,
-        # and leave ambiguous identities as added/unavailable rather than pair
-        # different options according to response order.
-        same_specs = [old for old in possible if json.loads(old).get('specs') == json.loads(new).get('specs')]
-        options = same_specs or possible
-        match = options[0] if len(options) == 1 else None
-        if match:
-            n = min(added[new], missing[match])
-            added[new] -= n
-            missing[match] -= n
-            changed += n
-    n_added, n_missing = sum(added.values()), sum(missing.values())
-    return {'added': n_added, 'changed': changed, 'unchanged': unchanged,
-            'removed_candidate': n_missing if inventory_complete else 0,
-            'unavailable': 0 if inventory_complete else n_missing}
+    rows = item_changes(previous, current, inventory_complete=inventory_complete)
+    totals = Counter(row['status'] for row in rows)
+    return {'added': totals['added'], 'changed': totals['price_changed'] + totals['conditions_changed'],
+            'unchanged': totals['unchanged'], 'removed_candidate': totals['removed_candidate'],
+            'unavailable': totals['unavailable']}
 
 
 def validated_http(page: dict, directory: Path) -> dict | None:

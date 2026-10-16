@@ -18,13 +18,20 @@ def test_browser_updates_repeat_policy_without_starting_collection(tmp_path):
         try:
             page = browser.new_page(viewport={'width': 1280, 'height': 900})
             page.goto(server.url + '/#plan')
-            playwright.expect(page.locator('#plan-refresh-mode')).to_have_value('incremental')
+            playwright.expect(page.locator('#plan-refresh-mode')).to_have_value('full')
+            playwright.expect(page.locator('#plan-refresh-days')).to_be_hidden()
+            playwright.expect(page.locator('#plan-refresh-days')).to_be_disabled()
+            page.locator('#plan-refresh-mode').select_option('incremental')
+            playwright.expect(page.locator('#plan-refresh-days')).to_be_visible()
             playwright.expect(page.locator('#plan-refresh-days')).to_have_value('7')
             page.locator('#plan-refresh-days').fill('14')
             page.locator('#plan-save').click()
             playwright.expect(page.locator('#plan-save')).to_be_enabled()
             assert plans.get_plan(tmp_path, plan['id'])['plan']['refresh_policy'] == {
                 'mode': 'incremental', 'full_interval_days': 14}
+            page.reload()
+            playwright.expect(page.locator('#plan-refresh-mode')).to_have_value('incremental')
+            playwright.expect(page.locator('#plan-refresh-days')).to_have_value('14')
             page.locator('#plan-refresh-mode').select_option('full')
             page.locator('#plan-save').click()
             playwright.expect(page.locator('#plan-save')).to_be_enabled()
