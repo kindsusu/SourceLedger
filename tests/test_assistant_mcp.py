@@ -59,7 +59,7 @@ def test_server_tool_contract_and_registered_report_resource(tmp_path):
         "get_research_batch_execution_plan", "start_research_batch_run",
         "get_research_batch_progress", "get_research_batch_reports",
         "get_research_gaps", "retry_research_pages", "submit_browser_evidence",
-        "get_collection_issues", "triage_collection_issue",
+        "get_collection_issues", "triage_collection_issue", "get_collection_changes",
         "prepare_browser_recovery", "begin_browser_recovery", "finish_browser_recovery",
     } == tools
     resources = asyncio.run(server.list_resource_templates())

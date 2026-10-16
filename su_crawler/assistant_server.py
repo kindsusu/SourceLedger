@@ -64,7 +64,7 @@ def build_assistant_server(root: str | Path):
             " After starting a job, call get_research_progress for small page counts and report readiness. "
             "Inspect its attention items for user-required login or browser challenges. Notify the user, "
             "but keep the worker collecting other pages; closing an alert does not resolve the issue. "
-            "Preserve the reviewed refresh_policy: new plans default to incremental with a 7-day full check interval. "
+            "Preserve the reviewed refresh_policy: new plans default to full collection with item change comparison. "
             "The next run after the interval rechecks the approved scope; no background schedule is installed. "
             "Dynamic pages still require rendering. Explain actual refresh mode and change counts in the final result. "
             "Use wait_for_job to avoid rapid polling; then fetch observations in bounded pages. "
@@ -173,7 +173,8 @@ def build_assistant_server(root: str | Path):
         selected_candidate_ids, removed_candidate_ids, added_candidates [{url,name?,kind?,reason?}].
         collection_rules maps exact candidate URLs to reviewed {recipe, selectors, row_selector?, profile_dir?}.
         refresh_policy is {mode: 'incremental' or 'full', full_interval_days: 1..365}.
-        New plans default to incremental checks and a full approved-scope recheck due after 7 days.
+        New plans default to full approved-scope collection with item change comparison.
+        Incremental checks are opt-in; their full_interval_days is checked when another run starts.
         This is evaluated on execution, not a background schedule. Dynamic pages still render.
         Recipes can enumerate bounded lists/options. Explain selectors, scope and limits before confirmation.
         profile_dir is an existing workspace-relative authorized browser profile, never credentials.
@@ -477,6 +478,20 @@ def build_assistant_server(root: str | Path):
         """Read the SQLite issue ledger, next actions, and retained evidence. No collection."""
         from .research_followup import list_collection_issues
         return list_collection_issues(base, job_id, status=status, offset=offset, limit=limit)
+
+    @server.tool(annotations=read_only)
+    def get_collection_changes(job_id: str, status: str = 'all',
+                               offset: int = 0, limit: int = 50) -> dict[str, Any]:
+        """Read item changes and observed before/after values from SQLite without collecting.
+
+        Filter by all, changes (excludes baseline/unchanged), baseline, added,
+        price_changed, conditions_changed, unavailable, removed_candidate or unchanged.
+        The first capture establishes a baseline, not proof that a product is new.
+        Unavailable and possible removals never establish that a product was discontinued.
+        Page through all rows; job summaries contain only a bounded preview.
+        """
+        from .collection_changes import list_collection_changes
+        return list_collection_changes(base, job_id, status=status, offset=offset, limit=limit)
 
     @server.tool(annotations=mutate)
     def prepare_browser_recovery(job_id: str, issue_id: str) -> dict[str, Any]:

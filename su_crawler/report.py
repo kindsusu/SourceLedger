@@ -263,7 +263,8 @@ def append_collection_issues(path: str | Path, issues: list[dict[str, Any]]) -> 
 def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
     """Present revalidation separately from prices; source strings remain literal."""
     from openpyxl import load_workbook
-    from openpyxl.styles import Font
+    from openpyxl.styles import Font, Alignment, PatternFill
+    from .result_view import FIELD_LABELS
     path = Path(path)
     wb = load_workbook(path)
     title = "Collection Changes"
@@ -294,6 +295,89 @@ def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
         ws.column_dimensions[col].width = 38
     for col in ('B', 'C', 'D', 'E', 'F', 'G'):
         ws.column_dimensions[col].width = 18
+    title = 'Item Changes'
+    if title in wb:
+        del wb[title]
+    items = wb.create_sheet(title)
+    items.append(['Status', 'Product', 'Source identity', 'Previous price', 'Current price',
+                  'Previous currency', 'Current currency', 'Previous conditions', 'Current conditions',
+                  'Changed fields', 'Reason', 'Page URL', 'Previous checked (UTC)', 'Checked (UTC)'])
+
+    status_labels = {'baseline': 'First capture', 'added': 'Product added', 'price_changed': 'Price changed',
+                     'conditions_changed': 'Conditions changed', 'unavailable': 'Unavailable for comparison',
+                     'removed_candidate': 'Possible removal — review required', 'unchanged': 'Unchanged'}
+    reason_labels = {
+        'same_observed_fields': 'The observed product fields are unchanged.',
+        'observed_price_or_currency_changed': 'The displayed price or currency changed.',
+        'observed_conditions_changed': 'Observed product or commercial conditions changed.',
+        'first_successful_capture': 'First successful capture establishes the comparison baseline.',
+        'new_observed_item': 'This product was observed now and was not matched to a previous product.',
+        'absent_from_complete_inventory_review_required': 'Not found in the complete captured inventory. Review possible removal; this does not confirm sold out or discontinued.',
+        'not_observed_in_current_capture': 'The previous product was not observed in this capture. Its current availability is unknown.',
+        'page_unavailable': 'The page could not be collected successfully. Current product values are unknown.',
+        'page_not_rechecked': 'The page was not rechecked in this run. Current product values are unknown.',
+        'unverified_empty_capture': 'No products were extracted, but an empty inventory was not verified. The previous baseline is retained.',
+    }
+
+    def label(key):
+        return FIELD_LABELS.get(key, key.removeprefix('spec:').replace('_', ' ').capitalize())
+
+    def display(value):
+        if value is None:
+            return ''
+        if isinstance(value, (list, tuple)):
+            return ', '.join(display(part) for part in value)
+        if isinstance(value, dict):
+            return '; '.join(f'{label(key)}: {display(part)}' for key, part in value.items())
+        return str(value)
+
+    def conditions(value):
+        if value is None:
+            return None
+        fields = {key: val for key, val in value.get('fields', {}).items()
+                  if key not in {'name', 'price', 'currency', 'sku', 'item_id', 'mpn', 'gtin'}}
+        lines = [f'{label(key)}: {display(val)}' for key, val in fields.items()]
+        lines.extend(f'{label("spec:" + key)}: {display(val)}' for key, val in value.get('specs', {}).items())
+        return '\n'.join(lines) or None
+
+    for item in refresh.get('item_changes', []):
+        before, after = (item.get('before') or {}).get('fields', {}), (item.get('after') or {}).get('fields', {})
+        status = status_labels.get(item.get('status'), label(item.get('status') or ''))
+        reason = reason_labels.get(item.get('reason'), display(item.get('reason')).replace('_', ' '))
+        if item.get('status') == 'price_changed':
+            old_price, new_price = before.get('price'), after.get('price')
+            if old_price != new_price:
+                if new_price in (None, ''):
+                    status, reason = 'Price no longer displayed', 'The previously observed price is no longer displayed. The current price is unknown.'
+                elif any(term in str(new_price).casefold() for term in ('inquiry', 'quote', 'contact', '문의', '견적', 'price on request')):
+                    status, reason = 'Price inquiry required', 'The source now displays inquiry wording instead of the previous price. No numeric current price is inferred.'
+                elif old_price in (None, ''):
+                    status, reason = 'Price now displayed', 'A price is now displayed; the previous capture did not display a price.'
+                else:
+                    reason = 'The displayed price changed.'
+                if before.get('currency') != after.get('currency'):
+                    reason += ' The displayed currency also changed.'
+            else:
+                status = 'Currency changed'
+                reason = 'The displayed currency changed; the displayed price text is unchanged.'
+        items.append([status, item.get('product_name'), item.get('identity'),
+                      before.get('price'), after.get('price'), before.get('currency'), after.get('currency'),
+                      conditions(item.get('before')), conditions(item.get('after')),
+                      ', '.join(label(key) for key in item.get('changed_fields', [])), reason, item.get('url'),
+                      item.get('previous_checked_at'), item.get('checked_at')])
+    for row in items:
+        for cell in row:
+            if isinstance(cell.value, str):
+                cell.data_type = 's'
+            cell.alignment = Alignment(wrap_text=True, vertical='top')
+    for cell in items[1]:
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='17365D')
+    items.row_dimensions[1].height = 32
+    items.freeze_panes = 'A2'
+    items.auto_filter.ref = f'A1:N{max(1, items.max_row)}'
+    for column in 'ABCDEFGHIJKLMN':
+        items.column_dimensions[column].width = 26 if column not in {'H', 'I', 'K', 'L'} else 48
     fd, name = tempfile.mkstemp(prefix=path.stem + '.', suffix='.xlsx', dir=path.parent)
     os.close(fd)
     temp = Path(name)

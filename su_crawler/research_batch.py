@@ -151,6 +151,9 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
     refresh_reasons = Counter()
     refresh_changes = []
     refresh_total_changes = 0
+    refresh_item_counts = Counter()
+    refresh_items = []
+    refresh_total_items = 0
     for batch in batches:
         refresh = batch.get("refresh") or {}
         if refresh:
@@ -160,6 +163,10 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
             changes = refresh.get("changes", [])
             refresh_total_changes += len(changes) + refresh.get("changes_truncated", 0)
             refresh_changes.extend(changes[:max(0, 50 - len(refresh_changes))])
+            refresh_item_counts.update(refresh.get('item_counts', {}))
+            items = refresh.get('item_changes', [])
+            refresh_total_items += refresh.get('item_changes_total', len(items) + refresh.get('item_changes_truncated', 0))
+            refresh_items.extend(items[:max(0, 100 - len(refresh_items))])
         coverage.update(batch["coverage_counts"])
         observations.update(batch.get("observation_counts", {}))
         if 'coverage_summary' in batch:
@@ -197,6 +204,9 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
                         "modes": dict(refresh_modes), "reasons": dict(refresh_reasons),
                         "counts": dict(refresh_counts), "changes": refresh_changes,
                         "changes_truncated": max(0, refresh_total_changes - len(refresh_changes)),
+                        "item_counts": dict(refresh_item_counts), "item_changes": refresh_items,
+                        "item_changes_total": refresh_total_items,
+                        "item_changes_truncated": max(0, refresh_total_items - len(refresh_items)),
                         "scope": "Approved batch URLs only; full details are in each batch report."},
             "pending_targets": max(0, journal["target_count"] - sum(batch["target_count"] for batch in batches)),
             "reports_ready": len(batches), "output_dir": str(output),

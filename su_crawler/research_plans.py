@@ -205,7 +205,7 @@ def create_plan(root: str | Path, request_text: str, include_terms: list[str] | 
         plan = {"id": "plan-" + uuid.uuid4().hex, "revision": 1, "state": "draft",
                 "request_text": request, "include_terms": included, "exclude_terms": excluded,
                 "conditions": [], "conditions_user_edited": False,
-                "refresh_policy": {"mode": "incremental", "full_interval_days": 7},
+                "refresh_policy": {"mode": "full", "full_interval_days": 7},
                 "topic": _topic({}), "summary": "", "categories": [],
                 "candidates": [], "excluded_urls": [], "note": "", "created_at": now,
                 "updated_at": now, "confirmed_at": None}

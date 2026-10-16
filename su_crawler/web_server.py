@@ -320,6 +320,13 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 raise ValueError("offset and limit must be integers") from exc
             self._json(200, result_observations(self.server.workspace, job, offset=offset, limit=limit))
+        elif parts[3] == 'changes':
+            if set(query) - {'offset', 'limit', 'status'} or any(len(v) != 1 for v in query.values()):
+                raise ValueError('Invalid change query parameters')
+            from .collection_changes import list_collection_changes
+            self._json(200, list_collection_changes(self.server.workspace, parts[2],
+                       offset=int(query.get('offset', ['0'])[0]), limit=int(query.get('limit', ['50'])[0]),
+                       status=query.get('status', ['all'])[0]))
         elif parts[3] == 'issues':
             if set(query) - {'offset', 'limit', 'status'} or any(len(v) != 1 for v in query.values()):
                 raise ValueError('Invalid issue query parameters')

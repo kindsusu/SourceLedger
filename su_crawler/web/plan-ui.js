@@ -27,6 +27,9 @@
     if (ui.executionPreview && ui.executionSignature !== executionSignature()) invalidateExecutionPreview();
     const disabled = ui.busy || !ready();
     for (const id of ["plan-create", "plan-save", "plan-preview", "plan-change", "plan-start", "plan-copy", "plan-new-request", "plan-history", "plan-concurrency", "plan-refresh-mode", "plan-refresh-days"]) $(id).disabled = disabled;
+    const full = $("plan-refresh-mode").value === "full";
+    $("plan-refresh-days").disabled = disabled || full;
+    $("plan-refresh-days").closest("label").hidden = full;
     $("plan-add-form").querySelector('button[type="submit"]').disabled = disabled || !safeLink($("plan-add-form").elements.url.value.trim());
     $("plan-change").disabled = disabled || !$("plan-change-text").value.trim();
     $("plan-condition-add").disabled = disabled || conditionRows().length >= 20;
@@ -363,7 +366,7 @@
     if (!brief.within_page_budget) panel.append(el("p", "plan-readiness", tr("executionBudgetShortfall", { count: brief.page_budget_shortfall })));
     panel.append(el("p", "", tr("executionCheckpoint")));
     const refresh = brief.refresh_policy || {mode: "full", full_interval_days: 7};
-    panel.append(el("p", "", tr("refreshExecution", { mode: tr(refresh.mode === "incremental" ? "refreshIncremental" : "refreshFull"), days: refresh.full_interval_days })));
+    panel.append(el("p", "", tr(refresh.mode === "full" ? "refreshExecutionFull" : "refreshExecution", { mode: tr(refresh.mode === "incremental" ? "refreshIncremental" : "refreshFull"), days: refresh.full_interval_days })));
     panel.append(el("p", "hint", tr("refreshHint")));
     panel.append(el("p", "hint", tr("executionCollectorModel")));
     panel.append(el("p", "", tr("executionCurrentMode", { count: brief.execution?.current_concurrency || 1 })));

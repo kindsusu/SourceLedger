@@ -4,13 +4,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from su_crawler.catalog_refresh import (compare, decide, normalize_refresh_policy, scope_key,
-                                       read_baseline, write_baseline, refresh_for_run, save_refresh_run)
+                                       read_baseline, write_baseline, refresh_for_run, save_refresh_run, item_changes)
 from su_crawler.catalog_collection import collect_plan
 from su_crawler.models import FetchResult
 
 
 def test_policy_defaults_and_bounds():
-    assert normalize_refresh_policy(None) == {'mode': 'incremental', 'full_interval_days': 7}
+    assert normalize_refresh_policy(None) == {'mode': 'full', 'full_interval_days': 7}
+    assert normalize_refresh_policy({})['mode'] == 'full'
+    assert normalize_refresh_policy({'mode': 'incremental'})['mode'] == 'incremental'
     assert normalize_refresh_policy({'mode': 'full', 'full_interval_days': 30})['mode'] == 'full'
     for value in ({'mode': 'other'}, {'full_interval_days': True}, {'full_interval_days': 0},
                   {'full_interval_days': 366}, {'unknown': 1}):
@@ -20,7 +22,7 @@ def test_policy_defaults_and_bounds():
 
 def test_due_rule_change_and_failed_full_remains_due():
     now = datetime(2026, 10, 15, tzinfo=timezone.utc)
-    policy = normalize_refresh_policy(None)
+    policy = normalize_refresh_policy({'mode': 'incremental'})
     last = (now - timedelta(days=8)).isoformat()
     baseline = {'last_full_at': last, 'rules_version': 'v1', 'valid': True}
     assert decide(policy, baseline, 'v1', now=now)['reason'] == 'interval_elapsed'
@@ -43,8 +45,8 @@ def test_scope_separates_selected_batches_and_ignores_order():
 def test_semantic_multiset_preserves_duplicates_and_does_not_infer_removal():
     old = [{'fields': {'sku': '1', 'price': '10'}, 'specs': {'size': 'M'}}] * 2
     new = [old[0], {'fields': {'sku': '1', 'price': '11'}, 'specs': {'size': 'M'}}]
-    assert compare(old, new) == {'added': 0, 'changed': 1, 'unchanged': 1,
-                                 'removed_candidate': 0, 'unavailable': 0}
+    assert compare(old, new) == {'added': 1, 'changed': 0, 'unchanged': 1,
+                                 'removed_candidate': 0, 'unavailable': 1}
     assert compare(old, [old[0]])['unavailable'] == 1
     assert compare(old, [old[0]], inventory_complete=True)['removed_candidate'] == 1
 
@@ -62,7 +64,7 @@ def _plan(url, policy=None):
     return {'id': 'plan', 'revision': 1, 'state': 'confirmed',
             'topic': {'industry': 'retail', 'product': 'item', 'market': 'public'},
             'candidates': [{'id': 'one', 'name': 'item', 'url': url, 'selected': True}],
-            'refresh_policy': policy or normalize_refresh_policy(None)}
+            'refresh_policy': policy or normalize_refresh_policy({'mode': 'incremental'})}
 
 
 def _html(price):
