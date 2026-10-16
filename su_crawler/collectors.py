@@ -895,6 +895,7 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
     browser = None
     navigation_robots_failure: list[Exception] = []
     pending_redirect: list[str] = []
+    browser_phase = 'startup'
 
     def require_navigation_policy() -> None:
         if navigation_robots_failure:
@@ -1009,6 +1010,17 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
 
             page.on("response", observe_response)
 
+            def settle_aborted_navigation() -> None:
+                # The policy guard aborts a verified redirect. Its error-page
+                # commit must finish before the same tab starts the next hop;
+                # otherwise that late commit can interrupt destination goto.
+                page.wait_for_url(
+                    lambda current: str(current).startswith("chrome-error://"),
+                    wait_until="commit", timeout=remaining_ms(),
+                )
+                document_status.clear()
+                trace.append({'event': 'navigation_redirect_settled', 'at': utc_now()})
+
             def navigate_checked(url: str) -> Any:
                 target = url
                 for _ in range(MAX_REDIRECTS + 1):
@@ -1020,11 +1032,7 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                         # Chromium commits its error page after the aborted
                         # request. Wait for that commit before navigating again
                         # in the same tab so sessionStorage and window.name stay.
-                        page.wait_for_url(
-                            lambda current: str(current).startswith("chrome-error://"),
-                            wait_until="commit", timeout=remaining_ms(),
-                        )
-                        document_status.clear()
+                        settle_aborted_navigation()
                         response = None
                     require_navigation_policy()
                     if pending_redirect:
@@ -1034,6 +1042,7 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 raise _policy_error("redirect_limit_exceeded", "Redirect limit exceeded")
 
             navigation_started = time.monotonic()
+            browser_phase = 'initial_navigation'
             navigation = navigate_checked(source.location)
             require_navigation_policy()
             trace.append({"event": "navigation_timing", "duration_ms": round((time.monotonic() - navigation_started) * 1000, 1), "at": utc_now()})
@@ -1076,6 +1085,7 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 variant_bytes += len(html)
 
             for index, step in enumerate(source.recipe):
+                browser_phase = 'recipe_action'
                 action, selector = _safe_step(step)
                 requested_ms = float(step.get("timeout_seconds", source.timeout_seconds)) * 1000
                 timeout_ms = min(requested_ms, remaining_ms())
@@ -1134,6 +1144,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 if challenge_seen:
                     return challenge_result(challenge_seen, page.url)
                 if pending_redirect:
+                    browser_phase = 'recipe_redirect'
+                    settle_aborted_navigation()
                     navigate_checked(pending_redirect.pop())
                 # Inputs and expected text are deliberately excluded from trace.
                 trace.append({"event": "recipe_step", "index": index, "action": action, "selector": _safe_selector(selector), "url": _safe_url(page.url), "at": utc_now()})
@@ -1154,6 +1166,7 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                     return challenge_result(challenge, page.url)
 
             evidence_started = time.monotonic()
+            browser_phase = 'evidence_capture'
             require_navigation_policy()
             html = _evidence_html_snapshot(page)
             challenge = detect_challenge(html, document_status.get("latest", 200))
@@ -1211,7 +1224,17 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
         if "browsertype.launch" in text.casefold() or "browsertype.launchpersistentcontext" in text.casefold():
             trace.append({"event": "browser_launch_failed", "code": "browser_launch_failed", "at": utc_now()})
             return _result(source, "playwright", "failed", message="Chromium could not start in the selected display mode; run the optional browser launch check", trace=trace, variant_snapshots=variant_snapshots)
-        return _result(source, "playwright", "failed", message=f"Browser collection failed ({type(exc).__name__})", trace=trace, variant_snapshots=variant_snapshots)
+        lowered = text.casefold()
+        error_code = ('navigation_interrupted' if 'interrupted by another navigation' in lowered else
+                      'navigation_aborted' if 'net::err_aborted' in lowered else
+                      'execution_context_destroyed' if 'execution context was destroyed' in lowered else
+                      'browser_target_closed' if 'target page, context or browser has been closed' in lowered else
+                      'browser_error')
+        # Browser exception text may contain URLs, input values or credentials.
+        # Emit only a bounded classification and phase, never the raw message.
+        trace.append({'event': 'browser_error', 'code': error_code, 'phase': browser_phase,
+                      'exception_type': type(exc).__name__, 'at': utc_now()})
+        return _result(source, "playwright", "failed", message=f"Browser collection failed ({error_code})", trace=trace, variant_snapshots=variant_snapshots)
 
 
 async def _crawl4ai_run(url: str, timeout_seconds: float) -> tuple[str, str]:
