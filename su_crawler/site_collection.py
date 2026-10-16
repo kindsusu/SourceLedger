@@ -41,7 +41,7 @@ def _ready_recipe(adapter: str, url: str = '') -> list[dict]:
     if adapter == 'gongcar' and path in {'/longterm', '/rentpass', '/monthly-rent'}:
         price_sheet_steps = [
             {'action': 'click', 'selector': '#promo.is-on button[data-act="promo-close"]',
-             'if_visible': True, 'timeout_seconds': 2},
+             'if_visible': True, 'appearance_wait_seconds': 2, 'timeout_seconds': 2},
             {'action': 'click', 'selector': '#deals > button[data-act="price-page"]',
              'if_visible': True, 'timeout_seconds': 5}]
     if adapter == 'gongcar' and path in {'/monthly-rent', '/daily-rent'}:

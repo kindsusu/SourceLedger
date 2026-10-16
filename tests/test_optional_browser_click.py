@@ -16,6 +16,13 @@ def test_optional_click_requires_explicit_boolean_and_click_action(step):
         _safe_step(step)
 
 
+@pytest.mark.parametrize('wait', [-1, 6, True, '2', float('nan'), float('inf')])
+def test_optional_appearance_wait_is_bounded(wait):
+    with pytest.raises(ValueError, match='appearance_wait_seconds'):
+        _safe_step({'action': 'click', 'selector': 'button', 'if_visible': True,
+                    'appearance_wait_seconds': wait})
+
+
 def test_optional_click_present_absent_and_ambiguous(tmp_path, monkeypatch):
     monkeypatch.setenv('SOURCELEDGER_HEADLESS', '1')
     if next(x for x in doctor() if x['backend'] == 'playwright')['status'] != 'available':
@@ -34,3 +41,31 @@ def test_optional_click_present_absent_and_ambiguous(tmp_path, monkeypatch):
         result = collect(source, str(tmp_path), 'playwright')
         assert result.status == 'policy_denied'
         assert any(e.get('code') == 'invalid_recipe' for e in result.trace)
+
+
+def test_delayed_promotion_is_closed_before_clicking_price_sheet(tmp_path, monkeypatch):
+    import test_browser
+
+    monkeypatch.setenv('SOURCELEDGER_HEADLESS', '1')
+    if next(x for x in doctor() if x['backend'] == 'playwright')['status'] != 'available':
+        pytest.skip('Browser runtime unavailable')
+    monkeypatch.setattr(test_browser, 'PAGE', b'''<html><body>
+      <div id="promo" style="display:none;position:fixed;inset:0;z-index:10;background:white">
+        <button id="close" onclick="document.querySelector('#promo').style.display='none'">Close</button>
+      </div>
+      <button id="prices" style="display:none" onclick="document.querySelector('#sheet').textContent='123'">Prices</button>
+      <div id="sheet"></div>
+      <script>
+        setTimeout(() => document.querySelector('#promo').style.display='block', 800);
+        setTimeout(() => document.querySelector('#prices').style.display='block', 1000);
+      </script></body></html>''')
+    with server() as url:
+        source = Source('delayed', 'delayed', 'web', url, [], internal=True,
+                        allowed_domains=['127.0.0.1'], respect_robots=False, timeout_seconds=10,
+                        recipe=[{'action': 'click', 'selector': '#close', 'if_visible': True,
+                                 'appearance_wait_seconds': 2, 'timeout_seconds': 2},
+                                {'action': 'click', 'selector': '#prices', 'timeout_seconds': 3}])
+        result = collect(source, str(tmp_path), 'playwright')
+        assert result.status == 'fetched', result.message
+        assert b'<div id="sheet">123</div>' in result.content
+        assert not any(e['event'] == 'recipe_step_skipped' for e in result.trace)

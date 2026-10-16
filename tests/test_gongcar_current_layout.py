@@ -112,6 +112,11 @@ def test_recipe_supports_current_and_legacy_paths_without_clicking_quote_cards()
     assert recipe['selector'] == 'body'
     assert '#deals > button.deal:not(.deal-all)' in recipe['item_selector']
     assert 'price-page' not in recipe['button_selector']
+    for path in ('rentpass', 'longterm', 'monthly'):
+        recipe = _ready_recipe('gongcar', 'https://gongcar.kr/' + path)
+        close = next(step for step in recipe if 'promo-close' in step.get('selector', ''))
+        assert close['appearance_wait_seconds'] == 2
+        assert close['if_visible'] is True
 
 
 def test_full_longterm_sheet_all_vehicles_periods_and_payment_conditions():

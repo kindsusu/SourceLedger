@@ -78,8 +78,14 @@ def test_gongcar_current_host_keeps_popular_and_promotion_conditions_separate(tm
         def __call__(self, source, base, backend, *, validators=None):
             if backend == "playwright":
                 assert source.recipe == _ready_recipe("gongcar", url)
-                assert source.recipe[0]["action"] == "expand_list"
-                assert "인기 차량" in source.recipe[0]["selector"]
+                assert source.recipe[0] == {"action": "click", "selector": '#promo.is-on button[data-act="promo-close"]',
+                                            "if_visible": True, "appearance_wait_seconds": 2, "timeout_seconds": 2}
+                assert source.recipe[1] == {"action": "click", "selector": '#deals > button[data-act="price-page"]',
+                                            "if_visible": True, "timeout_seconds": 5}
+                expansion = [step for step in source.recipe if step['action'] == 'expand_list']
+                assert len(expansion) == 2
+                assert "인기 차량" in expansion[0]["selector"]
+                assert expansion[1]['section'] == 'promotion'
             return super().__call__(source, base, backend, validators=validators)
 
     collector = CheckingCollector(fail_http_for={url})

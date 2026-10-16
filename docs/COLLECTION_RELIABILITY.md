@@ -72,7 +72,7 @@ Browser workers receive a shared 15-second teardown grace period. This avoids tr
 
 ### Optional UI dismissal
 
-A reviewed `click` recipe may set `if_visible: true`. A missing visible target is recorded as a skipped step; one visible target is clicked, and multiple matches fail closed. This is used to close a known promotion overlay before opening Gongcar's read-only price sheet. It does not submit quote forms or skip CAPTCHA/authentication checks.
+A reviewed `click` recipe may set `if_visible: true`. An optional `appearance_wait_seconds` (0–5) allows a delayed overlay to appear within the collection deadline. A missing visible target is recorded as a skipped step; one visible target is clicked, and multiple matches fail closed. This is used to close a known promotion overlay before opening Gongcar's read-only price sheet. It does not submit quote forms or skip CAPTCHA/authentication checks.
 
 
 ### Current Gongcar price sheets

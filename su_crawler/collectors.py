@@ -443,6 +443,11 @@ def _safe_step(step: dict[str, Any]) -> tuple[str, str]:
     action = str(step.get("action", ""))
     if 'if_visible' in step and (action != 'click' or not isinstance(step['if_visible'], bool)):
         raise _policy_error("invalid_recipe", "if_visible requires a boolean on a click action")
+    if 'appearance_wait_seconds' in step:
+        wait_seconds = step['appearance_wait_seconds']
+        if (action != 'click' or step.get('if_visible') is not True or isinstance(wait_seconds, bool)
+                or not isinstance(wait_seconds, (int, float)) or not 0 <= wait_seconds <= 5):
+            raise _policy_error('invalid_recipe', 'appearance_wait_seconds requires an optional click and a number from 0 to 5')
     if action not in {"click", "select", "fill", "wait_for", "assert_text", "expand_list", "enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}:
         raise _policy_error("browser_action_denied", "Browser action is not allowed")
     if action in {"enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}:
@@ -1078,6 +1083,12 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 if action == "click":
                     if step.get('if_visible'):
                         visible = page.locator(f':is({selector}):visible')
+                        appearance_wait = float(step.get('appearance_wait_seconds', 0))
+                        if appearance_wait and visible.count() == 0:
+                            try:
+                                visible.first.wait_for(state='visible', timeout=min(appearance_wait * 1000, remaining_ms()))
+                            except PlaywrightTimeoutError:
+                                pass
                         count = visible.count()
                         if count == 0:
                             trace.append({'event': 'recipe_step_skipped', 'index': index,
