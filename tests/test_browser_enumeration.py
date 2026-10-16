@@ -47,6 +47,23 @@ def _remaining(seconds=8):
     return lambda: (deadline - time.monotonic()) * 1000
 
 
+def _wait_for_scroll_mutation(page, monkeypatch, predicate):
+    """Exercise evidence preservation after a confirmed real scroll mutation.
+
+    Browser/compositor event delivery is not guaranteed within the recipe's
+    50 ms progress interval, especially on loaded CI workers. This fixture
+    synchronizes the test page's mutation without changing production waits.
+    """
+    locator_type = type(page.locator('.item'))
+    original_scroll = locator_type.scroll_into_view_if_needed
+
+    def scroll_then_wait(locator, *args, **kwargs):
+        original_scroll(locator, *args, **kwargs)
+        page.wait_for_function(predicate, timeout=3000)
+
+    monkeypatch.setattr(locator_type, 'scroll_into_view_if_needed', scroll_then_wait)
+
+
 def test_dependent_native_options_keep_distinct_html_and_candidate_provenance(page):
     page.set_content("""<select id=brand><option value=''>Choose</option><option value=a>A</option>
       <option value=b>B</option></select><select id=trim></select><strong id=price></strong>
@@ -152,15 +169,19 @@ def test_scroll_explicit_end_is_complete(page):
     assert (len(snapshots), trace[-1]["status"]) == (1, "complete")
 
 
-def test_scroll_replacement_preserves_prior_evidence(page):
+@pytest.mark.parametrize('mutation_delay_ms', [0, 120])
+def test_scroll_replacement_preserves_prior_evidence(page, monkeypatch, mutation_delay_ms):
     page.set_viewport_size({"width": 320, "height": 240})
     page.set_content("""<div id=list><article class=item>A</article>
       <article class=item style='margin-top:700px;height:40px'>B</article></div>
       <script>addEventListener('scroll', () => {
-        if (scrollY > 0) document.querySelector('#list').innerHTML='<article class=item>C</article>';
-      }, {once:true})</script>""")
+        if (scrollY > 0) setTimeout(() => {
+          document.querySelector('#list').innerHTML='<article class=item>C</article>';
+        }, MUTATION_DELAY);
+      }, {once:true})</script>""".replace('MUTATION_DELAY', str(mutation_delay_ms)))
     assert page.evaluate("window.scrollY") == 0
     assert page.locator(".item").last.evaluate("el => el.getBoundingClientRect().top > innerHeight")
+    _wait_for_scroll_mutation(page, monkeypatch, "document.querySelector('#list').textContent === 'C'")
     snapshots, trace = [], []
     scroll_list(page, {"action": "scroll_list", "selector": "#list", "item_selector": ".item",
                        "progress_wait_seconds": 0.05}, _remaining(),
@@ -215,13 +236,14 @@ def test_same_text_changed_product_attributes_are_not_mixed_into_snapshot(page):
     assert (trace[-1]["status"], trace[-1]["reason"]) == ("unknown", "list_changed_during_capture")
 
 
-def test_scroll_after_saved_state_detects_same_text_attribute_replacement(page):
+def test_scroll_after_saved_state_detects_same_text_attribute_replacement(page, monkeypatch):
     page.set_viewport_size({"width": 320, "height": 240})
     page.set_content("""<div id=list><article class=item><a href='/a'>Same</a></article>
       <article class=item style='margin-top:700px;height:40px'>B</article></div>
       <script>addEventListener('scroll', () => {
         if (scrollY > 0) document.querySelector('a').href='/b';
       }, {once:true})</script>""")
+    _wait_for_scroll_mutation(page, monkeypatch, "document.querySelector('#list a').getAttribute('href') === '/b'")
     snapshots, trace = [], []
     scroll_list(page, {"action": "scroll_list", "selector": "#list", "item_selector": ".item",
                        "progress_wait_seconds": 0.05}, _remaining(),
