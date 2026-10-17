@@ -45,6 +45,10 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="SourceLedger: collect prices and preserve source evidence.")
     sub = parser.add_subparsers(dest="command", required=True)
+    maintenance = sub.add_parser('storage', help='Inspect storage or prune only unreferenced checkpoint data.')
+    maintenance.add_argument('--output-dir', required=True, help='One output directory containing prices.sqlite3.')
+    maintenance.add_argument('--apply', action='store_true', help='Apply the conservative cleanup; default is a preview.')
+    maintenance.add_argument('--grace-days', type=int, default=7, help='Minimum age for unreferenced temporary files (default: 7).')
     setup = sub.add_parser("init", help="Create a research workspace; prompt for missing topic fields.")
     setup.add_argument("--workspace", default=DEFAULT_WORKSPACE)
     setup.add_argument("--lang", choices=["en", "ko"], default="en")
@@ -148,7 +152,10 @@ def main(argv: list[str] | None = None) -> int:
     mcp.add_argument("--port", type=int, default=8765)
     args = parser.parse_args(argv)
     try:
-        if args.command == "ui":
+        if args.command == 'storage':
+            from .retention import maintain_storage
+            result = maintain_storage(Path(args.output_dir), apply=args.apply, grace_days=args.grace_days)
+        elif args.command == "ui":
             from .web_server import serve_web
             serve_web(args.workspace_root, port=args.port, open_browser=not args.no_browser)
             return 0

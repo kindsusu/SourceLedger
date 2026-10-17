@@ -279,6 +279,8 @@ Gongcar short-rental adapters support monthly/daily catalog cards and explicit d
 
 Checkpoint captures now use lossless, content-addressed storage. Back up the entire output directory, including `checkpoint_blobs/` and `evidence/`, alongside SQLite. See [storage measurements and compatibility](docs/STORAGE_OPTIMIZATION.md).
 
+To inspect one output directory before storage maintenance, run `python -m su_crawler storage --output-dir "E:\path\to\one-output-directory"`; add `--apply` to remove only checkpoint internals unreachable from saved checkpoints. New identical source captures and screenshots share files, while source evidence, receipts, SQLite and XLSX are retained. See [retention and maintenance](docs/STORAGE_OPTIMIZATION.md#retention-and-maintenance) for the default automatic policy and its limits.
+
 Optional browser reuse and browser concurrency 2 are available for controlled comparisons through MCP execution settings. See [browser optimization and validation](docs/BROWSER_OPTIMIZATION.md).
 
 Before publishing a version, require the [CI and verified release checks](docs/CI_RELEASE.md) for the exact commit.

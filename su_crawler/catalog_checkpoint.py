@@ -7,20 +7,43 @@ checkpoint that points to a partially written capture.
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import gzip
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 
-from .storage import Store
+from .storage import Store, workspace_lock
 
 
 _BLOB_ROOT = "checkpoint_blobs"
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _COMPRESSED_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"RIFF", b"PK\x03\x04", b"%PDF")
+
+
+def _is_linklike(path: Path) -> bool:
+    """Include Windows junctions and other reparse points, even if dangling."""
+    if path.is_symlink():
+        return True
+    try:
+        return bool(getattr(path.lstat(), "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    except FileNotFoundError:
+        return False
+
+
+@contextmanager
+def checkpoint_lock(output: Path):
+    """Serialize checkpoint readers, writers and retention on this output."""
+    directory = Path(output).expanduser().absolute() / '.checkpoint-maintenance'
+    lock = directory / 'collection.lock'
+    if _is_linklike(directory) or _is_linklike(lock):
+        raise ValueError('Checkpoint maintenance lock must not be a symbolic link')
+    with workspace_lock(directory):
+        yield
 
 
 def _blob_path(output: Path, digest: str, suffix: str) -> Path:
@@ -32,7 +55,7 @@ def _blob_path(output: Path, digest: str, suffix: str) -> Path:
     path = shard / (digest + suffix)
     # Reject links at each level, including dangling links. A checkpoint must
     # never read or write outside its own output directory.
-    if any(part.is_symlink() for part in (blob_root, shard, path)):
+    if any(_is_linklike(part) for part in (blob_root, shard, path)):
         raise ValueError("Checkpoint blob path is a symlink")
     if not path.resolve().is_relative_to(root):
         raise ValueError("Checkpoint blob path escapes output directory")
@@ -115,6 +138,11 @@ def _decode(output: Path, value: dict):
 
 
 def read_checkpoint(output: Path, key: str) -> dict | None:
+    with checkpoint_lock(output):
+        return _read_checkpoint_unlocked(output, key)
+
+
+def _read_checkpoint_unlocked(output: Path, key: str) -> dict | None:
     store = Store(output)
     try:
         row = store.db.execute("SELECT data FROM catalog_checkpoints WHERE id=?", (key,)).fetchone()
@@ -141,6 +169,16 @@ def write_checkpoint(output: Path, key: str, state: dict, *, page_cache: dict | 
     The optional cache is coordinator-local and scoped to one output/checkpoint.
     It avoids serializing every prior page on each progress update.
     """
+    with checkpoint_lock(output):
+        _write_checkpoint_unlocked(output, key, state, page_cache=page_cache)
+    if isinstance(state.get('result'), dict):
+        # Maintenance takes the same lock, after the finalized state is durable.
+        # Policy errors are receipts, never collection failures.
+        from .retention import run_retention_policy
+        run_retention_policy(output)
+
+
+def _write_checkpoint_unlocked(output: Path, key: str, state: dict, *, page_cache: dict | None = None) -> None:
     store = Store(output)
     try:
         def encode(value):
