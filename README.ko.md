@@ -271,6 +271,8 @@ MCP로 조사 누락 조회, 검토 대기 브라우저 근거 제출, 부분 �
 
 체크포인트는 이제 원본을 보존하는 해시 기반 파일 저장 방식을 사용합니다. 백업할 때 SQLite뿐 아니라 `checkpoint_blobs/`, `evidence/`를 포함한 출력 폴더 전체를 보관하세요. [용량 실측과 호환성](docs/STORAGE_OPTIMIZATION.ko.md)을 참고하세요.
 
+출력 폴더 하나의 저장 상태는 `python -m su_crawler storage --output-dir "E:\path\to\one-output-directory"`로 삭제 없이 확인하고, `--apply`로 저장된 체크포인트가 참조하지 않는 내부 자료만 정리할 수 있습니다. 새로 저장하는 동일 원문·스크린샷은 파일을 공유하며 원본 증거·영수증·SQLite·엑셀은 보존합니다. 자동 정리의 기본 설정과 제한은 [보관 및 정리 정책](docs/STORAGE_OPTIMIZATION.ko.md#보관-및-정리-정책)에 있습니다.
+
 MCP 실행 설정으로 브라우저 재사용과 브라우저 동시성 2개를 선택해 비교할 수 있습니다. [브라우저 최적화와 검증 계획](docs/BROWSER_OPTIMIZATION.ko.md)을 참고하세요.
 
 버전을 게시하기 전 해당 커밋의 [CI 및 검증된 릴리즈 절차](docs/CI_RELEASE.ko.md)를 확인하세요.

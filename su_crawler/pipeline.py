@@ -9,10 +9,13 @@ import json
 import time
 import uuid
 import re
+import os
+import tempfile
 
 from .config import config_fingerprint
 from .models import Candidate, CollectionConfig, FetchResult, Product, Source, stable_id, utc_now
 from .storage import Store, workspace_lock
+from .catalog_checkpoint import _is_linklike
 
 TERMINAL = {"verified", "review", "price_unavailable", "product_not_found", "blocked", "needs_auth", "tool_unavailable", "policy_denied", "timeout", "failed", "budget_exhausted"}
 
@@ -97,25 +100,44 @@ def _has_sufficient_evidence(candidates: list[Candidate], decimal_separator: str
     return bool(commercial) and all(quality[0] or quality[1] for quality in commercial)
 
 
-def _save_evidence(directory: Path, result: FetchResult, source: Source) -> tuple[str, str]:
-    digest = hashlib.sha256(result.content).hexdigest()
-    dest = directory / "evidence" / digest[:2]
+def _store_capture(directory: Path, data: bytes, suffix: str) -> tuple[Path, str]:
+    """Keep identical capture bytes once; replace repairs atomically."""
+    digest = hashlib.sha256(data).hexdigest()
+    root = directory.resolve()
+    dest = root / 'evidence' / digest[:2]
+    path = dest / (digest + suffix)
+    for part in (root / 'evidence', dest, path):
+        if _is_linklike(part):
+            raise ValueError('Evidence capture path cannot be a link')
+    if not path.resolve().is_relative_to(root):
+        raise ValueError('Evidence capture path escapes output directory')
     dest.mkdir(parents=True, exist_ok=True)
+    if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+        return path, digest
+    pending = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=dest, prefix='.capture-', delete=False) as stream:
+            pending = Path(stream.name)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(pending, path)
+    finally:
+        if pending is not None:
+            pending.unlink(missing_ok=True)
+    return path, digest
+
+
+def _save_evidence(directory: Path, result: FetchResult, source: Source) -> tuple[str, str]:
     suffix = {"text/html": ".html", "text/csv": ".csv", "application/json": ".json", "application/pdf": ".pdf",
               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx"}.get(result.media_type.split(";")[0], ".bin")
-    path = dest / (digest + suffix)
-    if not path.exists():
-        path.write_bytes(result.content)
-    elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-        # Repair an altered local content-addressed artifact from freshly
-        # retrieved bytes; never accept the filename as proof of its content.
-        path.write_bytes(result.content)
+    path, digest = _store_capture(directory, result.content, suffix)
+    dest = path.parent
     receipt = dest / f"{digest}.{stable_id(result.fetched_at, source.id)}.json"
     artifacts = {"content": {"path": str(path), "sha256": digest}}
     if result.screenshot:
-        screenshot = receipt.with_suffix(".png")
-        screenshot.write_bytes(result.screenshot)
-        artifacts["screenshot"] = {"path": str(screenshot), "sha256": hashlib.sha256(result.screenshot).hexdigest()}
+        screenshot, screenshot_digest = _store_capture(directory, result.screenshot, '.png')
+        artifacts["screenshot"] = {"path": str(screenshot), "sha256": screenshot_digest}
     receipt.write_text(json.dumps({"source_id": source.id, "url": result.final_url, "at": result.fetched_at,
         "backend": result.backend, "hash": digest, "recipe_version": source.recipe_version, "account_scope": source.account_scope,
         "trace": result.trace, "http_metadata": result.http_metadata,
