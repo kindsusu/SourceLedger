@@ -133,3 +133,25 @@ def test_invalid_policy_records_error_without_failing_checkpoint(tmp_path):
     status = json.loads((tmp_path / ".checkpoint-maintenance" / "status.json").read_text(encoding="utf-8"))
     assert status["status"] == "error"
     assert read_checkpoint(tmp_path, "run")["capture"] == b"source"
+
+
+def test_conflicting_shared_blob_reference_prevents_removal(tmp_path):
+    _seed(tmp_path)
+    write_checkpoint(tmp_path, 'shared', {'a': b'shared bytes', 'b': b'shared bytes'})
+    store = Store(tmp_path)
+    row = json.loads(store.db.execute("SELECT data FROM catalog_checkpoints WHERE id='shared'").fetchone()[0])
+    row['b']['size'] += 1
+    with store.db:
+        store.db.execute("UPDATE catalog_checkpoints SET data=? WHERE id='shared'", (json.dumps(row),))
+    store.close()
+    before = sorted((tmp_path / 'checkpoint_blobs').rglob('*.*'))
+    with pytest.raises(ValueError, match='Conflicting'):
+        maintain_storage(tmp_path, apply=True)
+    assert sorted((tmp_path / 'checkpoint_blobs').rglob('*.*')) == before
+
+
+def test_policy_does_not_write_receipt_through_linklike_output(tmp_path, monkeypatch):
+    original = retention._is_linklike
+    monkeypatch.setattr(retention, '_is_linklike', lambda path: path == tmp_path or original(path))
+    assert retention.run_retention_policy(tmp_path)['status'] == 'error'
+    assert not (tmp_path / '.checkpoint-maintenance').exists()

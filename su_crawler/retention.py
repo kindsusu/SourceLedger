@@ -99,7 +99,7 @@ def _inspect(output: Path, grace_days: int) -> tuple[dict, list[str], list[Path]
             _decode_document(data, digest)
 
     live_pages: set[str] = set()
-    live_blobs: set[Path] = set()
+    live_blobs: dict[Path, int] = {}
     def walk(value: object):
         if isinstance(value, list):
             for child in value:
@@ -122,14 +122,19 @@ def _inspect(output: Path, grace_days: int) -> tuple[dict, list[str], list[Path]
                 raise ValueError("Invalid checkpoint blob reference")
             digest = value["sha256"]
             relative = value["__checkpoint_blob__"]
+            size = value["size"]
             if not isinstance(digest, str) or not _DIGEST.fullmatch(digest) or not isinstance(relative, str):
                 raise ValueError("Invalid checkpoint blob reference")
+            if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+                raise ValueError("Invalid checkpoint blob size")
             path = _blob_path(output, digest, Path(relative).suffix)
             if relative != path.relative_to(output).as_posix():
                 raise ValueError("Invalid checkpoint blob path")
             if path not in live_blobs:
                 _read_blob(output, value)  # Validate referenced bytes before authorizing any removal.
-                live_blobs.add(path)
+                live_blobs[path] = size
+            elif live_blobs[path] != size:
+                raise ValueError("Conflicting checkpoint blob size")
             return
         if "__bytes__" in value:
             if set(value) != {"__bytes__"} or not isinstance(value["__bytes__"], str):
@@ -239,7 +244,7 @@ def run_retention_policy(output: str | Path) -> dict:
         status = {"status": "error", "at": datetime.now(timezone.utc).isoformat(),
                   "error_type": type(exc).__name__, "reason": str(exc)[:250]}
     try:
-        if not _is_linklike(directory) and not _is_linklike(receipt):
+        if not _is_linklike(root) and not _is_linklike(directory) and not _is_linklike(receipt):
             directory.mkdir(parents=True, exist_ok=True)
             temporary = directory / (".status-" + uuid.uuid4().hex + ".tmp")
             try:
