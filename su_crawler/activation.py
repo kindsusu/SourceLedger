@@ -128,6 +128,8 @@ def _evidence_problem(row: dict[str, Any], config: CollectionConfig,
     # context from the run-bound fetch receipt instead of inventing a browser
     # capture or downgrading a retained rendered snapshot to a static response.
     backend = 'verification'
+    capture_trace = []
+    trace_identity = None
     final_url = row.get('source_url') or source.location
     if source.adapter or artifacts or row.get('evidence_mode', 'unknown') != 'unknown':
         receipt_path = path.with_name(f"{expected_hash}.{stable_id(row.get('collected_at'), source.id)}.json")
@@ -147,12 +149,15 @@ def _evidence_problem(row: dict[str, Any], config: CollectionConfig,
                 or receipt.get('backend') not in {'file', 'http', 'playwright', 'crawl4ai'}):
             return 'source fetch receipt does not match the observation'
         backend = receipt['backend']
+        capture_trace = receipt.get('trace', [])
+        trace_identity = receipt_key
         if artifacts and receipt.get('artifacts') != {key: value for key, value in artifacts.items() if key != 'receipt'}:
             return 'source fetch receipt artifact manifest does not match the observation'
-    extract_key = ('extract', resolved, expected_hash, _json_hash(asdict(source)), backend, final_url)
+    extract_key = ('extract', resolved, expected_hash, _json_hash(asdict(source)), backend, final_url,
+                   trace_identity)
     if extract_key not in cache:
         cache[extract_key] = extract(FetchResult(source.id, "fetched", backend,
-            content=path.read_bytes(), media_type=media_type, final_url=final_url), source)
+            content=path.read_bytes(), media_type=media_type, final_url=final_url, trace=capture_trace), source)
     candidates = cache[extract_key]
     bound = []
     for candidate in candidates:

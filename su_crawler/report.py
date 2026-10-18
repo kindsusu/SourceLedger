@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -159,7 +160,7 @@ def append_section_coverage(path: str | Path, coverage: list[dict[str, Any]]) ->
     from openpyxl.styles import Font, PatternFill
 
     path = Path(path)
-    wb = load_workbook(path)
+    wb = load_workbook(BytesIO(path.read_bytes()))
     title = "Catalog coverage"
     if title in wb:
         del wb[title]
@@ -221,7 +222,7 @@ def append_collection_issues(path: str | Path, issues: list[dict[str, Any]]) -> 
     from openpyxl.styles import Font, PatternFill
 
     path = Path(path)
-    wb = load_workbook(path)
+    wb = load_workbook(BytesIO(path.read_bytes()))
     title = "Collection Issues"
     if title in wb:
         del wb[title]
@@ -266,7 +267,7 @@ def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
     from openpyxl.styles import Font, Alignment, PatternFill
     from .result_view import FIELD_LABELS
     path = Path(path)
-    wb = load_workbook(path)
+    wb = load_workbook(BytesIO(path.read_bytes()))
     title = "Collection Changes"
     if title in wb:
         del wb[title]
@@ -400,6 +401,7 @@ def export_report(
     tasks: list[dict[str, Any]],
     observations: list[dict[str, Any]],
     output_path: Path,
+    *, supplemental_sheets: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Write an auditable report atomically and return its final path.
 
@@ -445,7 +447,8 @@ def export_report(
 
         # Show collected offers and distinct browser-only review candidates.
         headers = ["Product", "Source", "Recorded Price (not a final quote)", "Currency", "Result Status",
-                   "Recorded Conditions", "Missing Conditions", "Supporting Evidence Count", "Conflicting Values", "Source URL", "Observation ID"]
+                   "Recorded Conditions", "Missing Conditions", "Supporting Evidence Count", "Conflicting Values", "Source URL", "Observation ID",
+                   "Price Field Evidence", "Declared Normalization", "Comparison Readiness"]
         ws = wb.add_worksheet("Results"); row = _setup_sheet(ws, headers, fmts, demo)
         for obs in presentation["rows"]:
             fields = obs.get("raw_fields") or {}
@@ -470,7 +473,9 @@ def export_report(
             values = [fields.get("name") or obs.get("product_id"), obs.get("source_name"),
                       _observed_amount(obs, include_review=True), obs.get("currency"), obs["result_status"],
                       recorded, "\n".join(FIELD_LABELS.get(key, key) for key in obs["missing_conditions"]), len(obs["supporting_evidence"]),
-                      "\n".join(f'{FIELD_LABELS.get(c["field"], c["field"])}: {c["observed"]} / {c["submitted"]}' for c in obs["conflicts"]), obs.get("source_url"), obs["id"]]
+                      "\n".join(f'{FIELD_LABELS.get(c["field"], c["field"])}: {c["observed"]} / {c["submitted"]}' for c in obs["conflicts"]), obs.get("source_url"), obs["id"],
+                      obs["field_validation"]["price_evidence"], obs["field_validation"]["normalization"],
+                      obs["field_validation"]["comparison"]]
             for col, value in enumerate(values):
                 if col in (2, 7): _write_decimal(ws, row, col, value, fmts["number"])
                 elif col == 9 and _safe_url(value): ws.write_url(row, col, value, fmts["link"], value)
@@ -478,6 +483,7 @@ def export_report(
             row += 1
         ws.set_column(0, 1, 28); ws.set_column(2, 4, 23); ws.set_column(5, 6, 46)
         ws.set_column(7, 7, 20); ws.set_column(8, 10, 42)
+        ws.set_column(11, 13, 26)
         _finish_sheet(ws, 1 if demo else 0, row, len(headers) - 1)
         if presentation["evidence_count"]:
             headers = ["Evidence ID", "Linked Observation ID", "Association", "Product", "Submitted Fields (unverified)", "Conflicts", "Source URL", "Evidence File"]
@@ -643,6 +649,21 @@ def export_report(
             ws.set_column(9, 14, 27); ws.set_column(15, 18, 23); ws.set_column(19, 19, 38)
             ws.set_column(20, 25, 23); ws.set_column(26, 27, 52); ws.set_column(28, 28, 26)
             ws.freeze_panes(2 if demo else 1, 2)
+            _finish_sheet(ws, 1 if demo else 0, row, len(headers) - 1)
+        # Site-specific detail and audit tables join the same atomic export.
+        # No second workbook import/save is needed to append final results.
+        for table in supplemental_sheets or []:
+            headers = table["headers"]
+            ws = wb.add_worksheet(table["name"])
+            row = _setup_sheet(ws, headers, fmts, demo)
+            for values in table["rows"]:
+                for col, value in enumerate(values):
+                    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+                        _write_decimal(ws, row, col, value, fmts["number"])
+                    else:
+                        _write_value(ws, row, col, value, fmts["text"])
+                row += 1
+            ws.set_column(0, len(headers) - 1, 26)
             _finish_sheet(ws, 1 if demo else 0, row, len(headers) - 1)
         wb.close()
         _validate_xlsx(tmp_path)

@@ -3,6 +3,38 @@ from copy import deepcopy
 from su_crawler.result_view import build_result_view
 
 
+def test_field_checks_do_not_promote_review_or_browser_submission():
+    row = offer("48")
+    row["evidence_mode"] = "rendered_dom"
+    row["evidence"] = {"price": {"raw": "680000", "location": "price span", "display_state": "visible"}}
+    result = build_result_view([row])["rows"][0]
+    assert result["field_validation"] == {
+        "price_evidence": "matched", "normalization": "not_applicable", "comparison": "not_ready",
+    }
+    assert result["status"] == "review"
+
+    row["status"] = "verified"
+    row["comparable"] = True
+    row["evidence"]["price"]["raw"] = "wrong"
+    result = build_result_view([row])["rows"][0]
+    assert result["field_validation"]["price_evidence"] == "review"
+    assert result["field_validation"]["comparison"] == "not_ready"
+
+    submitted = evidence(options="winter")
+    only_browser = build_result_view([submitted])["rows"][0]
+    assert only_browser["field_validation"]["comparison"] == "not_ready"
+
+
+def test_declared_normalization_status_requires_matching_conversion():
+    row = offer("48")
+    row["raw_fields"]["price"] = "680000"
+    row["evidence"] = {"price": {"raw": "680,000원", "location": "span",
+                                 "normalization": {"rule": "korean_won_amount"}}}
+    assert build_result_view([row])["rows"][0]["field_validation"]["normalization"] == "matched"
+    row["evidence"]["price"]["normalization"] = {"rule": "korean_months"}
+    assert build_result_view([row])["rows"][0]["field_validation"]["normalization"] == "review"
+
+
 def offer(term, **fields):
     return {"id": "offer-" + term, "source_url": "https://shop.example/car", "amount": "680000", "currency": "KRW",
             "status": "review", "price_profile": "rental", "extraction_method": "adapter", "comparable": False,

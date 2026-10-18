@@ -4,18 +4,20 @@ from __future__ import annotations
 from typing import Callable
 
 from ..models import Candidate, FetchResult, Source
-from . import funrent, gongcar, jetcar
+from . import amazoncar, funrent, gongcar, jetcar
 
 ADAPTER_VERSION = "3"
 _ADAPTERS: dict[str, Callable[[FetchResult, Source], list[Candidate]]] = {
     "jetcar": jetcar.extract,
     "gongcar": gongcar.extract,
     "funrent": funrent.extract,
+    "amazoncar": amazoncar.extract,
 }
 _METADATA = {
     "jetcar": {"version": ADAPTER_VERSION, "requires_rendered_html": False, "hosts": ["jetcar.kr", "www.jetcar.kr"]},
     "gongcar": {"version": ADAPTER_VERSION, "requires_rendered_html": True, "hosts": ["gongcarrent.kr", "www.gongcarrent.kr", "gongcar.kr", "www.gongcar.kr"]},
     "funrent": {"version": ADAPTER_VERSION, "requires_rendered_html": True, "hosts": ["go.funrentcar.com"]},
+    "amazoncar": {"version": ADAPTER_VERSION, "requires_rendered_html": True, "hosts": ["amazoncar.co.kr", "www.amazoncar.co.kr"]},
 }
 
 

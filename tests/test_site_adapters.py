@@ -26,7 +26,7 @@ def assert_complete_evidence(candidate):
 def test_registry_has_versioned_render_requirements():
     metadata = available_adapters()
     assert ADAPTER_VERSION == "3"
-    assert set(metadata) == {"jetcar", "gongcar", "funrent"}
+    assert set(metadata) == {"jetcar", "gongcar", "funrent", "amazoncar"}
     assert metadata["jetcar"]["requires_rendered_html"] is False
     assert metadata["gongcar"]["requires_rendered_html"] is True
 

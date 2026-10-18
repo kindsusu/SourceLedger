@@ -11,7 +11,7 @@ from .models import CollectionConfig, Product, Source, resolve_path, stable_id
 from .browser_enumeration import validate_enumeration_step
 
 PRICE_PROFILES = frozenset({"unit", "rental"})
-SOURCE_ADAPTERS = frozenset({"jetcar", "gongcar", "funrent"})
+SOURCE_ADAPTERS = frozenset({"jetcar", "gongcar", "funrent", "amazoncar"})
 
 
 def load_config(path: str | Path) -> CollectionConfig:
@@ -46,7 +46,7 @@ def load_config(path: str | Path) -> CollectionConfig:
         if source.kind not in {"web", "file"}:
             raise ValueError(f"Unsupported source type: {source.kind}")
         if source.adapter is not None and (not isinstance(source.adapter, str) or source.adapter not in SOURCE_ADAPTERS):
-            raise ValueError(f"Source {source.id}: adapter must be jetcar, gongcar, funrent, or null")
+            raise ValueError(f"Source {source.id}: adapter must be jetcar, gongcar, funrent, amazoncar, or null")
         if not isinstance(source.incremental, bool):
             raise ValueError(f"Source {source.id}: incremental must be true or false")
         if not source.product_ids or set(source.product_ids) - product_ids:
