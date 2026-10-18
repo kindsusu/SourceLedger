@@ -16,6 +16,22 @@ from su_crawler.storage import Store
 from su_crawler.validation import validate
 
 
+def test_evidence_assessment_detects_in_place_config_change_with_shared_cache(tmp_path):
+    config_path = _write_fixture(tmp_path, products=("A", "B"))
+    receipt = verify_config(config_path, receipt_path=tmp_path / "receipt.json")
+    config = load_config(config_path)
+    store = Store(Path(config.output_dir))
+    try:
+        rows = store.observations(receipt["run_id"])
+    finally:
+        store.close()
+    cache = {}
+    assert all(_evidence_problem(row, config, cache) is None for row in rows)
+    # In-place mutation is detected even while a prior extraction is cached.
+    config.sources[0].columns["price"] = "missing_column"
+    assert _evidence_problem(rows[0], config, cache) is not None
+
+
 def _write_fixture(tmp_path: Path, *, products: tuple[str, ...] = ("A",)) -> Path:
     rows = ["model,price,currency,unit,pack,tax,type,basis"]
     rows.extend(f"TEST-{item},{10 if item == 'A' else 20},USD,each,1,exclusive,list,each" for item in products)

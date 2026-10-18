@@ -6,6 +6,8 @@
 
 SourceLedger is a local, evidence-first tool for researching sources, collecting product prices, preserving source material, and creating XLSX reports. It never estimates prices or substitutes missing values with zero.
 
+For a fixed Amazoncar product cohort, SourceLedger can replay retained rendered captures into SQLite and export one XLSX workbook. The price field, declared text normalization, and comparison readiness are reported separately. A matching field is not a claim that the current website still shows that value; source-file replay and catalog completeness have their own checks. See [Amazoncar capture and replay](docs/amazoncar.md).
+
 Each collection records the source URL, UTC timestamp, raw fields, CSS/JSON/table location, evidence-file path, and SHA-256 hash. A row can be `verified` only when the product, price, and currency are supported by source evidence. A verified row is excluded from comparisons when its conditions are insufficient (`comparable=false`). For example, SourceLedger does not calculate a normalized unit price without source evidence of whether a price is for a pack or an individual item.
 
 Raw or static HTML prices remain preserved, but are not comparable until rendered display evidence is available. Structured files and document records use their record evidence instead. Source Evidence links retained content and, when captured, screenshots and collection receipts.

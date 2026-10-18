@@ -15,6 +15,24 @@ def demo(tmp_path):
     return replace(load_config(ROOT / "examples/demo.json"), output_dir=str(tmp_path))
 
 
+def test_deferred_export_keeps_evidence_and_resumes_without_recollection(tmp_path):
+    config = demo(tmp_path)
+    result = execute(config, export=False)
+    assert not result.get("report_path")
+    assert not list(tmp_path.glob("*.xlsx"))
+    store = Store(tmp_path)
+    before = store.observations(result["id"])
+    assert before and all(Path(row["evidence_path"]).is_file() for row in before)
+    assert store.source_tasks(result["id"], "catalog") == [
+        row for row in store.tasks(result["id"]) if row["source_id"] == "catalog"]
+    store.close()
+    result = execute(config, resume_id=result["id"], collector=lambda *a: pytest.fail("recollected"))
+    assert Path(result["report_path"]).is_file()
+    store = Store(tmp_path)
+    assert store.observations(result["id"]) == before
+    store.close()
+
+
 def test_end_to_end_and_resume_does_not_duplicate(tmp_path):
     config = demo(tmp_path)
     result = execute(config, max_tasks=1)

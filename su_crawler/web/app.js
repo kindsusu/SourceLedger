@@ -1261,6 +1261,17 @@ function renderObservations(target) {
     const detailCell = node("td");
     detailCell.append(node("p", { text: displayValue(row.locator || row.evidence_path) }));
     if (browserCandidate) detailCell.append(node("p", { text: i18n.t("plan.browserCandidate") }));
+    if (row.field_validation) {
+      const proofLabels = [
+        ["fieldProofPrice", "price_evidence", { matched: "fieldProofMatched", review: "fieldProofReview", missing: "fieldProofMissing" }],
+        ["fieldProofNormalization", "normalization", { matched: "fieldProofMatched", review: "fieldProofReview", not_applicable: "fieldProofNotApplicable" }],
+        ["fieldProofComparison", "comparison", { ready: "fieldProofReady", not_ready: "fieldProofNotReady" }],
+      ];
+      for (const [labelKey, key, statuses] of proofLabels) {
+        const statusKey = statuses[row.field_validation[key]] || "fieldProofReview";
+        detailCell.append(node("p", { text: `${i18n.t(`plan.${labelKey}`)}: ${i18n.t(`plan.${statusKey}`)}` }));
+      }
+    }
     if (row.missing_conditions?.length) detailCell.append(node("p", { text: `${i18n.t("plan.resultMissing")}: ${row.missing_conditions.map(key => i18n.t(`plan.field.${key}`)).join(", ")}` }));
     if (row.field_status) {
       const details = node("details");

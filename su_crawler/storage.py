@@ -284,6 +284,11 @@ class Store:
     def tasks(self, run_id: str) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM tasks WHERE run_id=? ORDER BY source_id,product_id", (run_id,))]
 
+    def source_tasks(self, run_id: str, source_id: str) -> list[dict]:
+        """Read the current source's tasks without materializing the whole run."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM tasks WHERE run_id=? AND source_id=? ORDER BY product_id", (run_id, source_id))]
+
     def observations(self, run_id: str) -> list[dict]:
         return [json.loads(r[1]) for r in self.db.execute(
             "SELECT id,data FROM observations WHERE run_id=? UNION ALL SELECT id,data FROM browser_submissions WHERE run_id=? ORDER BY id",

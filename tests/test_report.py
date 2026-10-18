@@ -6,6 +6,39 @@ from su_crawler.models import CollectionConfig, Product, Source
 from su_crawler.report import SHEETS, append_collection_issues, append_section_coverage, export_report
 
 
+def test_results_append_field_proof_and_comparison_status_columns(tmp_path):
+    observation = {
+        "id": "o", "source_url": "https://shop.example/p", "source_name": "Shop",
+        "extraction_method": "adapter", "status": "review", "comparable": False,
+        "amount": "7710000", "currency": "KRW",
+        "raw_fields": {"name": "Car", "price": "7710000", "currency": "KRW"},
+        "evidence": {"price": {"location": "quote", "raw": "7,710,000원",
+                                "normalization": {"rule": "korean_won_amount"}}},
+    }
+    path = export_report(_config(tmp_path), {"id": "r"}, [], [observation], tmp_path / "proof.xlsx")
+    wb = load_workbook(path, read_only=True)
+    try:
+        header, data = list(wb["Results"].values)
+        assert header[-3:] == ("Price Field Evidence", "Declared Normalization", "Comparison Readiness")
+        assert data[-3:] == ("matched", "matched", "not_ready")
+        assert data[4] == "review"
+    finally:
+        wb.close()
+
+
+def test_supplemental_tables_join_single_export_without_formula_execution(tmp_path):
+    path = export_report(_config(tmp_path), {"id": "r"}, [], [], tmp_path / "all.xlsx",
+                         supplemental_sheets=[{"name": "Catalog", "headers": ["Product", "Amount"],
+                                               "rows": [["=HYPERLINK(\"unsafe\")", 1234], ["Unknown", None]]}])
+    wb = load_workbook(path)
+    assert "Results" in wb.sheetnames
+    assert wb["Catalog"]["A2"].data_type == "s"
+    assert wb["Catalog"]["B2"].value == 1234
+    assert wb["Catalog"]["B3"].value is None
+    assert wb["Catalog"].auto_filter.ref == "A1:B3"
+    wb.close()
+
+
 def test_catalog_coverage_sheet_replaces_rows_and_preserves_evidence(tmp_path):
     cfg = _config(tmp_path)
     path = export_report(cfg, {"id": "r"}, [], [], tmp_path / "sections.xlsx")

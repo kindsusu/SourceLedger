@@ -7,7 +7,8 @@ from decimal import Decimal, InvalidOperation
 import re
 import unicodedata
 
-from .validation import RENTAL_COMPARISON_FIELDS
+from .models import Candidate
+from .validation import RENTAL_COMPARISON_FIELDS, _evidence_matches, _field_display_proven
 
 FIELD_LABELS = {"price": "Price", "currency": "Currency", "price_basis": "Price basis", "term_months": "Contract term (months)",
                 "deposit_amount": "Deposit", "advance_amount": "Advance payment", "annual_mileage_km": "Annual mileage (km)",
@@ -77,6 +78,36 @@ def _fields(row):
         if alias in raw and key not in raw:
             raw[key] = raw[alias]
     return raw
+
+
+def _field_proof_summary(row):
+    """Describe field checks only; source-file replay is assessed separately."""
+    fields = row.get("raw_fields") or {}
+    proof = row.get("evidence") or {}
+    candidate = Candidate(fields, proof, row.get("locator") or "", row.get("extraction_method") or "",
+                          evidence_mode=row.get("evidence_mode") or "unknown")
+    price = fields.get("price")
+    if price in (None, "") or not isinstance(proof.get("price"), dict) or proof["price"].get("raw") is None:
+        price_evidence = "missing"
+    elif (_evidence_matches(candidate, "price", price) and _field_display_proven(candidate, "price")
+          and str(proof["price"].get("location", "")).strip()):
+        price_evidence = "matched"
+    else:
+        price_evidence = "review"
+    normalized = [(key, entry) for key, entry in proof.items()
+                  if isinstance(entry, dict) and "normalization" in entry]
+    if not normalized:
+        normalization = "not_applicable"
+    elif all(key in fields and _evidence_matches(candidate, key, fields[key])
+             and _field_display_proven(candidate, key) for key, _ in normalized):
+        normalization = "matched"
+    else:
+        normalization = "review"
+    comparison = ("ready" if row.get("status") == "verified" and row.get("comparable") is True
+                  and price_evidence == "matched" and normalization != "review"
+                  and not row.get("conflicts") and row.get("extraction_method") != "host_browser_submission"
+                  else "not_ready")
+    return {"price_evidence": price_evidence, "normalization": normalization, "comparison": comparison}
 
 
 def build_result_view(rows):
@@ -188,6 +219,8 @@ def build_result_view(rows):
         candidate["missing_conditions"] = [key for key in required if fields.get(key) in (None, "")]
         candidate["result_status"] = "review" if fields.get("price") not in (None, "") else "price_unavailable"
         offers.append(candidate)
+    for row in offers:
+        row["field_validation"] = _field_proof_summary(row)
     return {"rows": offers, "evidence_submissions": unlinked,
             "result_count": len(offers), "evidence_count": len(submissions),
             "linked_evidence_count": len(submissions) - len(unlinked), "unlinked_evidence_count": len(unlinked)}

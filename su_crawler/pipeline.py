@@ -39,9 +39,10 @@ def _candidate_quality(candidate: Candidate, decimal_separator: str = ".") -> tu
     mode_rank = {"static_html": 0, "unknown": 1, "document_text": 2,
                  "structured_record": 2, "rendered_dom": 3}.get(mode, 1)
     def field_proven(name: str, value) -> bool:
+        from .evidence_normalization import evidence_attests
         proof = candidate.evidence.get(name) or {}
         if (not str(proof.get("location", "")).strip() or proof.get("raw") is None
-                or str(proof["raw"]).strip() != str(value).strip()
+                or not evidence_attests(name, proof["raw"], value, proof.get("normalization"))
                 or proof.get("formula_cache_missing")):
             return False
         display_state = proof.get("display_state")
@@ -245,6 +246,7 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
 
 def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_id: str | None = None, collector=None,
             max_tasks: int | None = None,
+            export: bool = True,
             prefetched: dict[str, tuple[FetchResult, list[Candidate]] | list[tuple[FetchResult, list[Candidate]]]] | None = None) -> dict:
     """Bounded, resumable collection. max_tasks is useful for supervised batches."""
     from .collectors import collect
@@ -283,7 +285,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
             paused = False
             product_map = {p.id: p for p in config.products}
             for source in config.sources:
-                tasks = [t for t in store.tasks(run_id) if t["source_id"] == source.id and t["status"] not in TERMINAL]
+                tasks = [t for t in store.source_tasks(run_id, source.id) if t["status"] not in TERMINAL]
                 if not tasks:
                     continue
                 if max_tasks is not None and processed >= max_tasks:
@@ -438,6 +440,6 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                 state = "completed" if all(t["status"] in {"verified", "price_unavailable", "product_not_found"} for t in tasks) else "partial"
             with store.db:
                 store.db.execute("UPDATE runs SET status=?, finished_at=? WHERE id=?", (state, utc_now(), run_id))
-            return report_for_run(config, store, run_id)
+            return report_for_run(config, store, run_id) if export else store.run(run_id)
         finally:
             store.close()

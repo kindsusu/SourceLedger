@@ -27,11 +27,15 @@ HOST_ADAPTERS = {
     'gongcarrent.kr': 'gongcar', 'www.gongcarrent.kr': 'gongcar',
     'gongcar.kr': 'gongcar', 'www.gongcar.kr': 'gongcar',
     'go.funrentcar.com': 'funrent',
+    'www.amazoncar.co.kr': 'amazoncar', 'amazoncar.co.kr': 'amazoncar',
 }
 
 
 def _ready_recipe(adapter: str, url: str = '') -> list[dict]:
     path = urlsplit(url).path.rstrip('/')
+    if adapter == 'amazoncar':
+        selector = 'table tbody tr' if path == '/rentPrice' else 'div[class*="choice-rent-lease"] button[class*="active"]'
+        return [{'action': 'wait_for', 'selector': selector, 'state': 'visible'}]
     path = path.replace('/monthly/', '/monthly-rent/').replace('/daily/', '/daily-rent/')
     if path == '/monthly':
         path = '/monthly-rent'
@@ -312,7 +316,8 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                             identities[str(identity)] = candidate.fields.get('name') or candidate.fields.get('model') or str(identity)
                 for identity, name in identities.items():
                     pid = 'item_' + stable_id(sid, identity)
-                    products.append(Product(pid, str(name), identifiers={'item_id': identity}, price_profile='rental'))
+                    profile = 'unit' if adapter == 'amazoncar' and urlsplit(url).path.rstrip('/') == '/rentPrice' else 'rental'
+                    products.append(Product(pid, str(name), identifiers={'item_id': identity}, price_profile=profile))
                     source.product_ids.append(pid)
                 if not source.product_ids:
                     # An unresolved task is an explicit coverage gap, not an

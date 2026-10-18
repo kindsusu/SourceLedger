@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
+from .evidence_normalization import evidence_attests, object_evidence_attests
 from .models import Candidate, Observation, Product, Source, stable_id
 
 SUPPORTED_CURRENCIES = frozenset({"AUD", "BRL", "CAD", "CHF", "CNY", "DKK", "EUR", "GBP", "HKD", "INR", "JPY", "KRW", "MXN", "NOK", "NZD", "PLN", "SEK", "SGD", "THB", "TRY", "TWD", "USD", "ZAR"})
@@ -35,7 +36,13 @@ def _has_evidence(candidate: Candidate, name: str) -> bool:
 def _evidence_matches(candidate: Candidate, name: str, value: object) -> bool:
     """Evidence must attest to the extracted value, rather than merely exist."""
     evidence = candidate.evidence.get(name)
-    return _has_evidence(candidate, name) and str(evidence["raw"]).strip() == str(value).strip()
+    if not _has_evidence(candidate, name):
+        return False
+    raw = evidence["raw"]
+    metadata = evidence.get("normalization")
+    if isinstance(raw, dict) or isinstance(value, dict):
+        return object_evidence_attests(name, raw, value, metadata)
+    return evidence_attests(name, raw, value, metadata)
 
 
 def _field_display_proven(candidate: Candidate, name: str) -> bool:
@@ -142,8 +149,14 @@ def _rental_evidence_matches(candidate: Candidate, name: str) -> bool:
             return True
     evidence = candidate.evidence.get("rental_conditions")
     raw = evidence.get("raw") if evidence else None
-    return bool(evidence and str(evidence.get("location", "")).strip() and isinstance(raw, dict)
-                and raw.get(name) == value and _field_display_proven(candidate, "rental_conditions"))
+    if not (evidence and str(evidence.get("location", "")).strip() and isinstance(raw, dict)
+            and name in raw and _field_display_proven(candidate, "rental_conditions")):
+        return False
+    # An object-level proof may carry a rule per changed field. Validate the
+    # entire object before trusting one member, including unmentioned fields.
+    if not _evidence_matches(candidate, "rental_conditions", nested):
+        return False
+    return True
 
 
 def _rental_conditions(candidate: Candidate, separator: str) -> tuple[dict[str, object], list[str], list[str]]:
