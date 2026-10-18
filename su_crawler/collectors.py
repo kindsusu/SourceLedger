@@ -25,6 +25,7 @@ import httpx
 
 from .models import FetchResult, Source, resolve_path, utc_now
 from .browser_runtime import browser_headless, select_browser_runtime
+from .browser_settlement import install_tracker_sync, wait_settled_sync
 from .browser_enumeration import ListingChanged, SnapshotBudgetExceeded, enumerate_buttons, enumerate_options, paginate, scroll_list, validate_enumeration_step
 from .access_challenges import detect_challenge
 
@@ -670,28 +671,33 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
                       "replaced": replaced, "observed_cards": list(observed.values()), "at": utc_now()})
 
 
-def _selected_control_states(page: Any, timeout_ms: float) -> list[dict[str, Any]]:
-    """Capture only non-text control state after a recipe, never entered values."""
-    states = page.evaluate(
-        """() => Array.from(document.querySelectorAll('select, input[type=checkbox], input[type=radio]'))
-          .slice(0, 100).map((control, index) => {
-            const labels = control.labels ? Array.from(control.labels).map(label => (label.innerText || label.textContent || '').trim()).filter(label => label && !(/[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{2,}/.test(label) || /(?:\\+?\\d[\\d .()-]{6,}\\d)/.test(label))) : [];
-            const base = { index, tag: control.tagName.toLowerCase(), type: control.type || 'select', labels: labels.slice(0, 3).map(label => label.slice(0, 160)) };
-            if (control.tagName.toLowerCase() === 'select') {
-              return { ...base, selected_index: control.selectedIndex, selected_label: control.selectedOptions[0] ? (control.selectedOptions[0].textContent || '').trim().slice(0, 160) : '' };
-            }
-            return { ...base, checked: Boolean(control.checked) };
-          })""",
-    )
-    return states if isinstance(states, list) else []
+_OBSERVATION_PROBE_JS = r"""(selector) => {
+  const nodes = Array.from(document.querySelectorAll(selector || 'body'));
+  const controls = Array.from(document.querySelectorAll('select, input[type=checkbox], input[type=radio]'))
+    .slice(0, 100).map((control, index) => {
+      const labels = control.labels ? Array.from(control.labels).map(label => (label.innerText || label.textContent || '').trim()).filter(label => label && !(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/.test(label) || /(?:\+?\d[\d .()-]{6,}\d)/.test(label))) : [];
+      const base = {index, tag: control.tagName.toLowerCase(), type: control.type || 'select', labels: labels.slice(0, 3).map(label => label.slice(0, 160))};
+      return control.tagName.toLowerCase() === 'select'
+        ? {...base, selected_index: control.selectedIndex, selected_label: control.selectedOptions[0] ? (control.selectedOptions[0].textContent || '').trim().slice(0, 160) : ''}
+        : {...base, checked: Boolean(control.checked)};
+    });
+  return {text: nodes.map(node => node.innerText), controls, url: location.href};
+}"""
 
 
-def _evidence_html_snapshot(page: Any, listing_expectation: dict[str, Any] | None = None) -> bytes:
+def _evidence_snapshot(page: Any, listing_expectation: dict[str, Any] | None = None,
+                       *, observation: dict[str, Any] | None = None,
+                       selector: str | None = None, network_version: int | None = None) -> dict[str, Any]:
     """Serialize live selection state without retaining free-form input values."""
     listing = (page.locator(listing_expectation["selector"]).locator(
         listing_expectation["item_selector"] + ":visible") if listing_expectation else page.locator("html"))
     snapshot = listing.evaluate_all(
-        """(elements, expectation) => {
+        """(elements, options) => {
+          const {expectation, observation, selector, networkVersion} = options;
+          const network = window.__sourceLedgerNetwork;
+          if (networkVersion != null && (!network || network.pending !== 0 || network.version !== networkVersion)) return {observation_changed: true};
+          const probe = (""" + _OBSERVATION_PROBE_JS + """)(selector);
+          if (observation && JSON.stringify(probe) !== JSON.stringify(observation)) return {observation_changed: true};
           if (expectation) {
             const entries = elements.map(el => ({text: el.innerText, html: el.outerHTML}));
             if (elements.some(el => !document.documentElement.contains(el)) ||
@@ -730,12 +736,17 @@ def _evidence_html_snapshot(page: Any, listing_expectation: dict[str, Any] | Non
               copy.setAttribute('data-sourceledger-computed-hidden', 'true');
             }
           });
-          return { html: '<!doctype html>\\n' + clone.outerHTML };
-        }""", listing_expectation
+          return { html: '<!doctype html>\\n' + clone.outerHTML, probe, captured_at: new Date().toISOString() };
+        }""", {"expectation": listing_expectation, "observation": observation, "selector": selector,
+                "networkVersion": network_version}
     )
     if snapshot.get("changed"):
         raise ListingChanged("Listing changed before its evidence was captured")
-    return str(snapshot["html"]).encode("utf-8")
+    return snapshot
+
+
+def _evidence_html_snapshot(page: Any, listing_expectation: dict[str, Any] | None = None) -> bytes:
+    return str(_evidence_snapshot(page, listing_expectation)["html"]).encode("utf-8")
 
 
 def _close_browser_resources(context: Any, browser: Any) -> None:
@@ -999,6 +1010,7 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
 
             context.route("**/*", guard)
             page = context.new_page()
+            install_tracker_sync(page)
             document_status: dict[str, int] = {}
 
             def observe_response(response: Any) -> None:
@@ -1063,6 +1075,29 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             if initial_challenge:
                 return challenge_result(initial_challenge, page.url)
 
+            def capture_settled(listing_expectation: dict[str, Any] | None = None) -> dict[str, Any]:
+                # A page-specific row selector narrows the stability probe. Without
+                # one, the visible document is conservative (e.g. a ticking page
+                # can time out rather than manufacture a verified observation).
+                for _ in range(2):
+                    settled = wait_settled_sync(
+                        page, lambda: page.evaluate(_OBSERVATION_PROBE_JS, source.row_selector),
+                        ready=lambda value: bool(value.get('text')),
+                        timeout_seconds=min(15, remaining_ms() / 1000),
+                    )
+                    trace.append({'event': 'observation_settlement', 'status': settled['status'],
+                                  'duration_ms': round(settled['elapsed_seconds'] * 1000, 1), 'at': utc_now()})
+                    if settled['status'] != 'settled':
+                        raise PlaywrightTimeoutError('Observation did not settle')
+                    snapshot = _evidence_snapshot(page, listing_expectation,
+                                                  observation=settled['probe'], selector=source.row_selector,
+                                                  network_version=settled['network']['version'])
+                    if not snapshot.get('observation_changed'):
+                        require_navigation_policy()
+                        _check_url(source, snapshot['probe']['url'])
+                        return snapshot
+                raise PlaywrightTimeoutError('Observation changed during evidence capture')
+
             def capture_variant(selections: dict[str, str], selection_values: dict[str, str] | None = None,
                                 listing_expectation: dict[str, Any] | None = None) -> None:
                 nonlocal variant_bytes, challenge_seen
@@ -1070,7 +1105,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 _check_url(source, page.url)
                 if len(variant_snapshots) >= MAX_VARIANT_SNAPSHOTS:
                     raise SnapshotBudgetExceeded()
-                html = _evidence_html_snapshot(page, listing_expectation)
+                snapshot = capture_settled(listing_expectation)
+                html = snapshot['html'].encode('utf-8')
                 challenge = detect_challenge(html, document_status.get("latest", 200))
                 if challenge:
                     challenge_seen = challenge
@@ -1079,8 +1115,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                     raise ValueError("unsafe_or_oversized_snapshot")
                 if variant_bytes + len(html) > MAX_VARIANT_BYTES:
                     raise SnapshotBudgetExceeded()
-                variant_snapshots.append({"content": html, "final_url": page.url,
-                                          "fetched_at": utc_now(), "selections": selections,
+                variant_snapshots.append({"content": html, "final_url": snapshot['probe']['url'],
+                                          "fetched_at": snapshot['captured_at'], "selections": selections,
                                           "selection_values": selection_values or {}})
                 variant_bytes += len(html)
 
@@ -1168,7 +1204,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             evidence_started = time.monotonic()
             browser_phase = 'evidence_capture'
             require_navigation_policy()
-            html = _evidence_html_snapshot(page)
+            snapshot = capture_settled()
+            html = snapshot['html'].encode('utf-8')
             challenge = detect_challenge(html, document_status.get("latest", 200))
             if challenge:
                 return challenge_result(challenge, page.url)
@@ -1177,18 +1214,19 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                                message="Login page detected", trace=trace, variant_snapshots=variant_snapshots)
             try:
                 screenshot = page.screenshot(full_page=True, timeout=remaining_ms())
+                trace.append({'event': 'screenshot_context', 'role': 'supplementary_after_dom_capture',
+                              'dom_captured_at': snapshot['captured_at'], 'at': utc_now()})
             except PlaywrightTimeoutError:
                 screenshot = None
                 trace.append({"event": "screenshot_unavailable", "reason": "deadline", "at": utc_now()})
-            final_url = page.url
+            final_url = snapshot['probe']['url']
             _check_url(source, final_url)
-            try:
-                controls = _selected_control_states(page, remaining_ms())
-                trace.append({"event": "selected_control_states", "controls": controls, "at": utc_now()})
-            except PlaywrightTimeoutError:
-                trace.append({"event": "selected_control_states_unavailable", "reason": "deadline", "at": utc_now()})
+            trace.append({"event": "selected_control_states", "controls": snapshot['probe']['controls'],
+                          "at": snapshot['captured_at']})
             trace.append({"event": "evidence_timing", "duration_ms": round((time.monotonic() - evidence_started) * 1000, 1), "at": utc_now()})
-            return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url, screenshot=screenshot, trace=trace, variant_snapshots=variant_snapshots)
+            return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url,
+                           fetched_at=snapshot['captured_at'], screenshot=screenshot, trace=trace,
+                           variant_snapshots=variant_snapshots)
     except _AccessChallengeFound as exc:
         return challenge_result(exc.challenge, page.url)
     except PlaywrightTimeoutError:

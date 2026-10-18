@@ -308,11 +308,13 @@ def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
                   'Changed fields', 'Reason', 'Page URL', 'Previous checked (UTC)', 'Checked (UTC)'])
 
     status_labels = {'baseline': 'First capture', 'added': 'Product added', 'price_changed': 'Price changed',
+                     'price_and_conditions_changed': 'Price and observed conditions changed',
                      'conditions_changed': 'Conditions changed', 'unavailable': 'Unavailable for comparison',
                      'removed_candidate': 'Possible removal — review required', 'unchanged': 'Unchanged'}
     reason_labels = {
         'same_observed_fields': 'The observed product fields are unchanged.',
         'observed_price_or_currency_changed': 'The displayed price or currency changed.',
+        'observed_price_and_conditions_changed': 'Displayed price or currency and observed conditions changed; the offers may not be comparable.',
         'observed_conditions_changed': 'Observed product or commercial conditions changed.',
         'first_successful_capture': 'First successful capture establishes the comparison baseline.',
         'new_observed_item': 'This product was observed now and was not matched to a previous product.',
@@ -348,7 +350,7 @@ def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
         before, after = (item.get('before') or {}).get('fields', {}), (item.get('after') or {}).get('fields', {})
         status = status_labels.get(item.get('status'), label(item.get('status') or ''))
         reason = reason_labels.get(item.get('reason'), display(item.get('reason')).replace('_', ' '))
-        if item.get('status') == 'price_changed':
+        if item.get('status') in {'price_changed', 'price_and_conditions_changed'}:
             old_price, new_price = before.get('price'), after.get('price')
             if old_price != new_price:
                 if new_price in (None, ''):
@@ -364,6 +366,16 @@ def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
             else:
                 status = 'Currency changed'
                 reason = 'The displayed currency changed; the displayed price text is unchanged.'
+            if item.get('status') == 'price_and_conditions_changed':
+                status = 'Price and observed conditions changed'
+                reason += ' Recorded conditions also changed; this is not a like-for-like price comparison.'
+        comparison = item.get('condition_comparison')
+        if comparison == 'not_observed':
+            reason += ' Other offer conditions were not recorded; identical terms cannot be confirmed.'
+        elif comparison == 'incomplete':
+            reason += ' Some condition values are missing in one capture; identical terms cannot be confirmed.'
+        elif comparison == 'observed_fields_only':
+            reason += ' Only recorded condition fields were compared; unrecorded terms remain unknown.'
         items.append([status, item.get('product_name'), item.get('identity'),
                       before.get('price'), after.get('price'), before.get('currency'), after.get('currency'),
                       conditions(item.get('before')), conditions(item.get('after')),

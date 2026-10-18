@@ -108,16 +108,31 @@ def test_product_changes_distinguish_prices_conditions_and_missing_evidence():
     assert item_changes([], [old])[0]['status'] == 'added'
     changed = item_changes([old], [candidate(price='120')])[0]
     assert changed['status'] == 'price_changed'
+    assert changed['condition_comparison'] == 'not_observed'
     assert changed['before']['fields']['price'] == '100'
     assert changed['after']['fields']['price'] == '120'
     assert changed['changed_fields'] == ['price']
     condition = item_changes([old], [candidate(tax='excluded')])[0]
     assert condition['status'] == 'conditions_changed'
     assert condition['changed_fields'] == ['tax']
+    mixed = item_changes([candidate(deposit_amount='500000')],
+                         [candidate(price='120', deposit_amount='600000')])[0]
+    assert mixed['status'] == 'price_and_conditions_changed'
+    assert mixed['changed_fields'] == ['deposit_amount', 'price']
+    assert mixed['condition_comparison'] == 'observed_fields_only'
+    renamed = item_changes([candidate(name='Original')],
+                           [candidate(name='Renamed', price='120')])[0]
+    assert renamed['status'] == 'price_changed'
+    assert renamed['changed_fields'] == ['name', 'price']
     inquiry = candidate(price=None, price_type='inquiry')
     transition = item_changes([old], [inquiry])[0]
-    assert transition['status'] == 'price_changed'
+    assert transition['status'] == 'price_and_conditions_changed'
     assert transition['after']['fields']['price'] is None
+    assert item_changes([candidate(price_type='sale')],
+                         [candidate(price_type='list')])[0]['status'] == 'conditions_changed'
+    spec_incomplete = {**candidate(), 'specs': {'grade': None}}
+    assert item_changes([spec_incomplete], [{**candidate(price='120'),
+                                            'specs': {'grade': None}}])[0]['condition_comparison'] == 'incomplete'
     assert item_changes([old], [], successful=False)[0]['after'] is None
     assert item_changes([], [], successful=False)[0]['product_name'] == ''
     assert item_changes([old], [], inventory_complete=True)[0]['status'] == 'removed_candidate'
@@ -139,11 +154,19 @@ def test_contract_terms_identify_distinct_offers_without_matching_mutable_condit
     new = [candidate(term_months=term, price='120', deposit_amount='600000', annual_mileage_km='25000')
            for term in ('60', '48', '36', '24', '12')]
     rows = item_changes(old, new)
-    assert len(rows) == 5 and all(row['status'] == 'price_changed' for row in rows)
+    assert len(rows) == 5 and all(row['status'] == 'price_and_conditions_changed' for row in rows)
     assert all(row['before']['fields']['term_months'] == row['after']['fields']['term_months'] for row in rows)
     assert all(row['changed_fields'] == ['annual_mileage_km', 'deposit_amount', 'price'] for row in rows)
     ambiguous = item_changes([old[0]], [new[-1], new[-1]])
     assert [row['status'] for row in ambiguous] == ['added', 'added', 'unavailable']
+
+
+def test_contract_mode_and_price_basis_do_not_pair_different_offers():
+    old = candidate(term_months='36', contract_mode='rent', price_basis='monthly')
+    daily = candidate(term_months='36', contract_mode='rent', price_basis='daily', price='120')
+    lease = candidate(term_months='36', contract_mode='lease', price_basis='monthly', price='120')
+    assert [row['status'] for row in item_changes([old], [daily])] == ['added', 'unavailable']
+    assert [row['status'] for row in item_changes([old], [lease])] == ['added', 'unavailable']
 
 
 def test_full_default_retains_all_item_changes_and_regenerates_report(tmp_path):
@@ -193,7 +216,8 @@ def test_full_default_retains_all_item_changes_and_regenerates_report(tmp_path):
         sheet = book['Item Changes']
         assert sheet.max_row == 106
         assert sheet['A2'].value == 'Price changed'
-        assert sheet['K2'].value == 'The displayed price changed.'
+        assert sheet['K2'].value.startswith('The displayed price changed.')
+        assert 'unrecorded terms remain unknown' in sheet['K2'].value
         assert sheet['J2'].value == 'Price'
         assert sheet['H2'].value == 'Availability: InStock'
         assert sheet['H2'].alignment.wrap_text
@@ -255,6 +279,8 @@ def test_item_change_report_explains_price_availability_and_preserves_values(tmp
     book = load_workbook(path)
     try:
         sheet = book['Item Changes']
+        assert sheet['A2'].value == 'Price and observed conditions changed'
+        assert 'not a like-for-like price comparison' in sheet['K2'].value
         assert sheet['H2'].value == 'Tax: 0\nSize: M'
         assert sheet['I2'].value == 'Tax: included\nSize: M'
         assert sheet['A3'].value == 'Price no longer displayed'
@@ -264,7 +290,7 @@ def test_item_change_report_explains_price_availability_and_preserves_values(tmp
         assert sheet['E4'].value == 'Contact for quote'
         assert 'No numeric current price is inferred' in sheet['K4'].value
         assert sheet['A5'].value == 'Currency changed'
-        assert sheet['K5'].value == 'The displayed currency changed; the displayed price text is unchanged.'
+        assert sheet['K5'].value.startswith('The displayed currency changed; the displayed price text is unchanged.')
         assert sheet['A6'].value == 'First capture'
         assert sheet['D6'].value is None and sheet['E6'].value == 0
         assert sheet['E6'].data_type == 'n'

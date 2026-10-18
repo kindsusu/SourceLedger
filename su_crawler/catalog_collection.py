@@ -861,7 +861,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     compared_urls = set(chosen) | set(captures) | set(baseline_pages)
     all_changes = []
     all_item_changes = []
-    item_counts = {key: 0 for key in ('baseline', 'added', 'price_changed', 'conditions_changed',
+    item_counts = {key: 0 for key in ('baseline', 'added', 'price_changed', 'price_and_conditions_changed',
+                                    'conditions_changed',
                                     'unchanged', 'unavailable', 'removed_candidate')}
     unverified_empty_urls = set()
     for url in sorted(compared_urls):
@@ -892,7 +893,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             item_counts[item['status']] += 1
         row_counts = Counter(item['status'] for item in rows)
         delta = {key: row_counts[key] for key in counts}
-        delta['changed'] = row_counts['price_changed'] + row_counts['conditions_changed']
+        delta['changed'] = (row_counts['price_changed'] + row_counts['price_and_conditions_changed'] +
+                            row_counts['conditions_changed'])
         # Preserve the historical page aggregate's count of prior unavailable
         # items; item_counts also exposes failed pages with no prior products.
         if not successful:
@@ -919,7 +921,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     changes = all_changes[:50]
     # Keep actionable changes visible when a large inventory response is capped.
     item_order = {name: index for index, name in enumerate(
-        ('price_changed', 'added', 'conditions_changed', 'unavailable', 'removed_candidate', 'baseline', 'unchanged'))}
+        ('price_and_conditions_changed', 'price_changed', 'added', 'conditions_changed',
+         'unavailable', 'removed_candidate', 'baseline', 'unchanged'))}
     all_item_changes.sort(key=lambda item: item_order[item['status']])
     # A scheduled full baseline advances after all approved pages were fetched.
     # Unknown site-wide inventory does not prevent a successful URL recheck.

@@ -146,6 +146,9 @@ def item_changes(previous: list[dict], current: list[dict], *, url='', inventory
     A duplicate identifier/variant group cannot establish a one-to-one match,
     even if subtracting unchanged rows would leave only one possible partner.
     """
+    # Price type (sale, list, inquiry, etc.) describes the offer, not a
+    # numeric price or currency change. Keep it among observed conditions.
+    price_fields = {'price', 'currency'}
     def identity(item):
         fields = item.get('fields', {})
         return next((f'{key}:{fields[key]}' for key in ('sku', 'item_id', 'mpn', 'gtin')
@@ -156,8 +159,13 @@ def item_changes(previous: list[dict], current: list[dict], *, url='', inventory
         # Contract durations are separately offered rows for the same source
         # product. The explicit duration identifies that variant; mutable
         # commercial conditions such as deposits and mileage never do.
-        term = item.get('fields', {}).get('term_months')
-        return (observed, _canonical(item.get('specs', {})), _canonical(term)) if observed else None
+        fields = item.get('fields', {})
+        term = fields.get('term_months')
+        # Contract type and price basis distinguish offers; a monthly rental
+        # must not be paired with a daily or lease offer sharing a product ID.
+        offer_kind = (fields.get('contract_mode'), fields.get('price_basis'))
+        return (observed, _canonical(item.get('specs', {})), _canonical(term),
+                _canonical(offer_kind)) if observed else None
 
     old_keys = [key(item) for item in previous]
     new_keys = [key(item) for item in current]
@@ -178,9 +186,24 @@ def item_changes(previous: list[dict], current: list[dict], *, url='', inventory
                     if old_fields.get(name) != new_fields.get(name)] if before and after else [])
         if before and after and before.get('specs', {}) != after.get('specs', {}):
             changed.append('specs')
+        condition_fields = sorted((set(old_fields) | set(new_fields)) -
+                                  (price_fields | {'name', 'sku', 'item_id', 'mpn', 'gtin'})) if before and after else []
+        if before and after and (before.get('specs') or after.get('specs')):
+            condition_fields.append('specs')
+        incomplete_conditions = any(old_fields.get(name) in (None, '') or new_fields.get(name) in (None, '')
+                                    for name in condition_fields if name != 'specs')
+        if 'specs' in condition_fields:
+            old_specs, new_specs = before.get('specs') or {}, after.get('specs') or {}
+            incomplete_conditions |= any(old_specs.get(name) in (None, '') or new_specs.get(name) in (None, '')
+                                         for name in set(old_specs) | set(new_specs))
         rows.append({'status': status, 'url': url, 'identity': identity(item),
                      'product_name': item.get('fields', {}).get('name') or '',
                      'before': before, 'after': after, 'changed_fields': changed, 'reason': reason,
+                     # Equality is limited to observed fields, never a claim
+                     # that unrecorded commercial terms are identical.
+                     'condition_comparison': ('incomplete' if incomplete_conditions else
+                                              'observed_fields_only' if condition_fields else
+                                              'not_observed') if before and after else 'not_comparable',
                      'previous_checked_at': previous_checked_at, 'checked_at': checked_at})
 
     if not successful:
@@ -201,10 +224,19 @@ def item_changes(previous: list[dict], current: list[dict], *, url='', inventory
             matched.add(index)
             old = previous[index]
             old_fields, new_fields = old.get('fields', {}), item.get('fields', {})
-            price_changed = any(old_fields.get(name) != new_fields.get(name)
-                                for name in ('price', 'currency'))
-            row('price_changed' if price_changed else 'conditions_changed', old, item,
-                'observed_price_or_currency_changed' if price_changed else 'observed_conditions_changed')
+            price_changed = any(old_fields.get(name) != new_fields.get(name) for name in price_fields)
+            # A renamed product title is recorded in changed_fields, but it
+            # does not establish that its commercial offer terms changed.
+            condition_keys = (set(old_fields) | set(new_fields)) - (price_fields | {
+                'name', 'sku', 'item_id', 'mpn', 'gtin'})
+            other_changed = any(old_fields.get(name) != new_fields.get(name)
+                                for name in condition_keys)
+            other_changed |= old.get('specs', {}) != item.get('specs', {})
+            status = ('price_and_conditions_changed' if price_changed and other_changed else
+                      'price_changed' if price_changed else 'conditions_changed')
+            reason = ('observed_price_and_conditions_changed' if status == 'price_and_conditions_changed' else
+                      'observed_price_or_currency_changed' if price_changed else 'observed_conditions_changed')
+            row(status, old, item, reason)
         else:
             row('baseline' if baseline else 'added', None, item,
                 'first_successful_capture' if baseline else 'new_observed_item')
@@ -220,7 +252,7 @@ def compare(previous: list[dict], current: list[dict], *, inventory_complete=Fal
     """Compare multisets; locator, evidence path and capture time do not affect change."""
     rows = item_changes(previous, current, inventory_complete=inventory_complete)
     totals = Counter(row['status'] for row in rows)
-    return {'added': totals['added'], 'changed': totals['price_changed'] + totals['conditions_changed'],
+    return {'added': totals['added'], 'changed': totals['price_changed'] + totals['price_and_conditions_changed'] + totals['conditions_changed'],
             'unchanged': totals['unchanged'], 'removed_candidate': totals['removed_candidate'],
             'unavailable': totals['unavailable']}
 
