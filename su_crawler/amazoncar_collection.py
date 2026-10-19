@@ -20,6 +20,9 @@ import shutil
 import time
 from urllib.robotparser import RobotFileParser
 
+from .browser_settlement import (SETTLEMENT_STATE_JS, install_tracker_async,
+                                 signature_of, wait_settled_async)
+
 BASE = "https://www.amazoncar.co.kr"
 PRODUCT_RE = re.compile(r"^/cars/(?:new/\d+/\d+|used/\d+)$")
 QUOTE_RE = re.compile(r"(\d+)개월\s+([\d,]+)원")
@@ -121,7 +124,7 @@ CAPTURE_JS = r"""() => {
 }"""
 
 # Only the controls needed to establish quote readiness are inspected. A
-# A lightweight signature must repeat across successive polls. After a mode
+# lightweight signature must repeat across successive polls. After a mode
 # switch, a changed quote is the normal proof of fresh pricing; an unchanged
 # quote takes the slower network-quiescence path and remains flagged for review.
 READY_JS = r"""() => {
@@ -137,6 +140,13 @@ READY_JS = r"""() => {
  const bad=quotes.some(s=>s.includes('undefined')||s.includes('NaN'));
  return {availableModes,modes,quotes,conditions,links,tableRows,heading,invalid:bad};
 }"""
+
+# One browser task reads the structured controls and serializes the same DOM.
+# Separate page.content() calls can otherwise save a different computed quote.
+ATOMIC_CAPTURE_JS = ("() => { const capture = (" + CAPTURE_JS + "); const readiness = (" + READY_JS
+                     + "); const value = capture(); value.__readiness = readiness(); "
+                     + "value.__html = (document.doctype ? '<!DOCTYPE ' + document.doctype.name + '>' : '') "
+                     + "+ document.documentElement.outerHTML; return value; }")
 
 LINKS_JS = r"""() => [...document.querySelectorAll('a[href]')].filter(e=>!!e.getClientRects().length).map(e=>({text:e.innerText,href:e.getAttribute('href')})).filter(x=>/^\/cars\/(new\/\d+\/\d+|used\/\d+)$/.test(x.href))"""
 
@@ -176,6 +186,7 @@ async def wait_ready(page, *, kind: str = "detail", mode: str | None = None, all
 
 
 async def navigate(page, url: str, *, kind: str = "detail", allow_no_quote: bool = False) -> None:
+    await install_tracker_async(page)
     response = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
     if response and response.status >= 400:
         raise RuntimeError(f"HTTP {response.status} for {url}")
@@ -223,10 +234,37 @@ async def wait_mode_transition(page, label: str, previous_quotes: list[str], *,
         return state, "identical_amounts_after_network_quiet_review"
 
 
-async def capture(page, store: EvidenceStore, label: str) -> dict:
-    data = await page.evaluate(CAPTURE_JS)
+async def capture(page, store: EvidenceStore, label: str,
+                  expected_signature: str | None = None) -> dict:
+    # Both sides of the atomic DOM read must agree on the relevant controls.
+    # A changing quote is retried rather than attaching mismatched evidence.
+    def relevant(state: dict) -> str:
+        return signature_of({key: state.get(key) for key in (
+            "availableModes", "modes", "quotes", "conditions", "links",
+            "tableRows", "heading")})
+
+    for attempt in range(3):
+        network_before = await page.evaluate(SETTLEMENT_STATE_JS) if expected_signature else None
+        before = await page.evaluate(READY_JS)
+        data = await page.evaluate(ATOMIC_CAPTURE_JS)
+        after = await page.evaluate(READY_JS)
+        network_after = await page.evaluate(SETTLEMENT_STATE_JS) if expected_signature else None
+        settled_signature = signature_of({key: data["__readiness"][key] for key in
+                                          ("modes", "quotes", "conditions", "heading")})
+        network_stable = (expected_signature is None or
+                          (network_before["tracked"] and network_before["pending"] == 0
+                           and network_after["pending"] == 0
+                           and network_before["version"] == network_after["version"]
+                           and settled_signature == expected_signature))
+        if network_stable and relevant(before) == relevant(data["__readiness"]) == relevant(after):
+            break
+        if attempt == 2:
+            raise RuntimeError(f"DOM changed during evidence capture: {page.url}")
+        await page.wait_for_timeout(150)
+    html = data.pop("__html")
+    data.pop("__readiness")
     data.update(url=page.url, captured_utc=utc(), label=label,
-                html=store.put(await page.content(), ".html"),
+                html=store.put(html, ".html"),
                 rendered_text=store.put(data["text"], ".txt"))
     proof = {key: data[key] for key in ("conditions", "selected", "inputs")}
     data["selection_proof"] = store.put(json.dumps(proof, ensure_ascii=False), ".json")
@@ -280,7 +318,21 @@ async def collect_detail(page, item: dict, store: EvidenceStore) -> dict:
             except TimeoutError:
                 await wait_ready(page, mode=label, allow_no_quote=True)
                 transition = "no_displayed_quotes_review"
-        cap = await capture(page, store, pid + "-" + mode)
+        settled = await wait_settled_async(
+            page, lambda: page.evaluate(READY_JS),
+            ready=lambda state: bool(state["heading"]) and label in state["modes"]
+            and (bool(state["quotes"]) or transition == "no_displayed_quotes_review")
+            and not state["invalid"],
+            signature=lambda state: signature_of({key: state[key] for key in
+                        ("modes", "quotes", "conditions", "heading")}),
+            timeout_seconds=12)
+        if settled["status"] != "settled":
+            raise RuntimeError(f"Quote did not settle for {href}, mode={mode}; "
+                               f"network={settled['network']}")
+        cap = await capture(page, store, pid + "-" + mode,
+                            expected_signature=settled["signature"])
+        cap["settlement"] = {key: settled[key] for key in
+                             ("status", "network", "signature", "elapsed_seconds")}
         found_quotes, found_options = extract(cap, pid, mode)
         if not any(x["text"] == label for x in cap["selected"]):
             raise RuntimeError(f"Captured wrong quote mode for {href}: {mode}")
@@ -468,6 +520,8 @@ async def run_live(items: list[dict], output: Path, concurrency: int, journal: J
         pages = [await browser.new_page(viewport={"width": 1440, "height": 1000})
                  for _ in range(concurrency)]
         catalog_page = await browser.new_page(viewport={"width": 1440, "height": 1000})
+        # navigate() installs the tracker before each page's first navigation.
+        # robots.txt uses a direct goto and does not contain price observations.
         try:
             await check_robots(catalog_page, store, [x["href"] for x in items])
             journal.event("collection", "start", expected=len(items), concurrency=concurrency)

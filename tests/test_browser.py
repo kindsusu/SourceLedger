@@ -27,6 +27,13 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/blocked":
             body = b"blocked"
             status = 403
+        elif self.path == "/delayed":
+            body = b"""<html><body><select id='term'><option>12 months</option><option>24 months</option></select>
+            <div id='price'>100</div><div aria-busy='true' id='loader'>Calculating</div>
+            <script>setTimeout(() => {document.querySelector('#term').selectedIndex=1;
+            document.querySelector('#price').textContent='125';
+            document.querySelector('#loader').remove()}, 900)</script></body></html>"""
+            status = 200
         else:
             body = PAGE
             status = 200
@@ -160,3 +167,40 @@ def test_browser_cleanup_unroutes_with_ignored_late_errors_before_closing():
 
     _close_browser_resources(Context(), Browser())
     assert events == [("unroute_all", "ignoreErrors"), ("context.close", None), ("browser.close", None)]
+
+
+def test_generic_collector_waits_for_dynamic_price_and_captures_matching_controls(tmp_path):
+    if next(item for item in doctor() if item['backend'] == 'playwright')['status'] != 'available':
+        pytest.skip('Browser unavailable')
+    with server() as url:
+        source = Source(id='dynamic', name='dynamic', kind='web', location=url + '/delayed',
+                        product_ids=[], allowed_domains=['127.0.0.1'], internal=True,
+                        respect_robots=False, timeout_seconds=10, row_selector='#price')
+        result = collect(source, str(tmp_path), 'playwright')
+    assert result.status == 'fetched', result.message
+    assert b'id="price">125</div>' in result.content
+    assert b'<option selected="">24 months</option>' in result.content
+    controls = next(row['controls'] for row in result.trace if row['event'] == 'selected_control_states')
+    assert controls[0]['selected_label'] == '24 months'
+    assert any(row['event'] == 'observation_settlement' and row['status'] == 'settled' for row in result.trace)
+
+
+def test_atomic_snapshot_rejects_changed_observation():
+    from playwright.sync_api import sync_playwright
+    from su_crawler.collectors import _OBSERVATION_PROBE_JS, _evidence_snapshot
+    with sync_playwright() as pw:
+        runtime = select_browser_runtime(pw.chromium)
+        if runtime is None:
+            pytest.skip('Browser unavailable')
+        browser = pw.chromium.launch(headless=True, **runtime.launch_options())
+        try:
+            page = browser.new_page()
+            page.set_content('<div id="price">100</div>')
+            before = page.evaluate(_OBSERVATION_PROBE_JS, '#price')
+            page.locator('#price').evaluate('(node) => node.textContent = "125"')
+            assert _evidence_snapshot(page, observation=before, selector='#price') == {'observation_changed': True}
+            current = page.evaluate(_OBSERVATION_PROBE_JS, '#price')
+            snap = _evidence_snapshot(page, observation=current, selector='#price')
+            assert snap['probe'] == current and '125</div>' in snap['html']
+        finally:
+            browser.close()

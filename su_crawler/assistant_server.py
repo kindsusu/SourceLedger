@@ -485,7 +485,8 @@ def build_assistant_server(root: str | Path):
         """Read item changes and observed before/after values from SQLite without collecting.
 
         Filter by all, changes (excludes baseline/unchanged), baseline, added,
-        price_changed, conditions_changed, unavailable, removed_candidate or unchanged.
+        price_changed, price_and_conditions_changed, conditions_changed, unavailable,
+        removed_candidate or unchanged.
         The first capture establishes a baseline, not proof that a product is new.
         Unavailable and possible removals never establish that a product was discontinued.
         Page through all rows; job summaries contain only a bounded preview.

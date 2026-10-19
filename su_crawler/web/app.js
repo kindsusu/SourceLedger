@@ -911,7 +911,7 @@ function fact(label, value) {
   return node("div", {}, [node("dt", { text: label }), node("dd", { text: displayValue(value) })]);
 }
 
-const CHANGE_STATUSES = ["baseline", "added", "price_changed", "conditions_changed", "unavailable", "removed_candidate", "unchanged"];
+const CHANGE_STATUSES = ["baseline", "added", "price_changed", "price_and_conditions_changed", "conditions_changed", "unavailable", "removed_candidate", "unchanged"];
 const CHANGE_PAGE_SIZE = 50;
 function refreshRecords(result) {
   const direct = result?.result?.refresh || result?.refresh;
@@ -995,6 +995,7 @@ function renderItemChanges(target, result) {
       const reasonKey = `app.changeReason.${item.reason}`;
       const reason = i18n.t(reasonKey) === reasonKey ? observedValue(item.reason) : t(`changeReason.${item.reason}`);
       const details = node("td", {}, [node("p", { text: reason })]);
+      if (item.condition_comparison) details.append(node("p", { className: "hint", text: t(`changeConditionComparison.${item.condition_comparison}`) }));
       if (item.changed_fields?.length) details.append(node("p", { text: t("changesFields", { fields: item.changed_fields.map(changeFieldLabel).join(", ") }) }));
       body.append(node("tr", {}, [product, renderChangeSnapshot(item.before, item.previous_checked_at, keys), renderChangeSnapshot(item.after, item.checked_at, keys), details]));
     }

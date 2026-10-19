@@ -9,7 +9,8 @@ from .catalog_refresh import refresh_for_run
 
 
 CHANGE_STATUSES = frozenset({
-    'baseline', 'added', 'price_changed', 'conditions_changed', 'unavailable',
+    'baseline', 'added', 'price_changed', 'price_and_conditions_changed',
+    'conditions_changed', 'unavailable',
     'removed_candidate', 'unchanged',
 })
 

@@ -239,3 +239,90 @@ def test_delayed_new_price_is_not_recorded_as_empty():
         empty_timeout=1))
     assert state["quotes"] == ["36개월 620,000원"]
     assert status == "changed_after_switch"
+
+
+def test_atomic_capture_keeps_displayed_price_and_html_from_one_dom(tmp_path):
+    from su_crawler.amazoncar_collection import capture, EvidenceStore
+
+    playwright = pytest.importorskip("playwright.async_api")
+
+    async def check():
+        async with playwright.async_playwright() as driver:
+            browser = await driver.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await page.set_content("""<h1>Example car</h1>
+                    <button class='active'>장기렌트</button>
+                    <button>36개월 630,740원</button>""")
+                result = await capture(page, EvidenceStore(tmp_path), "example-rent")
+                html = (tmp_path / result["html"]["path"]).read_text(encoding="utf-8")
+                assert "36개월 630,740원" in html
+                assert "36개월 630,740원" in [x["text"] for x in result["buttons"]]
+            finally:
+                await browser.close()
+
+    import asyncio
+    asyncio.run(check())
+
+
+def test_no_displayed_quote_is_kept_as_reviewable_mode(tmp_path, monkeypatch):
+    from su_crawler import amazoncar_collection as collection
+
+    playwright = pytest.importorskip("playwright.async_api")
+
+    async def navigate_empty(page, url, **kwargs):
+        await page.set_content("<h1>Example car</h1><button class='active'>장기렌트</button>")
+
+    async def ready_empty(page, *, allow_no_quote=False, **kwargs):
+        if not allow_no_quote:
+            raise TimeoutError("No displayed quote")
+        return await page.evaluate(collection.READY_JS)
+
+    monkeypatch.setattr(collection, "navigate", navigate_empty)
+    monkeypatch.setattr(collection, "wait_ready", ready_empty)
+
+    async def check():
+        async with playwright.async_playwright() as driver:
+            browser = await driver.chromium.launch(headless=True)
+            try:
+                page = await browser.new_page()
+                await collection.install_tracker_async(page)
+                result = await collection.collect_detail(
+                    page, {"href": "/cars/used/057846"}, collection.EvidenceStore(tmp_path))
+                assert result["mode_coverage"]["rent"]["status"] == "no_displayed_quotes"
+                assert result["quotes"] == []
+                assert result["captures"][0]["settlement"]["status"] == "settled"
+                assert result["captures"][0]["integrity_flags"] == ["no_displayed_quotes_review"]
+            finally:
+                await browser.close()
+
+    import asyncio
+    asyncio.run(check())
+
+
+def test_direct_navigate_installs_network_tracker_before_navigation(monkeypatch):
+    from su_crawler import amazoncar_collection as collection
+    from su_crawler.browser_settlement import TRACKER_INIT_JS
+
+    calls = []
+
+    class Page:
+        async def add_init_script(self, script):
+            calls.append(("init", script))
+
+        async def evaluate(self, script):
+            calls.append(("evaluate", script))
+
+        async def goto(self, url, **kwargs):
+            calls.append(("goto", url))
+            return None
+
+    async def ready(*args, **kwargs):
+        return {}
+
+    monkeypatch.setattr(collection, "wait_ready", ready)
+    page = Page()
+    run_immediate(collection.navigate(page, "https://example.test/item"))
+    run_immediate(collection.navigate(page, "https://example.test/item-2"))
+    assert [kind for kind, _ in calls] == ["init", "evaluate", "goto", "goto"]
+    assert calls[0][1] == TRACKER_INIT_JS

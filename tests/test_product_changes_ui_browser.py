@@ -21,11 +21,13 @@ def comparison(status, number=0):
         after = before
     return {'status': status, 'product_name': f'<img src=x onerror=alert(1)> Part {number}', 'identity': f'sku:SKU-{number}',
             'url': 'javascript:alert(1)' if status == 'unavailable' else 'https://example.test/catalog',
-            'before': before, 'after': after, 'changed_fields': ['price', 'min_order'] if status == 'price_changed' else ['name'] if status == 'conditions_changed' else [],
+            'before': before, 'after': after, 'changed_fields': ['price', 'min_order'] if status in ('price_changed', 'price_and_conditions_changed') else ['name'] if status == 'conditions_changed' else [],
+            'condition_comparison': 'observed_fields_only' if status == 'price_and_conditions_changed' else None,
             'reason': {'baseline': 'first_successful_capture', 'added': 'new_observed_item',
                        'unavailable': 'not_observed_in_current_capture', 'removed_candidate': 'absent_from_complete_inventory_review_required',
                        'unchanged': 'same_observed_fields', 'conditions_changed': 'observed_conditions_changed',
-                       'price_changed': 'observed_price_or_currency_changed'}[status],
+                       'price_changed': 'observed_price_or_currency_changed',
+                       'price_and_conditions_changed': 'observed_price_and_conditions_changed'}[status],
             'previous_checked_at': '2026-10-01T01:00:00Z' if before else None,
             'checked_at': '2026-10-02T01:00:00Z'}
 
@@ -33,7 +35,8 @@ def comparison(status, number=0):
 @pytest.mark.parametrize('legacy', [False, '404', 'unavailable'])
 def test_product_changes_browser_languages_filter_paging_and_safe_evidence(tmp_path, legacy):
     playwright = pytest.importorskip('playwright.sync_api')
-    statuses = ['baseline', 'added', 'conditions_changed', 'unavailable', 'removed_candidate', 'unchanged']
+    statuses = ['baseline', 'added', 'price_and_conditions_changed', 'conditions_changed',
+                'unavailable', 'removed_candidate', 'unchanged']
     items = [comparison('price_changed', number) for number in range(51)]
     items += [comparison(status, 51 + number) for number, status in enumerate(statuses)]
     # Missing currency is deliberately not supplied from the previous observation.
@@ -97,14 +100,23 @@ def test_product_changes_browser_languages_filter_paging_and_safe_evidence(tmp_p
             else:
                 playwright.expect(section.locator('tbody tr')).to_have_count(50)
                 section.locator('[data-change-page="next"]').click()
-                playwright.expect(section.locator('tbody tr')).to_have_count(7)
-                playwright.expect(section).to_contain_text('51–57 of 57')
+                playwright.expect(section.locator('tbody tr')).to_have_count(8)
+                playwright.expect(section).to_contain_text('51–58 of 58')
                 for status in statuses:
                     section.locator('[data-change-filter]').select_option(status)
                     playwright.expect(section.locator('tbody tr')).to_have_count(1)
                     if status == 'conditions_changed':
                         playwright.expect(section.locator('tbody tr td').nth(1)).to_contain_text('Part')
                         playwright.expect(section.locator('tbody tr td').nth(2)).to_contain_text('Renamed part')
+                    if status == 'price_and_conditions_changed':
+                        for language, label, condition in [
+                            ('ko', '가격과 관측 조건 함께 변경', '기록된 조건 항목만 비교했습니다'),
+                            ('ja', '価格と観測条件がともに変更', '記録された条件のみ比較しました'),
+                            ('en', 'Price and observed conditions changed', 'Only recorded condition fields were compared'),
+                        ]:
+                            page.locator('#language-select').select_option(language)
+                            playwright.expect(section.locator('.change-status')).to_have_text(label)
+                            playwright.expect(section).to_contain_text(condition)
                 section.locator('[data-change-filter]').select_option('unavailable')
                 assert section.locator('a[href^="javascript:"]').count() == 0
                 playwright.expect(section).to_contain_text('removal is not confirmed')
