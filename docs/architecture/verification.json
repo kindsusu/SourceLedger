@@ -1,0 +1,112 @@
+{
+  "schema": "sourceledger/architecture-verification/v1",
+  "reviewed_on": "2026-09-17",
+  "diagram_type": "architecture",
+  "sourceledger_revision": "957b5f1f96e5d3584e2726a07fe91e421947e83d",
+  "tool": {
+    "repository": "https://github.com/tt-a1i/archify",
+    "revision": "72c750bb070d95171dbb2244e5b62b1b7da69c12",
+    "skill_path": "archify",
+    "version": "2.17.0-dev.1"
+  },
+  "files": {
+    "sourceledger.architecture.json": {
+      "sha256": "617d9453ca35ac4d4ffd599ead6ad8bfbdb44436e112989c463328a163880bac",
+      "bytes": 5175
+    },
+    "sourceledger.html": {
+      "sha256": "3710d164df5dcdeeb2a4c2cf97c799e1bd70663cf9cbd35b7aac7d9c05318b93",
+      "bytes": 811398
+    },
+    "sourceledger.png": {
+      "sha256": "9511cd3e51c190d93e82dcf72e376805031eac4fe770cca42baea067bb7efe33",
+      "bytes": 121720
+    }
+  },
+  "validation": {
+    "checksPassed": 9,
+    "checkCount": 9,
+    "compositionProfile": "showcase",
+    "compositionStatus": "pass",
+    "errors": 0,
+    "warnings": 0
+  },
+  "browser_evidence": {
+    "status": "pass",
+    "evidence_kind": "automated-browser",
+    "detail": "read",
+    "motion": "still",
+    "viewports": [
+      {
+        "width": 1440,
+        "height": 900,
+        "theme": "light",
+        "scrollWidth": 1440,
+        "scrollHeight": 900,
+        "ok": true
+      },
+      {
+        "width": 1600,
+        "height": 1000,
+        "theme": "light",
+        "scrollWidth": 1600,
+        "scrollHeight": 1000,
+        "ok": true
+      },
+      {
+        "width": 1920,
+        "height": 1080,
+        "theme": "light",
+        "scrollWidth": 1920,
+        "scrollHeight": 1080,
+        "ok": true
+      },
+      {
+        "width": 2048,
+        "height": 1320,
+        "theme": "light",
+        "scrollWidth": 2048,
+        "scrollHeight": 1320,
+        "ok": true
+      }
+    ],
+    "capture_themes": [
+      "light",
+      "dark"
+    ],
+    "capture_viewports": [
+      [
+        1440,
+        900
+      ],
+      [
+        2048,
+        1320
+      ]
+    ],
+    "automated_visual_review": "pending"
+  },
+  "perceptual_review": {
+    "status": "passed",
+    "reviewer": "Astra",
+    "scope": "Reviewed all four final endpoint screenshots in both themes; readable labels, separate paths, complete cards, no clipped content.",
+    "correction_rounds": 2
+  },
+  "interaction_smoke": {
+    "artifact_sha256": "3710d164df5dcdeeb2a4c2cf97c799e1bd70663cf9cbd35b7aac7d9c05318b93",
+    "status": "pass",
+    "theme_toggle": true,
+    "search_and_focus": true,
+    "passport_close": true,
+    "svg_export": true,
+    "javascript_errors": []
+  },
+  "preview": {
+    "method": "Exact 1440x900 light screenshot of delivered HTML",
+    "source_artifact_sha256": "3710d164df5dcdeeb2a4c2cf97c799e1bd70663cf9cbd35b7aac7d9c05318b93"
+  },
+  "limits": [
+    "Architecture documentation; not a live SourceLedger run or external-provider validation.",
+    "Raw browser receipts and temporary screenshots are retained locally, outside tracked repository files."
+  ]
+}

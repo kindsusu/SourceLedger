@@ -1,0 +1,8 @@
+{
+  "provider": "searxng",
+  "endpoint": "http://127.0.0.1:8080/search",
+  "allow_private_endpoint": true,
+  "timeout_seconds": 15,
+  "language": "en",
+  "allowed_result_domains": []
+}

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-labelledby="title desc">
+  <title id="title">SourceLedger</title>
+  <desc id="desc">Four layered ledger sheets</desc>
+  <g fill="none" stroke-linejoin="round" stroke-width="2.4">
+    <path d="M7 14.5 24 6l17 8.5L24 23 7 14.5Z" fill="#9DE8D2" stroke="#D7FFF3"/>
+    <path d="m7 21.5 17 8.5 17-8.5" stroke="#6BCDB4"/>
+    <path d="m7 28.5 17 8.5 17-8.5" stroke="#49A990"/>
+    <path d="m7 35.5 17 8.5 17-8.5" stroke="#287D6B"/>
+  </g>
+</svg>

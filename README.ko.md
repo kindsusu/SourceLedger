@@ -1,0 +1,280 @@
+# SourceLedger
+
+[English](README.md) | [한국어](README.ko.md)
+
+![SourceLedger — Collect information. Preserve its source.](SourceLedger.png)
+
+SourceLedger는 출처를 탐색하고 상품 가격과 원문·근거를 보존하며 XLSX 보고서를 만드는 로컬 도구입니다. 가격을 추정하거나 빈 값을 0으로 채우지 않습니다.
+
+승인된 상품 페이지 목록에 대해서는 보존한 렌더링 캡처를 SQLite로 재처리하고 XLSX 보고서를 만들 수 있습니다. 가격 필드의 원문 일치, 명시된 값 변환, 조건 비교 가능 여부를 별도로 표시합니다. 필드 일치만으로 현재 웹사이트의 가격이나 전체 목록 완전성이 입증되는 것은 아닙니다. [수집·재처리 안내](docs/amazoncar.md)를 참고하세요.
+
+수집 결과에는 원본 URL, 수집 시각(UTC), 원문 필드, CSS/JSON/표 위치, 증거 파일 경로와 SHA-256을 남깁니다. 상품·가격·통화가 원문 근거와 함께 확인된 행은 `verified`가 될 수 있습니다. 비교 조건이 부족하면 `verified`여도 `comparable=false`이며 가격 비교에는 넣지 않습니다. 특히 묶음(pack)인지 개별(each)인지 원문 `price_basis` 근거가 없으면 정규화 단가를 계산하지 않고 빈칸으로 남깁니다.
+
+원시 또는 정적 HTML 가격은 보존하지만 렌더링된 화면 표시 근거가 있기 전에는 비교하지 않습니다. 구조화 파일과 문서 기록은 해당 record 근거를 사용합니다. Source Evidence는 보존 콘텐츠와 캡처된 경우 스크린샷·수집 receipt를 연결합니다.
+
+## 동작 구조
+
+동적 수집 규칙·인증 프로필·SQLite 문제 원장 사용법은 [수집 한계와 재처리 관리](docs/LIMITATION_MANAGEMENT.ko.md)를 참고하세요. 검증 결과와 남은 범위는 [구현 검토](docs/LIMITATION_IMPLEMENTATION_REVIEW.ko.md)에 기록했습니다.
+
+범위 판정·저장 원본 재분석·남은 한계는 [수집 정확성 개선](docs/CROSS_SITE_RELIABILITY_2026-10-14.ko.md)을 참고하세요.
+
+추천 모델은 **Codex의 Sol, Claude의 Opus**이며 기존 사용자 선택은 유지합니다. 수집 전 실행 계획에서 대상 사이트, 요청한 모델 또는 확인되지 않은 호스트 모델, 시간·페이지 한도와 체크포인트를 검토합니다. MCP에서는 `get_research_execution_plan`으로 조회합니다. 새 UI·MCP 작업은 한 작업 공간에서 동시 수집 2개를 기본으로 사용합니다(사이트당 최대 2개, 브라우저 1개). 1개를 선택하면 순차 실행합니다. MCP 진행 조회는 `get_research_progress`를 사용합니다. 연결된 앱을 통한 Exa 출처 탐색은 선택 사항입니다. [적용 내용](docs/CRAWLER_IMPROVEMENTS.ko.md)을 참고하세요. [성능 측정 방법](docs/COLLECTION_PERFORMANCE.ko.md)과 [Exa MCP·Scrapy 구조 검토](docs/UPSTREAM_ARCHITECTURE_REVIEW.ko.md)를 참고하세요.
+
+고정된 전체 목록은 계획을 한 번 승인한 뒤 `start_research_batch_run`으로 수집할 수 있습니다. 서버가 배치와 체크포인트를 관리하므로 배치마다 AI의 계획·승인을 반복하지 않습니다. [전체 목록 배치 수집](docs/SERVER_BATCH_COLLECTION.ko.md)을 참고하세요.
+
+새 조사 계획은 전체 수집 후 이전 정상 결과와 비교하는 방식이 기본입니다. 명시적으로 저장한 기존 증분 설정은 유지하며, 증분 모드는 선택 사항입니다. 증분 모드의 전체 재확인 주기(기본 7일)는 다음 실행 때 판단하며 자동 예약이 아닙니다. 비교 범위는 승인하고 실제 방문한 URL입니다. UI와 엑셀 Item Changes 시트에서 비교 기준 생성·추가·가격 변경·조건 변경·동일·확인 불가·제거 후보와 이전/현재 관측값을 확인합니다. 첫 수집은 신규 상품 판정이 아니라 비교 기준 생성입니다. SQLite와 XLSX에는 모든 행을 보존하며 UI 및 MCP get_collection_changes에서 필터와 페이지 이동으로 상세 내역을 조회합니다. 접근 실패를 삭제로 판단하거나 이전 가격을 현재 관측으로 복사하지 않습니다. [수집 신뢰성 안내](docs/COLLECTION_RELIABILITY.ko.md)를 참고하세요.
+
+변경분 모드가 변경된 URL만 방문한다는 뜻은 아닙니다. 브라우저가 필요한 페이지는 새로 렌더링하며, 전체 모드도 마지막 정상 기준과의 변경 내역을 제공합니다. 브라우저 중심 수집은 실측으로 이점이 확인되기 전까지 전체 모드를 사용하세요.
+
+[![SourceLedger 수집 구조](docs/architecture/sourceledger.png)](docs/ARCHITECTURE.ko.md)
+
+범위와 한도가 정해진 에이전트가 출처 후보에서 추출 규칙을 제안하고, 새 원문을 수집해 검증한 관측을 SQLite에 기록한 뒤 XLSX 보고서를 만듭니다. 없는 값은 채우지 않습니다. 선택적 검색·모델 보조·활성화에는 명시적인 조건을 적용합니다.
+
+코드에 근거한 흐름과 스킬 설치·재생성 방법은 [구조 및 Archify 안내](docs/ARCHITECTURE.ko.md) ([English](docs/ARCHITECTURE.md))에 정리했습니다. [인터랙티브 HTML](docs/architecture/sourceledger.html)을 다운로드해 로컬 브라우저에서 열면 됩니다. GitHub는 뷰어 실행 대신 소스를 표시합니다. [Archify](https://github.com/tt-a1i/archify)는 이 구조도를 만드는 문서화 도구입니다.
+
+## 빠른 시작
+
+SourceLedger는 Python 3.11 이상을 지원하며 Python 3.12를 권장합니다. 저장소를 clone하거나 GitHub ZIP을 내려받아 압축을 푼 뒤 설치하세요. 기본 setup는 로컬 core만 설치합니다. macOS/Linux, 브라우저·MCP·개발 테스트 옵션, Linux 의존성, headless 브라우저 모드, 다른 컴퓨터로 이동하는 방법은 [설치 안내](docs/INSTALLATION.ko.md)를 참고하세요.
+
+```bat
+setup.cmd
+source-ledger.cmd
+```
+
+두 번째 명령은 로컬 브라우저 UI를 엽니다. 짧거나 여러 줄의 상세한 연구 요청을 적고, 범위가 제한된 AI 출처 미리보기를 검토한 뒤 대상을 추가·제거·선택하세요. 산업군·상품·시장과 선택 페이지를 확인하고 승인하면 제한된 수집을 시작할 수 있습니다. 정확한 상품 식별자는 정밀 매칭을 위한 고급 선택 사항이며 이 계획 흐름의 필수 조건이 아닙니다. 서버는 `127.0.0.1`에만 연결되며 기본 포트는 `8765`, 기본 워크스페이스는 `.sourceledger`입니다. 전체 흐름은 [브라우저 UI 안내](docs/WEB_UI.ko.md)를 참고하세요.
+
+launcher는 위치 기준으로 프로젝트 `.venv`를 사용하므로 Windows에서 PowerShell 활성화나 실행 정책 변경이 필요 없습니다. 위 블록은 명령 프롬프트용이며 PowerShell에서는 `.\setup.cmd`와 `.\source-ledger.cmd`를 사용합니다. macOS/Linux에서는 `bash setup.sh` 다음 `bash source-ledger.sh`를 실행하세요. 저장소 launcher를 인수 없이 실행하면 UI가 열립니다.
+
+기본 설치만으로 UI와 로컬 파일 작업을 사용할 수 있습니다. Playwright 수집과 MCP 연결은 필요할 때 선택 설치합니다. 웹 UI 추천 실행을 위해서는 공급자 공식 안내에 따라 [Codex CLI](https://developers.openai.com/codex/cli/) 또는 [Claude Code](https://code.claude.com/docs/en/setup)를 별도로 설치하고 로그인하세요.
+
+```powershell
+.\setup.cmd --browser --mcp
+```
+
+`--browser`는 Playwright 수집을, `--mcp`는 Codex·Claude MCP 연결을 추가합니다. UI를 여는 데는 둘 다 필요하지 않습니다. MCP 설치 후 대화형으로 사용하려면 [로컬 AI 도구 연결 안내](docs/ASSISTANT_CONNECTIONS.ko.md)를 따르세요.
+
+### 브라우저 UI
+
+0.5에서는 브라우저 UI를 기본 로컬 시작점으로 사용합니다. 화면은 다섯 영역으로 구성됩니다.
+
+상단의 **언어** 선택기에서 **English**, **한국어**, **日本語**를 고를 수 있습니다(영어에서는 **Language**, 일본어에서는 **言語**). 기본값은 영어이며 선택한 언어는 해당 로컬 UI origin의 브라우저 `localStorage`에 저장됩니다. 새로고침 없이 화면 레이블·상태 문구·날짜 표시 형식만 바뀌고, 입력값과 체크박스 선택은 유지됩니다. 저장된 출처 내용과 증거, 가격, 모델 ID, MCP 설정, 연구 워크스페이스 언어, 보고서 데이터는 번역하거나 변경하지 않습니다. 전환 과정에서 AI 번역이나 외부 호출도 없습니다.
+
+- **Research plan** — 전체 요청, 출처 미리보기, 사용자 수정·선택, 확인과 제한 수집
+- **Overview** — 최초 설정, 연구 준비 상태, 독립 worker 제어
+- **Sources** — 정확한 상품 식별자, URL 직접 등록, 회사·키워드 추천 요청과 후보 선택, 제한된 링크 발견과 추출 규칙 제안
+- **Runs** — 대기 작업 상태, 근거 상태, 페이지 단위 관측 조회, 등록된 XLSX 보고서
+- **Connections** — AI 앱 연결용 복사 설정과 Codex CLI·Claude Code CLI 선택 공급자 설정. 클라이언트 설정 파일을 직접 변경하지 않습니다.
+
+웹 UI는 이 화면에서 연구 계획의 미리보기를 실행하는 경로를 기본으로 표시합니다. **Connections**에서 Codex CLI 또는 Claude Code CLI 공급자와 모델을 설정한 뒤 **Preview research plan** 버튼을 누르세요. 화면을 열기만 해서는 AI 공급자를 호출하지 않습니다.
+
+- **웹 UI(기본):** 미리보기 버튼을 눌러 설정한 공급자·모델로 이 화면에서 AI를 실행합니다.
+- **연결된 AI 앱(선택):** 앱의 검색·브라우저 도구로 근거를 살펴보고 MCP로 미리보기를 제출합니다. 모델은 해당 앱에서 선택합니다.
+
+웹 실행에는 SourceLedger가 실행되는 PC의 CLI 설치·로그인이 필요하며, 해당 CLI의 계정 사용 조건이 적용됩니다. 공급자 기본 모델, 제안 목록 또는 직접 입력한 모델 ID를 사용할 수 있습니다. 실행 제한은 기본 180초이며 30~600초로 조정할 수 있습니다. 웹 설정은 열린 AI 앱의 모델을 바꾸지 않습니다. 자세한 설정은 [브라우저 UI 안내](docs/WEB_UI.ko.md)를 참고하세요.
+
+미리보기의 출처 근거는 미검증이며 가격 관측이 아닙니다. 후보를 추가·제거·선택하고 계획의 산업군·상품·시장과 전체 수정본을 확인한 뒤 수집을 시작하세요. 선택 페이지와 같은 호스트의 일부 링크만 한도 안에서 방문하고, 범위 누락을 기록하며 SQLite 근거와 XLSX를 만듭니다. 다른 사이트의 JSON-LD Product/Offer 값도 원문 가격·속성으로 보존할 수 있으나 화면 확인 없는 내장 가격은 검토 대상이며 비교하지 않습니다. 임의의 페이지 레이아웃이나 자연어 상업 조건의 의미 검증은 자동 지원하지 않습니다. 없는 가격·통화·식별자·조건은 비워 둡니다.
+
+조사 지역이 없으면 출처 추천 전에 지역을 확인합니다. 편집 가능한 상품 조건은 선택적 문자 필터와 분리되며, 수집 결과는 근거를 추정하지 않고 조건 충족·확인 불가·제외·미검사를 구분합니다. 시작 버튼에서 부족한 항목을 안내하고 출처 후보와 상품 조건 확인을 별도로 표시합니다.
+
+고급 안내형 연구는 선택한 등록 출처만 사용하며 최대 50개, 120초 한도로 실행합니다. 계획 수집에는 별도의 페이지 한도(기본 10개)가 적용됩니다. 기존 수집 모델 호출은 계속 선택 사항이며 기본값은 0회입니다. 아래 CLI agent 예시의 기본 출처 수 3개는 별도 설정입니다.
+
+대기 작업을 실행할 때 UI에서 독립 worker를 시작·중지할 수 있습니다. 브라우저 탭이나 UI 웹 서버를 닫아도 worker가 맡은 작업은 취소되지 않습니다. UI와 Codex·Claude MCP 연결은 같은 워크스페이스와 작업 이력을 공유할 수 있습니다. 작업의 `succeeded`는 프로그램 실행 성공을 뜻하므로, 가격을 확인된 값으로 사용하기 전에 별도의 근거 상태를 확인해야 합니다.
+
+수집 중 실제 CAPTCHA·접근 확인이나 인증 요구가 발생하면 브라우저 알림과 Runs 확인 목록에 표시됩니다. 다른 URL은 계속 수집합니다. `get_research_progress`에서도 건수가 제한된 확인 항목을 볼 수 있습니다. 해당 URL을 브라우저에서 열어도 세션이 worker로 전달되거나 문제가 자동 해결되거나 누락된 값이 검증되지는 않습니다. 근거 제출과 처리는 [브라우저 복구](docs/BROWSER_RECOVERY.ko.md) 또는 [MCP 후속 작업](docs/MCP_FOLLOWUP.ko.md)을 따르세요.
+
+설치 명령 또는 저장소 launcher에서 고급 실행 옵션을 사용할 수 있습니다.
+
+```powershell
+.\source-ledger.cmd ui --workspace-root .sourceledger --port 8765 --no-browser
+```
+
+이 UI는 로컬 인터페이스입니다. 이번 범위에는 원격 웹 호스팅, 제3자 MCP 클라이언트, ChatGPT 웹 연결이 포함되지 않습니다.
+
+### CLI 빠른 확인
+
+데모는 합성 HTML/CSV만 읽으며 실제 시장 가격을 사용하지 않습니다.
+
+```powershell
+.\source-ledger.cmd run --config examples/demo.json
+.\source-ledger.cmd status --config examples/demo.json --run-id <실행_ID>
+.\source-ledger.cmd observations --config examples/demo.json --run-id <실행_ID>
+.\source-ledger.cmd export --config examples/demo.json --run-id <실행_ID>
+.\source-ledger.cmd doctor
+```
+
+`su-crawler`는 호환을 위해 유지되는 명령 별칭입니다. 새 스크립트와 문서에는 `source-ledger`를 사용하세요. 아래 명령 예시는 이식성 있는 checkout에서는 launcher 접두어를 붙이고, 셸에 설치된 `source-ledger` 명령이 있을 때만 직접 실행하세요.
+
+`run --max-tasks N`으로 감독 가능한 배치만 실행할 수 있고, 반환된 실행 ID로 `run --resume <실행_ID>`를 재개합니다. 산출물은 설정의 `output_dir` 아래 SQLite 실행 이력, 원문 증거, XLSX 보고서로 저장됩니다.
+
+## 설정 범위
+
+처음에는 연구 워크스페이스를 만듭니다. 기본 언어는 영어이며 `--lang ko`로 한국어 설정 질문과 다음 작업 안내를 선택할 수 있습니다.
+
+```powershell
+.\source-ledger.cmd init --lang ko
+.\source-ledger.cmd research-status
+```
+
+산업군·상품·대상 시장만 입력받고 분석 목적은 묻지 않습니다. 이후 출처 URL 등록, 링크 후보 탐색, 정확한 식별자 입력, 수집 초안 생성으로 이어집니다. 전체 명령은 [시작 안내](docs/GETTING_STARTED.ko.md), 남은 자동화 범위는 [로드맵](docs/ROADMAP.ko.md)에 정리했습니다.
+
+연구 워크스페이스는 상품 주제 하나를, 수집 설정은 여러 개의 정확한 상품을 지원합니다. `draft`는 수동 설정의 시작점이며, `propose`는 원문 HTML을 검사해 추출 규칙을 제안합니다. 둘 다 확인된 관측과 구분됩니다.
+
+### 범위가 정해진 연구 실행
+
+0.3에서 선택적 SearXNG 키워드 검색, 원문 기반 선택자 제안, 진행 저장·재개가 가능한 실행 제어기를 추가했습니다. 초기 설정 후 출처와 식별자를 등록하고 실행합니다.
+
+```powershell
+.\source-ledger.cmd product-set --identifier model=YOUR_EXACT_MODEL
+.\source-ledger.cmd source-add --url "https://your-vendor.example/product"
+.\source-ledger.cmd agent --run-dir .sourceledger/runs/run-001 --max-sources 3 --max-seconds 120
+```
+
+선정한 출처의 규칙을 제안한 뒤 전체 출처를 새로 수집·검증해 SQLite와 XLSX에 저장합니다. 불완전한 출처도 결과에 남습니다. `--resume`은 저장한 범위와 한도를 유지하며, `--max-steps`로 출처 처리 사이에서 일시 정지할 수 있습니다. 개별 외부 요청에 타임아웃을 적용하고 전체 실행 시간을 제한하지만 프로세스를 강제로 종료하는 방식은 아닙니다.
+
+키워드 검색에는 직접 설정한 SearXNG 서버가 필요합니다. Ollama 보조는 클라우드 기능을 끈 로컬 서버와 설치된 모델을 명시해야 하며 모델 호출 기본 한도는 0회입니다. 모델은 선택자만 제안합니다. 자동 활성화에는 `--activate`와 모든 선택 출처를 포함하는 정답 표본이 추가로 필요합니다. 설정과 한계는 [자동화 안내](docs/AUTOMATION.ko.md)를 참고하세요.
+
+설정은 JSON이며 제품마다 원문과 대조할 `identifiers`를, 출처마다 고정 `location`과 `product_ids`를 둡니다. 웹 출처는 `allowed_domains`에 URL 호스트를 명시해야 합니다. 내부 자료는 로컬 file 출처의 `file_root` 또는 권한 있는 internal 웹 출처로 제한해 설정합니다. file 출처는 기준 디렉터리 또는 명시된 `file_root` 안의 파일만 읽습니다.
+
+```json
+{
+  "name": "부품 가격 수집",
+  "output_dir": "outputs",
+  "products": [{"id":"part-a", "name":"부품 A", "identifiers":{"model":"A-100"}}],
+  "sources": [{
+    "id":"vendor-a", "name":"공개 카탈로그", "kind":"web",
+    "location":"https://example.com/catalog/a-100", "allowed_domains":["example.com"],
+    "product_ids":["part-a"], "backends":["http", "playwright"],
+    "selectors":{"model":".model", "price":".price", "currency":".currency"}
+  }]
+}
+```
+
+보고서는 실행 요약, 수집 현황, 가격 비교, 관측 이력, 출처 근거, 검토 필요 시트로 구성됩니다. 가격 비교에는 확인·최신·비교 가능 관측만 들어가며, 같은 비교 조건에서 출처별 최신 관측 하나씩으로 최저·최고·중앙값·건수를 계산합니다. `price_basis`(예: `pack`, `each`)와 포장 수량은 독립된 비교 조건이며 원문 근거가 없으면 비교·정규화하지 않습니다. 보고서는 월별 가격 이력이 아니라 하나의 실행(run) 단위 관측 보고서입니다.
+
+### 추출 규칙과 브라우저 레시피
+
+HTML은 `selectors`와 선택 `row_selector`의 CSS 위치를 증거로 남깁니다. CSV는 `columns`의 헤더 매핑, XLSX는 `sheet`와 `columns` 매핑, JSON은 배열 또는 `items`/`products` 객체, PDF는 `pdf_pattern`의 named capture 그룹으로 명시적으로 추출합니다. 스캔 PDF의 OCR은 구현하지 않았으며, 텍스트 계층이 없으면 검토 대상으로 남습니다.
+
+`profile_dir`을 설정하면 이미 로그인된 전용 브라우저 프로필을 재사용할 수 있습니다. 이 기능은 로그인 절차나 자격증명 입력을 자동화하지 않습니다. `recipe`에는 명시적인 페이지 동작만 둡니다. 현재 `click`, `select`, `fill`, `wait_for`, `assert_text`를 지원합니다.
+
+```json
+"recipe": [
+  {"action":"click", "selector":"button[data-tab='prices']"},
+  {"action":"select", "selector":"select#pack", "value":"100"},
+  {"action":"wait_for", "selector":".price", "state":"visible"},
+  {"action":"assert_text", "selector":".currency", "text":"KRW"}
+]
+```
+
+### URL 후보 발견
+
+`discover`는 설정된 출처의 HTML 링크 또는 XML sitemap에서 지정 개수 이내의 URL 후보를 반환합니다. 설정된 backend를 각각 최대 한 번 사용하고, HTTP 실패나 빈 링크 결과 뒤에는 Playwright도 시도합니다. 정책상 접근 거절은 fallback을 중단합니다. 후보는 같은 `allowed_domains`의 HTTP(S) URL로 제한되며 fragment·중복·인증 정보 URL은 버립니다.
+
+```powershell
+.\source-ledger.cmd discover --config examples/demo.json --source-id catalog --limit 100
+```
+
+`source-discover`는 발견한 링크를 연구 워크스페이스에 후보로 저장합니다. 관련성을 검토하고 수집 초안에서 의도한 출처만 남긴 뒤 선택자/열 매핑을 작성합니다. 발견만으로 확인된 가격 관측을 만들지는 않습니다.
+
+### 지원 렌탈 페이지와 조건부 수집
+
+`Product.price_profile`의 기본값은 `unit`입니다. 계약 기간, 주행거리, 보증금, 선납금, 할부처럼 렌탈 조건을 보존해야 하면 `rental`로 설정합니다. 보증금·선납금·보증금 할부는 각각 별도의 원문 조건으로 기록하며 서로 합치거나 대신 넣지 않습니다.
+
+`Source.adapter`는 지원되는 렌더링 형식의 결정적 파서를 지정합니다. 현재 값은 `jetcar`, `gongcar`, `funrent`입니다. 어댑터는 원문 근거와 화면 표시 여부를 기록합니다. 계산기에 표시된 값은 `calculator_estimate`로 표기해 `observed` 가격과 구분하며, 비교 가능한 견적으로 자동 승격하지 않습니다. 숨겨진 내용, 불충분한 근거, 불완전한 렌탈 조건은 비교하지 않고 검토 대상으로 남습니다.
+
+공카 `/rentpass`·`/longterm` 수집은 공개 인기 상품을 끝까지 펼치고 특가 영역을 확인합니다. 섹션별 건수·확장 종료 사유·근거를 SQLite, MCP/UI 결과, XLSX의 `Catalog coverage` 시트에 보존합니다. 목록 완료와 가격·계약 조건 검증을 구분하며, 예산 초과·화면 변경·미해석 카드는 누락 상태로 표시합니다. [구현 및 실제 검증 기록](docs/GONGCAR_COLLECTION_PLAN.ko.md)을 참고하세요. 이 범위에는 한달렌트·하루렌트·비공개 재고가 포함되지 않습니다.
+
+처음 지원 사이트를 수집할 때는 산업군·상품·시장을 명시하는 워크스페이스를 만든 다음 권한 있는 정확한 페이지 URL을 넣습니다. 아래 URL은 자리표시자이므로 실제 사용 시 권한 있는 URL로 바꾸세요. 이 명령은 사이트 전체 목록을 탐색하거나 완전한 목록이라고 주장하지 않습니다.
+
+```powershell
+.\source-ledger.cmd init --lang ko
+.\source-ledger.cmd collect-sites `
+  --url "https://www.jetcar.kr/sub0201/<vehicle-id>" `
+  --max-pages 5 --max-seconds 120
+```
+
+`collect-sites`는 `init`이 만드는 기본 워크스페이스 `.sourceledger/research.json`을 사용하며, 별도 주제일 때만 `--workspace PATH`를 지정합니다. 하나 이상의 `--url`, `--max-pages`, `--max-seconds`, `--no-incremental`을 받을 수 있습니다. 현재 지원하는 Jetcar·Gongcar·Funrent 호스트의 사용자가 지정한 상세 또는 렌더링 계산기 페이지를 읽기 전용으로 검토한 레시피로 수집합니다. 수집기는 네이티브 견적 양식 제출을 막지만 페이지 JavaScript의 다른 요청까지 막는다고 보장하지는 않습니다. 일반 수집과 같은 SQLite 증거 이력과 XLSX 보고서를 만듭니다. 사이트 전체 목록 탐색, 선택하지 않은 페이지 추정, 실시간 재고 범위의 완전성 보장은 하지 않습니다.
+
+XLSX 보고서는 렌탈 관측이 있는 실행에만 **Rental Quotes** 시트를 추가합니다. 이 시트는 관측 월 납입금과 계산기 추정값을 다른 열에 두고, 보증금·선납금·할부 같은 렌탈 조건도 따로 표시합니다. **Observation History**도 관측 금액, 추정 금액, 원문 필드, 근거, 값의 출처, 표시 상태, 검증 수준, 렌탈 조건을 구분합니다. 가격 비교 통계에서는 계산기 추정값과 숨겨진 출처 값을 제외합니다.
+
+일반 `Source.incremental`의 기본값은 꺼짐이며 `"incremental": true`를 명시해야 합니다. 적격 공개 HTTP 출처에만 적용됩니다. `collect-sites`는 `--no-incremental`을 주지 않으면 생성하는 공개 HTTP 출처의 증분 수집을 켭니다. 다음 실행도 출처에 다시 요청하며, 일치하는 조건부 HTTP 응답이 확인된 뒤에만 보존 본문·추출 결과를 재사용할 수 있습니다. 브라우저 출처는 매번 새로 수집합니다. 보존한 증거가 없거나 변경됐으면 validator를 보내지 않고 새 응답을 받습니다. 자세한 내용은 [수집 신뢰성 안내](docs/CROSS_SITE_RELIABILITY_2026-10-14.ko.md) ([English](docs/CROSS_SITE_RELIABILITY_2026-10-14.md))와 [Milestone 04](docs/MILESTONE_04.md)를 참고하세요.
+
+### 검증과 활성화
+
+아래 예시는 합성 가격 두 개를 정답 표본과 대조하고 검증 기록과 활성 설정을 만듭니다. 외부 사이트에 접근하지 않습니다.
+
+```powershell
+.\source-ledger.cmd verify --config examples/verification.json --samples examples/verification.samples.json --receipt .sourceledger/verification.receipt.json
+.\source-ledger.cmd activate --config examples/verification.json --receipt .sourceledger/verification.receipt.json --output .sourceledger/active.json
+.\source-ledger.cmd run --config .sourceledger/active.json
+```
+
+모든 상품에 출처가 연결되고, 모든 출처·상품 작업이 확인 상태이며 최신·비교 가능 관측이 있어야 활성화할 수 있습니다. 설정·근거 원문·추출 필드·가격 유효기한·입력한 정답 표본을 다시 확인합니다. 규칙 변경·근거 누락·검증 만료 시 재검증이 필요합니다. 검증 기록과 활성 설정은 덮어쓰지 않으므로 새 버전에는 새 파일명을 사용합니다.
+
+`--samples`를 생략하면 원문과의 일관성만 검사합니다. 검증 기록은 로컬 감사 기록이며 실제 시장 정확도를 보증하는 서명은 아닙니다. 기존 `run --config`는 수동 관리 설정에도 계속 사용할 수 있습니다. 활성화 절차를 거쳐야만 실행되도록 강제한 구조는 아닙니다.
+
+## 로컬 AI 도구 연결
+
+0.4에서 Codex, Claude Code, Claude Desktop용 로컬 stdio MCP 연결을 추가했습니다. 클라이언트별 검토 가능한 설정을 만들고, 명시적으로 요청한 경우에만 안전하게 설정을 병합하며, 독립 worker가 대기 작업을 실행합니다. 시작 명령은 다음과 같습니다.
+
+```powershell
+.\setup.cmd --mcp --browser
+.\source-ledger.cmd connect --client codex --install
+.\source-ledger.cmd assistant start --workspace-root .sourceledger
+```
+
+다른 클라이언트는 `claude-code`, `claude-desktop`을 사용합니다. 이 저장소 밖 Claude Code 프로젝트에는 `--project-dir "C:\work\my-project"`를 추가하세요. 이 연결은 유료 서비스를 요구하지 않고 worker를 자동으로 시작하지 않습니다. 설정 대상, 안전한 백업, 대기 작업 명령, 검증 범위는 [로컬 AI 도구 연결 안내](docs/ASSISTANT_CONNECTIONS.ko.md)를 참고하세요.
+
+## 고정 설정 MCP
+
+MCP 서버가 수집 worker를 하위 프로세스로 만들지 않습니다. Windows에서 클라이언트의 Job Object가 하위 프로세스까지 종료할 수 있기 때문입니다. **정상 터미널에서 독립 worker를 먼저 실행**한 뒤 MCP를 실행하세요.
+
+```powershell
+# 터미널 1: 독립 worker
+.\.venv\Scripts\python.exe -m su_crawler.worker --config examples/demo.json
+
+# 터미널 2: stdio MCP 서버
+.\source-ledger.cmd serve-mcp --config examples/demo.json
+```
+
+worker의 heartbeat가 확인되지 않으면 MCP는 수집 시작 요청을 거절합니다. MCP 도구는 고정 설정 범위 안에서 작업 등록·상태 조회·관측 조회·XLSX 재생성을 수행합니다. `streamable-http`은 로컬 `127.0.0.1`만 지원합니다.
+
+## 현재 한계
+
+CAPTCHA·접근 확인 화면의 제한된 연결 AI 지원은 [브라우저 인증 복구](docs/BROWSER_RECOVERY.ko.md)를 참고하세요. 자체 해결기나 브라우저 세션 자동 이전 기능은 아닙니다.
+
+- 키워드 검색은 직접 설정한 SearXNG 서버를 사용합니다. 임의의 공용 검색 서버를 기본으로 호출하지 않습니다.
+- 구조화된 데이터·의미가 명시된 HTML의 선택자 제안과 선택적 로컬 모델 보조를 지원합니다. 검토한 브라우저 수집 절차는 MCP·웹 UI로 입력할 수 있습니다. 절차의 무인 생성, 자동 로그인, 무인 규칙 복구는 미구현입니다.
+- SearXNG/Ollama 요청 경로는 통제된 응답으로 검사했으며 실제 서버·모델·대표 실사이트 검증은 남아 있습니다. 루프백 주소만으로 모델 실행 위치를 보증하지 않으므로 Ollama 클라우드 기능을 꺼야 합니다.
+- 로컬 연결의 CLI·SDK 계약은 오프라인 테스트로 확인했지만 Codex·Claude Code·Claude Desktop GUI 실제 연결은 검증하지 않았습니다. ChatGPT 웹·모바일 연결에는 인증된 원격 배포와 산출물 다운로드 경로가 필요합니다.
+- Crawl4AI는 선택 의존성이고 이 환경에서 설치·실사이트 동작을 검증하지 않았습니다.
+- UWS, Jina, Exa 등 비용 또는 외부 전송이 발생하는 서비스에는 연결하지 않습니다.
+- 지원 사이트 수집 흐름은 유료 MCP 서비스를 사용하지 않습니다.
+- Agent-Reach는 doctor/routing 설계 참고 범위이며 직접 실행 연동은 없습니다. ego-lite는 macOS 앱 의존 경로로, 현재 Windows에서 직접 연동하지 않았습니다.
+- 독립 worker를 Windows 서비스로 등록하거나 스케줄링해 상시 운영하는 기능은 구현하지 않았습니다.
+- 브라우저 UI는 영어·한국어·일본어를 지원합니다. CLI 도움말·오류와 XLSX 레이블은 영어로 표시됩니다. 설정 질문과 연구 다음 작업 안내는 한국어로 제공되지만 CLI·보고서 언어 전환은 지원하지 않습니다.
+
+## 실제 도입 전 필요한 자료
+
+- 산업 상품의 SKU/모델 목록과 상품별 필수 식별자
+- 실제 수집 대상 URL 3~5개와 각 URL의 허용된 수집 범위
+- 사람이 확인한 정답 가격 표본과 통화·세금·배송·회원가 포함 여부
+- 비식별 내부 CSV/PDF 샘플, 또는 승인된 내부 접근 경로와 계정 범위
+- `price_basis`(개별/묶음), 포장 수량, 단가 계산, 가격 유형의 업무 정의
+- 로컬 연결 대상(Codex, Claude Code, Claude Desktop)과 해당 실행 환경
+
+스캔 문서 OCR, 자율 브라우저 탐색, 규칙 복구, 예약 운영은 추가 설계·검증이 필요합니다. ERP 연동과 분석·모의계산 기능은 이번 범위에서 제외했습니다.
+
+구현 범위와 검증 상태는 [IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)를 참고하세요.
+
+MCP로 조사 누락 조회, 검토 대기 브라우저 근거 제출, 부분 재시도와 체크포인트 재개를 지원합니다. [근거 보완과 조사 재개](docs/MCP_FOLLOWUP.ko.md)를 참고하세요.
+
+공카 한달·하루렌트 목록과 명시된 상세 URL의 화면 가격을 수집하며, 계약기간별 가격을 구분합니다. 목록 완료 판정에는 사이트의 총수가 필요하고 누락된 조건은 검토 상태로 유지합니다. 링크가 없는 상품 카드의 상세 URL 탐색에는 아직 브라우저 이동이 필요합니다. [수집 성능과 최적화 기준](docs/COLLECTION_PERFORMANCE.ko.md)에 비교 방법과 수집기 직접 실행 시간의 한계를 정리했습니다.
+
+체크포인트는 이제 원본을 보존하는 해시 기반 파일 저장 방식을 사용합니다. 백업할 때 SQLite뿐 아니라 `checkpoint_blobs/`, `evidence/`를 포함한 출력 폴더 전체를 보관하세요. [저장 방식과 호환성](docs/STORAGE_OPTIMIZATION.ko.md)을 참고하세요.
+
+출력 폴더 하나의 저장 상태는 `python -m su_crawler storage --output-dir "E:\path\to\one-output-directory"`로 삭제 없이 확인하고, `--apply`로 저장된 체크포인트가 참조하지 않는 내부 자료만 정리할 수 있습니다. 새로 저장하는 동일 원문·스크린샷은 파일을 공유하며 원본 증거·영수증·SQLite·엑셀은 보존합니다. 자동 정리의 기본 설정과 제한은 [보관 및 정리 정책](docs/STORAGE_OPTIMIZATION.ko.md#보관-및-정리-정책)에 있습니다.
+
+MCP 실행 설정으로 브라우저 재사용과 브라우저 동시성 2개를 선택해 비교할 수 있습니다. [브라우저 최적화와 검증 계획](docs/BROWSER_OPTIMIZATION.ko.md)을 참고하세요.
+
+버전을 게시하기 전 해당 커밋의 [CI 및 검증된 릴리즈 절차](docs/CI_RELEASE.ko.md)를 확인하세요.

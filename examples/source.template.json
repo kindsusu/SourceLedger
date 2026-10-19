@@ -1,0 +1,12 @@
+{
+  "name":"산업군 가격 수집",
+  "output_dir":"../outputs/production",
+  "products":[{"id":"replace_product","name":"실제 상품명으로 변경","identifiers":{"model":"REPLACE-MODEL"},"required_specs":{},"comparison_fields":["currency","unit","pack_quantity","tax","price_type"]}],
+  "sources":[{
+    "id":"replace_source","name":"실제 공급사로 변경","kind":"web",
+    "location":"https://example.com/product","allowed_domains":["example.com"],
+    "product_ids":["replace_product"],"backends":["http","playwright"],
+    "selectors":{"model":".model","price":".price","currency":".currency","unit":".unit","pack_quantity":".pack","tax":".tax","price_type":".price-type"},
+    "recipe":[],"internal":false,"respect_robots":true,"max_attempts":2,"timeout_seconds":30,"freshness_hours":24
+  }]
+}

@@ -1,0 +1,23 @@
+# Amazoncar capture and evidence replay
+
+This workflow is scoped to a fixed, reviewed product manifest. It collects public, rendered detail states for each available rent/lease mode and the short-term tariff page. The capture step records HTML, capture time, URL, selection state, and hashes. Keep the capture directory immutable for comparison.
+
+```powershell
+.venv/Scripts/python.exe -m su_crawler.amazoncar_collection --manifest C:\path\to\manifest.json --output C:\path\to\captures --concurrency 2
+.venv/Scripts/python.exe -m su_crawler.amazoncar_workflow --captures C:\path\to\captures --manifest C:\path\to\manifest.json --output C:\path\to\verified
+```
+
+Use a new output directory for each verification. `--no-export` skips the workbook but still writes SQLite and `verification.json`. The workflow checks that captured files match their hashes, re-extracts price text through the Amazoncar adapter, compares it against the original capture quote list, and asks the normal SourceLedger pipeline to validate and replay observations. A failed `evidence_gate_pass` must be investigated before treating the cohort as complete. `missing_product_ids`, `gaps`, `price_reextraction_differences`, and `evidence_replay_failures` identify separate causes.
+
+The manifest is a JSON object containing a nonempty `products` array. Each entry has a unique `href` that matches an approved new- or used-car detail path, and an optional listing `text`. Use URLs from your own reviewed manifest; this document does not include real product identifiers. This command does not generate the initial approval manifest. It checks robots rules before live requests and never logs in or submits a quote inquiry.
+
+Live collection uses one browser with two page workers by default. It writes a checkpoint after each product and retries failed products up to three times. Reusing a capture output directory resumes its successful checkpoints; use an empty directory for a fresh timing comparison. The final reconciliation enumerates public new/used catalog pages and new-car trim groups, including carousel pages. `complete_fixed_cohort` refers only to the original manifest. `complete_current_catalog`, `final_catalog`, and `catalog_issues` describe the final discovered catalog separately. Additions are reported rather than silently changing the benchmark denominator. A public listing can change during collection, so this is an observed catalog reconciliation, not a guarantee about inventory outside the public site.
+
+`stage-events.jsonl` records collection, short-term tariffs, and reconciliation boundaries. `verification.json` records extraction, database ingestion, source replay, and export durations. Report end-to-end subscription runtime separately, including AI/tool orchestration. A saved-evidence replay is not a fresh web crawl. Token usage must come from the subscription runtime; Python/browser work has no model token counter of its own.
+
+Mode changes require repeated stable controls and a changed quote array. Identical arrays after network quiescence remain explicit review cases rather than verified new quotes; missing displayed prices are also reported. These warnings are preserved in the fetch receipt and replayed during validation. Raw source text remains unchanged; declared conversions apply only to complete source tokens for an amount, term, or tax condition.
+
+The workbook's **Results** columns distinguish price field evidence, declared text conversion, and matched-condition comparison readiness. The original source strings remain in field evidence. A verified field does not establish a final commercial quote: absent billing frequency, currency, eligibility, or other terms remain unknown. The short-term tariff is kept for review when the displayed table lacks a currency marker. The workbook does not attest that a page is still current after its capture time. For a new measurement, acquire fresh captures and compare against a fixed manifest under the same conditions.
+
+
+Before a detail page is opened, the collector installs the shared fetch/XHR completion tracker. Each displayed quote mode must also pass a bounded check for response-body completion, no visible loading indicator, and stable quote text plus selected conditions. A direct `collect_detail()` call follows the same initialization path as a full batch. HTML, structured selections, and the quote snapshot are read in one browser task; readiness is checked on both sides before writing the evidence. Failed settlement does not emit a verified price. A stable page without a displayed quote remains an explicit review case. These safeguards cannot identify the business reason for a live price change or guarantee future values.

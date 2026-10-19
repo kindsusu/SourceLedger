@@ -1,0 +1,22 @@
+{
+  "name": "가격 수집 검증용 데모 — 실제 시장가격 아님",
+  "demo": true,
+  "output_dir": "../outputs/demo",
+  "products": [
+    {"id":"demo_a","name":"테스트 부품 A","identifiers":{"model":"TEST-A"}},
+    {"id":"demo_b","name":"테스트 부품 B","identifiers":{"model":"TEST-B"}},
+    {"id":"demo_c","name":"미등록 테스트 부품 C","identifiers":{"model":"TEST-C"}}
+  ],
+  "sources": [
+    {
+      "id":"catalog","name":"합성 HTML 카탈로그","kind":"file","location":"fixtures/catalog.html",
+      "product_ids":["demo_a","demo_b","demo_c"], "row_selector":".product",
+      "selectors":{"model":".model","price":".price","currency":".currency","unit":".unit","pack_quantity":".pack","tax":".tax","price_type":".type","price_basis":".basis"}
+    },
+    {
+      "id":"quotation","name":"합성 내부 CSV 견적","kind":"file","location":"fixtures/quotation.csv",
+      "internal":true,"account_scope":"demo-company","product_ids":["demo_a","demo_b"],
+      "columns":{"model":"모델","price":"금액","currency":"통화","unit":"단위","pack_quantity":"포장수량","tax":"세금","price_type":"가격종류","valid_to":"유효기한","price_basis":"가격기준"}
+    }
+  ]
+}
