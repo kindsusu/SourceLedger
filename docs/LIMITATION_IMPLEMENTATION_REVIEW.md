@@ -13,13 +13,7 @@
 
 ## Validation
 
-The full headless suite initially reported **571 passed, 2 failed, 1 skipped** in 569.34 seconds. It exposed an unsupported issue-API request from ordinary jobs and a stale retry-test error expectation. Both were corrected. Subsequent affected integration suites passed **93 tests** and **23 tests**; these overlap and must not be summed as a unique test count. Final browser and follow-up validation is recorded below.
-
-The retained 20-page Jetcar/Gongcar corpus was reanalyzed with **181 observations**, including **15 cargo-term observations**. This used stored source evidence and no live site or model API requests. The frozen page scope had 20 complete page-coverage checks; the overall result remained `needs_review` because scope/price verification is separate. This is not a claim about today's inventory or collection speed.
-
-Final affected browser/UI/follow-up/issue/pipeline/redirect tests: **63 passed** in 151.06 seconds. This includes both previously failing test paths. These tests overlap the earlier suites. The entire suite was not repeated after the final fixes. The skip in the initial full run was the Windows-inapplicable Unix virtual-environment symlink test.
-
-Python compilation and Git whitespace checks passed. Existing uncommitted changes were preserved. Research evidence, databases and generated reports remain outside committed source assets.
+Use offline regression fixtures and replay retained captures to check section coverage, issue handling, and evidence association. Report incomplete pages as review items. Replay is not a fresh site visit, so it cannot establish current inventory or collection speed. Run the affected browser, UI, follow-up, issue, pipeline, and redirect tests after behavior changes.
 
 ## Remaining operational boundaries
 

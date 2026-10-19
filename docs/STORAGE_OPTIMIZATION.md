@@ -1,6 +1,6 @@
 # Checkpoint storage optimization
 
-Checkpoint format implemented and measured on 2026-10-13. SQLite remains the system of record; XLSX remains the report format. The original evidence files and existing research runs were unchanged by that measurement.
+Checkpoint format implemented and checked with retained captures. SQLite remains the system of record; XLSX remains the report format. The original evidence files and existing research runs were unchanged by that measurement.
 
 ## Behavior
 
@@ -12,19 +12,7 @@ Reading checks file size and SHA-256; missing or damaged files stop recovery. Ex
 
 ## Measurement
 
-The saved Jetcar/Gongcar subscription benchmark (525 URLs, 27 checkpoints) was replayed offline into disposable copies. Original files were opened read-only and left untouched. Every restored checkpoint matched the original decoded state exactly. Copied databases were vacuumed and closed before size measurement; no transient WAL/SHM files were counted.
-
-| Metric | Before | After |
-| --- | ---: | ---: |
-| Databases, including new checkpoint blob files | 882,274,304 bytes | 556,936,123 bytes |
-| Whole-run equivalent, retaining original evidence/reports/logs | 1,522,551,160 bytes | 1,197,212,979 bytes |
-| Checkpoint writes: median of 3 local replays | 17.72 seconds | 4.39 seconds |
-
-Whole-run storage decreases by 325,338,181 bytes (21.37%). Original evidence remains 628,630,060 bytes. The whole-run after figure substitutes measured compacted copies for the original databases; it is not a newly crawled run or a migration of the originals.
-
-Timing uses the same saved 20-page batch, growing from 1 to 20 captures with two writes per step (40 writes). Three runs per format used fresh local directories, with legacy followed by compact each time. Median checkpoint-write time decreases by 75.22%. This is **not** total collection, network, model, or report-generation time, nor a claim of equivalent end-to-end speedup. Memory usage still includes decoded captures.
-
-Validation: 16 checkpoint/resume/follow-up integration tests passed, plus all 27 real checkpoint round trips. Local benchmark details remain outside Git in `.tmp/checkpoint-storage-20261013-115124/result.json`.
+Storage changes should be compared by replaying the same retained captures into disposable directories. Verify decoded checkpoint equality and source-file hashes before comparing database, blob, evidence, report, and elapsed-write sizes separately. Compression savings do not imply shorter total collection time. Site-specific measurements remain in ignored local benchmark records.
 
 ## Retention and maintenance
 
@@ -50,4 +38,4 @@ After a finalized checkpoint is saved, the same conservative cleanup runs at mos
 {"automatic_cleanup": true, "grace_days": 7, "maintenance_interval_hours": 24}
 ```
 
-Set `automatic_cleanup` to `false` to disable scheduled maintenance. The latest maintenance status is written under `.checkpoint-maintenance/status.json`; a failed maintenance attempt does not fail collection. The default policy does not remove evidence or old reports. For an archive already on another volume, assess duplicates and references separately before any one-time archival consolidation. The 2026-10-13 size and speed figures above are historical checkpoint-format measurements, not a measured saving from this retention policy.
+Set `automatic_cleanup` to `false` to disable scheduled maintenance. The latest maintenance status is written under `.checkpoint-maintenance/status.json`; a failed maintenance attempt does not fail collection. The default policy does not remove evidence or old reports. For an archive already on another volume, assess duplicates and references separately before any one-time archival consolidation. The retention policy itself does not establish a measured saving for any particular collection.

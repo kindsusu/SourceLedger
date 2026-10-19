@@ -8,6 +8,7 @@ recursive-include examples/fixtures *.csv *.html
 recursive-include docs *.md
 recursive-include docs/architecture *.json *.html *.png *.txt
 recursive-include tests *.py *.html
+include tests/fixtures/README.md
 prune .tmp
 prune .sourceledger
 prune .research

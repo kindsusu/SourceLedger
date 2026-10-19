@@ -18,12 +18,6 @@ Codex Sol and Claude Opus remain recommendations for their respective host apps.
 
 Offline checks cover real overlapping HTTP workers, combined HTTP/browser concurrency limits, host cooldown isolation, transient retries, interruption/recovery accounting, plan-setting propagation, compact live progress, and Exa suggestions remaining unverified.
 
-A replay used 6 saved Jetcar and 6 saved Gongcar pages with the same captured responses in both modes: 12 covered URLs and 44 observations, with matching prices, raw conditions and field evidence. Each mock fetch included a controlled 0.30-second delay; this is a correctness replay, not live-site performance evidence. Browser processing and report generation remain serial, so the earlier two-workspace benchmark's speedup must not be applied to this implementation.
-
-Storage-copy measurements show a 21.37% whole-run-equivalent saving and 75.22% lower checkpoint-write time in the specific local replay. Subsequent live subscription runs are recorded in [collection performance](COLLECTION_PERFORMANCE.md). Exa recall, cost and blocked-page success were not tested.
-
-Existing historical benchmark reports describe their original configurations. No original research results were overwritten and no paid external service was enabled.
-
-The initial regression validation was **477 passed, 1 skipped** with headless browser fixtures. The replay produced 44 matching observations across 12 saved URLs. No live website or model API was called for that offline validation.
+Offline tests compare the same saved responses under sequential and parallel settings, including price, raw conditions, and field evidence. This checks correctness but cannot establish live-site speed. Storage and model effects require separate measurements; site-specific data stays in ignored local research workspaces. Exa recall, cost, and blocked-page success have not been measured.
 
 The subsequent [server batch feature](SERVER_BATCH_COLLECTION.md) removes per-batch AI plan/approval cycles while retaining bounded checkpoints and reports. Dynamic list completion now waits for stable button absence and card content, rather than a 0.4-second observation. New list-expansion browser tests passed (14), and related batch/MCP/runtime tests passed (51). The expanded whole suite reported 489 passed, 1 skipped and one intermittent legacy UI worker-start failure; the failed case later passed independently, but its intermittent cause remains unresolved. This is not an all-green full-suite result.

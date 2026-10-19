@@ -6,7 +6,7 @@
 
 SourceLedger is a local, evidence-first tool for researching sources, collecting product prices, preserving source material, and creating XLSX reports. It never estimates prices or substitutes missing values with zero.
 
-For a fixed Amazoncar product cohort, SourceLedger can replay retained rendered captures into SQLite and export one XLSX workbook. The price field, declared text normalization, and comparison readiness are reported separately. A matching field is not a claim that the current website still shows that value; source-file replay and catalog completeness have their own checks. See [Amazoncar capture and replay](docs/amazoncar.md).
+For a fixed list of approved product pages, SourceLedger can replay retained rendered captures into SQLite and export an XLSX workbook. The price field, declared text normalization, and comparison readiness are reported separately. A matching field does not prove that the current website still shows that value; source-file replay and catalog completeness have their own checks. See [capture and replay](docs/amazoncar.md).
 
 Each collection records the source URL, UTC timestamp, raw fields, CSS/JSON/table location, evidence-file path, and SHA-256 hash. A row can be `verified` only when the product, price, and currency are supported by source evidence. A verified row is excluded from comparisons when its conditions are insufficient (`comparable=false`). For example, SourceLedger does not calculate a normalized unit price without source evidence of whether a price is for a pack or an individual item.
 
@@ -26,7 +26,7 @@ Read the [architecture and Archify guide](docs/ARCHITECTURE.md) ([한국어](doc
 
 ## Quick start
 
-Recommended host models are **Sol for Codex** and **Opus for Claude**; existing model choices remain unchanged. Before collecting, review the execution plan showing selected sites, requested/unknown host model, page/time limits, and checkpoints. MCP clients can read `get_research_execution_plan`. New UI/MCP jobs default to bounded concurrency 2 in one workspace (up to 2 per host, browser capture 1). Choose 1 for sequential collection. Use `get_research_progress` for compact MCP polling. Exa discovery through an existing host connection is optional; see [implementation details](docs/CRAWLER_IMPROVEMENTS.md). See the [measured performance](docs/COLLECTION_PERFORMANCE.md) and [Exa MCP / Scrapy architecture review](docs/UPSTREAM_ARCHITECTURE_REVIEW.md).
+Recommended host models are **Sol for Codex** and **Opus for Claude**; existing model choices remain unchanged. Before collecting, review the execution plan showing selected sites, requested/unknown host model, page/time limits, and checkpoints. MCP clients can read `get_research_execution_plan`. New UI/MCP jobs default to bounded concurrency 2 in one workspace (up to 2 per host, browser capture 1). Choose 1 for sequential collection. Use `get_research_progress` for compact MCP polling. Exa discovery through an existing host connection is optional; see [implementation details](docs/CRAWLER_IMPROVEMENTS.md). See the [performance measurement method](docs/COLLECTION_PERFORMANCE.md) and [Exa MCP / Scrapy architecture review](docs/UPSTREAM_ARCHITECTURE_REVIEW.md).
 
 For a large fixed inventory, approve the full plan once and use `start_research_batch_run`. The server processes bounded batches and persists checkpoints without a separate AI approval cycle for each batch. See [approved inventory collection](docs/SERVER_BATCH_COLLECTION.md).
 
@@ -277,9 +277,9 @@ See [implementation status](docs/STATUS.md) for implemented scope and validation
 
 MCP follow-up supports coverage-gap inspection, review-only browser evidence, partial retry and checkpoint resume. See [Evidence and recovery](docs/MCP_FOLLOWUP.md).
 
-Gongcar short-rental adapters support monthly/daily catalog cards and explicit detail URLs, including visible rental-period prices. Catalog completeness requires a declared count; missing conditions stay under review. Non-link product-card discovery still needs browser navigation. See [collection performance and optimization criteria](docs/COLLECTION_PERFORMANCE.md) for measured experiments and the limits of engine-only timing.
+Gongcar short-rental adapters support monthly/daily catalog cards and explicit detail URLs, including visible rental-period prices. Catalog completeness requires a declared count; missing conditions stay under review. Non-link product-card discovery still needs browser navigation. See [collection performance and optimization criteria](docs/COLLECTION_PERFORMANCE.md) for the comparison method and the limits of engine-only timing.
 
-Checkpoint captures now use lossless, content-addressed storage. Back up the entire output directory, including `checkpoint_blobs/` and `evidence/`, alongside SQLite. See [storage measurements and compatibility](docs/STORAGE_OPTIMIZATION.md).
+Checkpoint captures now use lossless, content-addressed storage. Back up the entire output directory, including `checkpoint_blobs/` and `evidence/`, alongside SQLite. See [storage behavior and compatibility](docs/STORAGE_OPTIMIZATION.md).
 
 To inspect one output directory before storage maintenance, run `python -m su_crawler storage --output-dir "E:\path\to\one-output-directory"`; add `--apply` to remove only checkpoint internals unreachable from saved checkpoints. New identical source captures and screenshots share files, while source evidence, receipts, SQLite and XLSX are retained. See [retention and maintenance](docs/STORAGE_OPTIMIZATION.md#retention-and-maintenance) for the default automatic policy and its limits.
 

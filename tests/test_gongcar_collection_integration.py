@@ -16,7 +16,7 @@ URL = "https://gongcar.kr/rentpass"
 def _plan():
     return {"id": "catalog", "state": "confirmed", "topic": {
         "industry": "Vehicle rental", "product": "Passenger vehicle", "market": "South Korea"},
-        "include_terms": ["모닝"], "exclude_terms": [], "conditions": [], "excluded_urls": [],
+        "include_terms": ["가상차량25 가상차량14"], "exclude_terms": [], "conditions": [], "excluded_urls": [],
         "candidates": [{"id": "rentpass", "url": URL, "selected": True}],
     }
 

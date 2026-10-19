@@ -25,15 +25,15 @@ def run(fixture, path, *, html=None, count=None):
 
 
 @pytest.mark.parametrize('fixture,path,count,price', [
-    ('rentpass', 'rentpass', 18, '289000'),
-    ('longterm', 'longterm', 20, '167610'),
-    ('monthly_rent', 'monthly', 26, '379000'),
-    ('daily_rent', 'daily', 7, '190000'),
-    ('monthly_rent_38', 'monthly/38', 4, '460000'),
-    ('monthly_rent_43', 'monthly/43', 4, '440000'),
-    ('monthly_rent_54', 'monthly/54', 4, '480000'),
-    ('daily_rent_5', 'daily/5', 1, '190000'),
-    ('daily_rent_6', 'daily/6', 1, '200000'),
+    ('rentpass', 'rentpass', 18, '407165'),
+    ('longterm', 'longterm', 20, '240306'),
+    ('monthly_rent', 'monthly', 26, '542307'),
+    ('daily_rent', 'daily', 7, '270000'),
+    ('monthly_rent_38', 'monthly/38', 4, '700892'),
+    ('monthly_rent_43', 'monthly/43', 4, '659522'),
+    ('monthly_rent_54', 'monthly/54', 4, '733988'),
+    ('daily_rent_5', 'daily/5', 1, '259612'),
+    ('daily_rent_6', 'daily/6', 1, '273402'),
 ])
 def test_all_nine_retained_legacy_urls_support_current_redirect_targets(fixture, path, count, price):
     candidates, coverage = run(fixture, path, count=count)
@@ -64,7 +64,7 @@ def test_observed_price_conditions_preserve_missing_terms_and_upfront_roles():
     assert longterm[0].fields['advance_percent'] == '30'
     assert longterm[0].fields['term_months'] == '36'
     assert longterm[2].fields['term_months'] == '48'
-    assert longterm[3].fields['observed_source_id'] == 'sorento-hev'
+    assert longterm[3].fields['observed_source_id'] == 'sample-vehicle-081'
     assert 'deposit_percent' not in longterm[0].fields
 
 
@@ -126,13 +126,13 @@ def test_full_longterm_sheet_all_vehicles_periods_and_payment_conditions():
     assert coverage['price_count'] == 617
     assert coverage['unavailable_count'] == 22
     assert coverage['status'] == 'complete'
-    sorento = [c for c in candidates if c.fields.get('observed_source_id') == 'sorento']
-    assert len(sorento) == 9
-    assert len({c.fields['item_id'] for c in sorento}) == 9
-    assert {c.fields['term_months'] for c in sorento} == {'36', '48', '60'}
-    assert {c.fields['payment_condition'] for c in sorento} == {'무보증', '보증금 30%', '선납금 30%'}
-    assert all('보험료·자동차세 포함' in c.fields['price_basis_text'] for c in sorento)
-    assert all('연 1만km' in c.fields['price_conditions'] for c in sorento)
+    sample_sorento = [c for c in candidates if c.fields.get('observed_source_id') == 'sample-vehicle-080']
+    assert len(sample_sorento) == 9
+    assert len({c.fields['item_id'] for c in sample_sorento}) == 9
+    assert {c.fields['term_months'] for c in sample_sorento} == {'36', '48', '60'}
+    assert {c.fields['payment_condition'] for c in sample_sorento} == {'무보증', '보증금 30%', '선납금 30%'}
+    assert all('보험료·자동차세 포함' in c.fields['price_basis_text'] for c in sample_sorento)
+    assert all('연 1만km' in c.fields['price_conditions'] for c in sample_sorento)
     assert all('price' not in c.fields for c in candidates if c.fields.get('availability') == '문의')
     assert all('price_kind' not in c.derived_values for c in candidates)
 
@@ -145,7 +145,7 @@ def test_source_ids_stay_stable_after_price_changes_and_duplicates_fall_back():
     assert candidates[0].fields['item_id'] == changed[0].fields['item_id']
     assert changed[0].fields['price'] == '299000'
     assert changed[0].derived_values['price_kind'] == 'from'
-    soup.select('#deals > button')[1]['data-id'] = 'morning'
+    soup.select('#deals > button')[1]['data-id'] = 'sample-vehicle-069'
     ambiguous, _ = run('rentpass', 'rentpass', html=str(soup).encode(), count=18)
     assert ambiguous[0].fields['item_id'].startswith('local-observation-')
     assert 'cross_run_identity_uncertain' in ambiguous[0].review_flags
@@ -175,7 +175,7 @@ def test_other_full_price_sheets_preserve_each_observed_condition(fixture, path,
         minimum = next(c for c in candidates if c.fields['payment_condition'] == '최소 보증금')
         assert 'deposit_amount' not in minimum.fields
         assert 'deposit_percent' not in minimum.fields
-        assert minimum.fields['price'] == '379000'
+        assert minimum.fields['price'] == '542307'
         assert candidates[0].fields['availability'] == '재고문의'
     else:
         assert {c.fields['term_months'] for c in candidates} == {'1', '6', '12', '24'}

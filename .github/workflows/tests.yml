@@ -68,6 +68,8 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install build
+      - name: Check public repository inputs
+        run: python scripts/check_public_repository.py
       - run: python -m build
       - name: Install wheel in an isolated environment
         run: |

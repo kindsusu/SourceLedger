@@ -6,7 +6,7 @@
 
 SourceLedger는 출처를 탐색하고 상품 가격과 원문·근거를 보존하며 XLSX 보고서를 만드는 로컬 도구입니다. 가격을 추정하거나 빈 값을 0으로 채우지 않습니다.
 
-고정한 아마존카 상품 목록에 대해서는 보존한 렌더링 캡처를 SQLite로 재처리하고 XLSX 보고서 하나를 만들 수 있습니다. 가격 필드의 원문 일치, 명시된 값 변환, 조건 비교 가능 여부를 별도로 표시합니다. 필드 일치만으로 현재 웹사이트의 가격이나 전체 목록 완전성이 입증되는 것은 아닙니다. [아마존카 수집·재처리 안내](docs/amazoncar.md)를 참고하세요.
+승인된 상품 페이지 목록에 대해서는 보존한 렌더링 캡처를 SQLite로 재처리하고 XLSX 보고서를 만들 수 있습니다. 가격 필드의 원문 일치, 명시된 값 변환, 조건 비교 가능 여부를 별도로 표시합니다. 필드 일치만으로 현재 웹사이트의 가격이나 전체 목록 완전성이 입증되는 것은 아닙니다. [수집·재처리 안내](docs/amazoncar.md)를 참고하세요.
 
 수집 결과에는 원본 URL, 수집 시각(UTC), 원문 필드, CSS/JSON/표 위치, 증거 파일 경로와 SHA-256을 남깁니다. 상품·가격·통화가 원문 근거와 함께 확인된 행은 `verified`가 될 수 있습니다. 비교 조건이 부족하면 `verified`여도 `comparable=false`이며 가격 비교에는 넣지 않습니다. 특히 묶음(pack)인지 개별(each)인지 원문 `price_basis` 근거가 없으면 정규화 단가를 계산하지 않고 빈칸으로 남깁니다.
 
@@ -18,7 +18,7 @@ SourceLedger는 출처를 탐색하고 상품 가격과 원문·근거를 보존
 
 범위 판정·저장 원본 재분석·남은 한계는 [수집 정확성 개선](docs/CROSS_SITE_RELIABILITY_2026-10-14.ko.md)을 참고하세요.
 
-추천 모델은 **Codex의 Sol, Claude의 Opus**이며 기존 사용자 선택은 유지합니다. 수집 전 실행 계획에서 대상 사이트, 요청한 모델 또는 확인되지 않은 호스트 모델, 시간·페이지 한도와 체크포인트를 검토합니다. MCP에서는 `get_research_execution_plan`으로 조회합니다. 새 UI·MCP 작업은 한 작업 공간에서 동시 수집 2개를 기본으로 사용합니다(사이트당 최대 2개, 브라우저 1개). 1개를 선택하면 순차 실행합니다. MCP 진행 조회는 `get_research_progress`를 사용합니다. 연결된 앱을 통한 Exa 출처 탐색은 선택 사항입니다. [적용 내용](docs/CRAWLER_IMPROVEMENTS.ko.md)을 참고하세요. [성능 실측](docs/COLLECTION_PERFORMANCE.ko.md)과 [Exa MCP·Scrapy 구조 검토](docs/UPSTREAM_ARCHITECTURE_REVIEW.ko.md)를 참고하세요.
+추천 모델은 **Codex의 Sol, Claude의 Opus**이며 기존 사용자 선택은 유지합니다. 수집 전 실행 계획에서 대상 사이트, 요청한 모델 또는 확인되지 않은 호스트 모델, 시간·페이지 한도와 체크포인트를 검토합니다. MCP에서는 `get_research_execution_plan`으로 조회합니다. 새 UI·MCP 작업은 한 작업 공간에서 동시 수집 2개를 기본으로 사용합니다(사이트당 최대 2개, 브라우저 1개). 1개를 선택하면 순차 실행합니다. MCP 진행 조회는 `get_research_progress`를 사용합니다. 연결된 앱을 통한 Exa 출처 탐색은 선택 사항입니다. [적용 내용](docs/CRAWLER_IMPROVEMENTS.ko.md)을 참고하세요. [성능 측정 방법](docs/COLLECTION_PERFORMANCE.ko.md)과 [Exa MCP·Scrapy 구조 검토](docs/UPSTREAM_ARCHITECTURE_REVIEW.ko.md)를 참고하세요.
 
 고정된 전체 목록은 계획을 한 번 승인한 뒤 `start_research_batch_run`으로 수집할 수 있습니다. 서버가 배치와 체크포인트를 관리하므로 배치마다 AI의 계획·승인을 반복하지 않습니다. [전체 목록 배치 수집](docs/SERVER_BATCH_COLLECTION.ko.md)을 참고하세요.
 
@@ -269,9 +269,9 @@ CAPTCHA·접근 확인 화면의 제한된 연결 AI 지원은 [브라우저 인
 
 MCP로 조사 누락 조회, 검토 대기 브라우저 근거 제출, 부분 재시도와 체크포인트 재개를 지원합니다. [근거 보완과 조사 재개](docs/MCP_FOLLOWUP.ko.md)를 참고하세요.
 
-공카 한달·하루렌트 목록과 명시된 상세 URL의 화면 가격을 수집하며, 계약기간별 가격을 구분합니다. 목록 완료 판정에는 사이트의 총수가 필요하고 누락된 조건은 검토 상태로 유지합니다. 링크가 없는 상품 카드의 상세 URL 탐색에는 아직 브라우저 이동이 필요합니다. [수집 성능과 최적화 기준](docs/COLLECTION_PERFORMANCE.ko.md)에 측정 결과와 수집기 직접 실행 시간의 한계를 정리했습니다.
+공카 한달·하루렌트 목록과 명시된 상세 URL의 화면 가격을 수집하며, 계약기간별 가격을 구분합니다. 목록 완료 판정에는 사이트의 총수가 필요하고 누락된 조건은 검토 상태로 유지합니다. 링크가 없는 상품 카드의 상세 URL 탐색에는 아직 브라우저 이동이 필요합니다. [수집 성능과 최적화 기준](docs/COLLECTION_PERFORMANCE.ko.md)에 비교 방법과 수집기 직접 실행 시간의 한계를 정리했습니다.
 
-체크포인트는 이제 원본을 보존하는 해시 기반 파일 저장 방식을 사용합니다. 백업할 때 SQLite뿐 아니라 `checkpoint_blobs/`, `evidence/`를 포함한 출력 폴더 전체를 보관하세요. [용량 실측과 호환성](docs/STORAGE_OPTIMIZATION.ko.md)을 참고하세요.
+체크포인트는 이제 원본을 보존하는 해시 기반 파일 저장 방식을 사용합니다. 백업할 때 SQLite뿐 아니라 `checkpoint_blobs/`, `evidence/`를 포함한 출력 폴더 전체를 보관하세요. [저장 방식과 호환성](docs/STORAGE_OPTIMIZATION.ko.md)을 참고하세요.
 
 출력 폴더 하나의 저장 상태는 `python -m su_crawler storage --output-dir "E:\path\to\one-output-directory"`로 삭제 없이 확인하고, `--apply`로 저장된 체크포인트가 참조하지 않는 내부 자료만 정리할 수 있습니다. 새로 저장하는 동일 원문·스크린샷은 파일을 공유하며 원본 증거·영수증·SQLite·엑셀은 보존합니다. 자동 정리의 기본 설정과 제한은 [보관 및 정리 정책](docs/STORAGE_OPTIMIZATION.ko.md#보관-및-정리-정책)에 있습니다.
 

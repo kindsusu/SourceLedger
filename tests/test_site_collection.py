@@ -10,7 +10,7 @@ from su_crawler.storage import Store
 
 FIXTURES = Path(__file__).parent / "fixtures" / "adapters"
 URLS = {
-    "jetcar": "https://www.jetcar.kr/sub0301/5874",
+    "jetcar": "https://www.jetcar.kr/sub0301/987654",
     "gongcar": "https://gongcarrent.kr/detail-quote",
     "funrent": "https://go.funrentcar.com/",
 }
@@ -101,8 +101,8 @@ def test_gongcar_current_host_keeps_popular_and_promotion_conditions_separate(tm
     store = Store(output)
     rows = store.observations(result["id"])
     store.close()
-    assert {row["raw_fields"]["name"] for row in rows} == {"더 뉴 모닝", "더 뉴 레이", "캐스퍼", "아르카나"}
-    assert {row["amount"] for row in rows} == {"290000", "310000", "460000"}
+    assert {row["raw_fields"]["name"] for row in rows} == {"가상차량25 가상차량14", "가상차량25 가상차량12", "가상차량13", "가상차량24"}
+    assert {row["amount"] for row in rows} == {"408544", "431987", "700892"}
     assert all(row["status"] == "review" and not row["comparable"] for row in rows)
     assert all(row["rental_conditions"]["term_months"] == 48 for row in rows)
     popular = [row for row in rows if row["raw_fields"]["section"] == "rentpass_popular"]
@@ -151,7 +151,7 @@ def test_no_identifier_becomes_explicit_coverage_gap(tmp_path):
 @pytest.mark.parametrize("urls,max_pages,match", [
     (["https://unsupported.example/item"], 5, "supported site adapter"),
     ([URLS["jetcar"]], 0, "max_pages"),
-    ("https://www.jetcar.kr/sub0301/5874", 5, "urls must be a list"),
+    ("https://www.jetcar.kr/sub0301/987654", 5, "urls must be a list"),
 ])
 def test_bad_inputs_fail_before_collection(tmp_path, urls, max_pages, match):
     with pytest.raises(ValueError, match=match):

@@ -48,23 +48,8 @@ invalidation, run-bound evidence re-extraction, and XLSX output. A local Chrome
 test checks selected controls, hidden content, and snapshot sanitization.
 The generated report was reopened and its changed views were rendered.
 
-Bounded live checks on 2026-09-22:
+Live-site checks and collected examples belong in ignored local research workspaces. Regression fixtures verify term-specific prices, calculator estimates, missing selections, rendered visibility, and address classification. These tests do not establish whole-site completeness.
 
-- Jetcar: one supplied detail URL produced three term-specific observations in
-  the normal SQLite/XLSX pipeline. Static HTML visibility remains unconfirmed;
-  incomplete conditions keep these observations out of automatic comparison.
-- Funrent: a supervised read-only manufacturer/vehicle/deposit/term recipe
-  produced one calculator estimate. The observed amount stayed null; the
-  estimated amount stayed separate. The unselected landing page correctly
-  produced a coverage gap. No inquiry was submitted.
-- Gongcar: the Codex browser displayed the quote table. Its external headers
-  and merged rows informed the parser and synthetic regression cases. The
-  program's separate Playwright session timed out waiting for the table, so
-  live automatic collection for this page is **not established**.
-- The first network check exposed a false rejection of public NAT64 answers;
-  embedded-address classification fixed it without allowing private targets.
-
-These are samples, not a whole-site accuracy or completeness measurement.
 Remaining work includes bounded listing/pagination traversal, selected-option
 enumeration, and a reviewed handoff from a host application's browser when the
 program's own browser cannot render a page. The current code does not silently

@@ -35,10 +35,4 @@ Launch failures have a sanitized `browser_launch_failed` stage. The program does
 
 ## Validation and limits
 
-A replay of the retained 20-page comparison corpus recovers **181 observation rows**, including **15 Jetcar cargo term rows**, versus the previous **169 rows / 3 cargo rows**. Replay uses saved source bytes, with no public-site requests or model API calls. Counts describe this historical corpus, not today's site inventory.
-
-Regression fixtures cover clothing variants, component specifications, package quantities, explicit price tiers, source/ledger mismatches, traversal limits, checkpoint reanalysis, and UI/XLSX coverage.
-
-Validation used `SOURCELEDGER_HEADLESS=1`. The full suite reported **540 passed, 2 failed, 1 skipped** in 532.35 seconds. The interruption fixture was corrected to explicitly wait for a committed checkpoint instead of assuming FIFO completion; the MCP fixture's worker idle period now accommodates process startup. After those corrections and the final same-tab redirect changes, the affected runtime/MCP/UI/batch suite passed **52 tests** in 102.02 seconds. These are overlapping test sets, not 592 distinct tests. The one skip is a Unix virtual-environment symlink test that does not apply to Windows. The entire suite was not repeated after this final affected-test run.
-
-Remaining work: generic interactive option enumeration and site-wide boundary verification still require a reviewed recipe; fresh end-to-end performance gains must be measured with the same approved manifest and checkpoint settings. No live speedup is claimed from the offline replay. This Windows environment previously failed visible Chromium launch before navigation; headless test success does not resolve that environment issue.
+Regression fixtures cover product variants, explicit price tiers, source-to-ledger mismatches, traversal bounds, checkpoint reanalysis, and UI/XLSX coverage. Saved-capture replay verifies parser behavior but does not prove the current site inventory or live speed. Generic interactive option enumeration and full-site boundary checks still require a reviewed recipe. Browser launch capability must be checked in the requested display mode.

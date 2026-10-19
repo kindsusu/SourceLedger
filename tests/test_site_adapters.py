@@ -32,12 +32,12 @@ def test_registry_has_versioned_render_requirements():
 
 
 def test_jetcar_emits_each_displayed_term_with_actual_listing_identity():
-    values = run("jetcar", "jetcar_detail.html", "https://www.jetcar.kr/sub0301/5874")
+    values = run("jetcar", "jetcar_detail.html", "https://www.jetcar.kr/sub0301/987654")
     assert [v.fields["term_months"] for v in values] == ["12", "24"]
-    assert [v.fields["price"] for v in values] == ["450000", "410000"]
-    assert values[0].fields["item_id"] == "5874"
+    assert [v.fields["price"] for v in values] == ["682965", "598846"]
+    assert values[0].fields["item_id"] == "987654"
     assert values[0].fields["deposit_amount"] == "500000"
-    assert values[0].fields["odometer_km"] == "1750"
+    assert values[0].fields["odometer_km"] == "18750"
     assert "annual_mileage_km" not in values[0].fields
     assert values[0].fields["currency"] == "KRW"
     assert "condition" not in values[0].fields
@@ -54,7 +54,7 @@ def test_jetcar_no_price_is_meaningful_review_candidate_and_ignores_script():
 
 
 def test_jetcar_static_html_does_not_claim_computed_visibility():
-    url = "https://www.jetcar.kr/sub0301/5874"
+    url = "https://www.jetcar.kr/sub0301/987654"
     source = Source("s", "jetcar", "web", url, ["p"], adapter="jetcar")
     result = FetchResult("s", "fetched", "http", (FIXTURES / "jetcar_detail.html").read_bytes(), final_url=url)
     values = extract(result, source)
@@ -66,8 +66,8 @@ def test_jetcar_normalizes_fractional_man_km_without_losing_precision():
     html = (FIXTURES / "jetcar_detail.html").read_text(encoding="utf-8")
     html = html.replace("12개월", "12개월 / 연 2.5만KM", 1)
     value = extract(
-        FetchResult("s", "fetched", "playwright", html.encode("utf-8"), final_url="https://www.jetcar.kr/sub0301/5874"),
-        Source("s", "jetcar", "web", "https://www.jetcar.kr/sub0301/5874", ["p"], adapter="jetcar"),
+        FetchResult("s", "fetched", "playwright", html.encode("utf-8"), final_url="https://www.jetcar.kr/sub0301/987654"),
+        Source("s", "jetcar", "web", "https://www.jetcar.kr/sub0301/987654", ["p"], adapter="jetcar"),
     )[0]
     assert value.fields["annual_mileage_km"] == "25000"
     assert value.evidence["annual_mileage_km"]["source_text"] == "연 2.5만KM"
@@ -77,7 +77,7 @@ def test_jetcar_normalizes_fractional_man_km_without_losing_precision():
 def test_jetcar_cargo_route_extracts_all_terms_and_checks_row_identity():
     url = "https://www.jetcar.kr/sub0701/16"
     html = (FIXTURES / "jetcar_detail.html").read_text(encoding="utf-8")
-    html = html.replace("/sub0301/5874", "/sub0701/16")
+    html = html.replace("/sub0301/987654", "/sub0701/16")
     html = html.replace('</table>\n<table hidden>',
                         '<tr><td>보증금 50 만원</td><td>36개월</td><td>월 390,000 원</td></tr>'
                         '<tr><td>보증금 50 만원</td><td>48개월</td><td>월 370,000 원</td></tr>'
@@ -103,12 +103,12 @@ def test_jetcar_cargo_route_extracts_all_terms_and_checks_row_identity():
 def test_jetcar_coverage_keeps_same_term_price_with_different_deposit_distinct():
     url = "https://www.jetcar.kr/sub0701/17"
     html = (FIXTURES / "jetcar_detail.html").read_text(encoding="utf-8")
-    html = html.replace("/sub0301/5874", "/sub0701/17")
-    html = html.replace('<tr><td>보증금 50 만원</td><td>24개월</td><td>월 410,000 원</td></tr>',
-                        '<tr><td>보증금 100 만원</td><td>12개월</td><td>월 450,000 원</td></tr>')
+    html = html.replace("/sub0301/987654", "/sub0701/17")
+    html = html.replace('<tr><td>보증금 50 만원</td><td>24개월</td><td>월 598,846 원</td></tr>',
+                        '<tr><td>보증금 100 만원</td><td>12개월</td><td>월 682,965 원</td></tr>')
     result = FetchResult("s", "fetched", "playwright", html.encode(), final_url=url)
     values = extract(result, Source("s", "jetcar", "web", url, ["p"], adapter="jetcar"))
-    assert [v.fields["price"] for v in values] == ["450000", "450000"]
+    assert [v.fields["price"] for v in values] == ["682965", "682965"]
     assert [v.fields["deposit_amount"] for v in values] == ["500000", "1000000"]
     assert jetcar_coverage(result, values)[0]["status"] == "complete"
     duplicate = [values[0], values[0]]
@@ -119,7 +119,7 @@ def test_jetcar_coverage_keeps_same_term_price_with_different_deposit_distinct()
 def test_jetcar_coverage_does_not_count_unparsed_or_hidden_rent_rows_as_complete():
     url = "https://www.jetcar.kr/sub0701/16"
     html = (FIXTURES / "jetcar_detail.html").read_text(encoding="utf-8")
-    html = html.replace("/sub0301/5874", "/sub0701/16")
+    html = html.replace("/sub0301/987654", "/sub0701/16")
     html = html.replace('</table>\n<table hidden>',
                         '<tr><td>보증금 50 만원</td><td>36개월</td><td>월 문의</td></tr>'
                         '</table>\n<table hidden>', 1)
@@ -134,7 +134,7 @@ def test_jetcar_coverage_does_not_count_unparsed_or_hidden_rent_rows_as_complete
 def test_gongcar_expands_rowspan_and_excludes_hidden_or_script_quotes():
     values = run("gongcar", "gongcar_rendered.html", "https://gongcarrent.kr/detail-quote")
     assert len(values) == 2
-    assert [v.fields["price"] for v in values] == ["680000", "640000"]
+    assert [v.fields["price"] for v in values] == ["951870", "922911"]
     assert values[1].fields["options"] == "기본 옵션"
     assert all("UNSAFE" not in v.fields["item_id"] for v in values)
     assert_complete_evidence(values[1])
@@ -145,27 +145,27 @@ def test_gongcar_rentpass_popular_starting_prices_keep_own_basis():
     assert len(values) == 4
     popular = [value for value in values if value.fields["section"] == "rentpass_popular"]
     promotion = [value for value in values if value.fields["section"] == "rentpass_promotion"]
-    assert [value.fields["name"] for value in popular] == ["더 뉴 모닝", "더 뉴 레이", "캐스퍼"]
-    assert [value.fields["price"] for value in popular] == ["290000", "310000", "310000"]
+    assert [value.fields["name"] for value in popular] == ["가상차량25 가상차량14", "가상차량25 가상차량12", "가상차량13"]
+    assert [value.fields["price"] for value in popular] == ["408544", "431987", "431987"]
     assert all(value.fields["term_months"] == "48" for value in values)
     assert all(value.fields["deposit_percent"] == "30" for value in popular)
     assert all("deposit_amount" not in value.fields for value in popular)
     assert all(value.derived_values["price_kind"] == "from" for value in popular)
     assert all("starting_price_not_fixed_quote" in value.review_flags for value in popular)
-    assert len(promotion) == 1 and promotion[0].fields["name"] == "아르카나"
-    assert promotion[0].fields["price"] == "460000"
+    assert len(promotion) == 1 and promotion[0].fields["name"] == "가상차량24"
+    assert promotion[0].fields["price"] == "700892"
     assert promotion[0].fields["deposit_amount"] == "0"
     assert "deposit_percent" not in promotion[0].fields
     assert "price_kind" not in promotion[0].derived_values
     assert_complete_evidence(values[0])
     assert_complete_evidence(promotion[0])
     observation = validate(
-        values[0], Product("p", "더 뉴 모닝", price_profile="rental"),
+        values[0], Product("p", "가상차량25 가상차량14", price_profile="rental"),
         Source("s", "gongcar", "web", "https://gongcar.kr/rentpass", ["p"], adapter="gongcar"),
         run_id="r", task_id="t", evidence_path="e", evidence_sha256="h",
         collected_at="2026-10-08T00:00:00Z", source_url="https://gongcar.kr/rentpass",
     )
-    assert observation.amount == "290000"
+    assert observation.amount == "408544"
     assert observation.status == "review" and not observation.comparable
     assert observation.rental_conditions["term_months"] == 48
     assert observation.rental_conditions["deposit_percent"] == "30"
@@ -185,12 +185,12 @@ def test_gongcar_rentpass_missing_popular_basis_fails_closed():
 def test_gongcar_public_layout_uses_external_headers_and_expands_rowspans():
     values = run("gongcar", "gongcar_public_layout.html", "https://gongcarrent.kr/public-quote")
     assert len(values) == 4
-    assert [value.fields["price"] for value in values] == ["510000", "470000", "535000", "489000"]
-    assert [value.fields["deposit_amount"] for value in values] == ["700000", "2468000", "700000", "2519000"]
+    assert [value.fields["price"] for value in values] == ["785011", "718819", "820865", "749157"]
+    assert [value.fields["deposit_amount"] for value in values] == ["962902", "19468000", "962902", "19519000"]
     assert values[0].fields["model"] == "2031 오로라 (전기 스탠다드)"
     assert values[0].fields["trim"] == "전기 스탠다드"
     assert values[0].fields["options"] == "안전 패키지 (긴급제동+후방센서)"
-    assert values[0].fields["vehicle_value"] == "24680000"
+    assert values[0].fields["vehicle_value"] == "41680000"
     assert values[0].fields["driver_age_condition"] == "만22세이상"
     assert values[0].fields["price_age_basis"] == "만 27세 기준"
     assert values[0].fields["price_basis"] == "monthly"
@@ -221,8 +221,8 @@ def test_gongcar_public_header_order_and_currency_are_strict(old, new):
 
 
 @pytest.mark.parametrize("old,new", [
-    ("700,000</td><td><span hidden", "700,000 ~ 900,000</td><td><span hidden"),
-    ("700,000</td><td>535,000", "12%</td><td>535,000"),
+    ("962,902</td><td><span hidden", "962,902 ~ 990,000</td><td><span hidden"),
+    ("962,902</td><td>820,865", "12%</td><td>820,865"),
 ])
 def test_gongcar_public_money_cells_reject_ranges_and_percentages(old, new):
     html = (FIXTURES / "gongcar_public_layout.html").read_text(encoding="utf-8").replace(old, new, 1)
@@ -266,8 +266,8 @@ def test_funrent_rendered_selection_is_estimate_and_preserves_approximation():
     value = run("funrent", "funrent_rendered.html", "https://go.funrentcar.com/")[0]
     assert value.fields["item_id"] == "casper:deposit=10:term=36"
     assert "price" not in value.fields
-    assert value.derived_values["estimated_price"] == "428000"
-    assert value.evidence["derived_values.estimated_price"]["source_text"] == "428,000원 ~"
+    assert value.derived_values["estimated_price"] == "629184"
+    assert value.evidence["derived_values.estimated_price"]["source_text"] == "629,184원 ~"
     assert value.fields["displayed_deposit"] == "보증금 약 150만원"
     assert "deposit_amount" not in value.fields
     assert value.value_origin == "calculator_estimate"
@@ -280,7 +280,7 @@ def test_funrent_rendered_selection_is_estimate_and_preserves_approximation():
         collected_at="2026-09-22T00:00:00Z", source_url="https://go.funrentcar.com/",
     )
     assert observation.amount is None
-    assert observation.derived_amount == "428000"
+    assert observation.derived_amount == "629184"
 
 
 def test_funrent_unrendered_or_ambiguous_selected_state_fails_closed():
@@ -296,11 +296,11 @@ def test_funrent_ignores_hidden_amount_descendants_and_requires_visible_month_ba
     original = (FIXTURES / "funrent_rendered.html").read_text(encoding="utf-8")
     source = Source("s", "funrent", "web", "https://go.funrentcar.com/", ["p"], adapter="funrent")
     mixed_amount = original.replace(
-        '<div id="estAmt">428,000원 ~</div>',
-        '<div id="estAmt"><span data-sourceledger-computed-hidden="true">999,999원</span>428,000원 ~</div>',
+        '<div id="estAmt">629,184원 ~</div>',
+        '<div id="estAmt"><span data-sourceledger-computed-hidden="true">999,999원</span>629,184원 ~</div>',
     )
     value = extract(FetchResult("s", "fetched", "playwright", mixed_amount.encode("utf-8")), source)[0]
-    assert value.derived_values["estimated_price"] == "428000"
+    assert value.derived_values["estimated_price"] == "629184"
     assert "999,999" not in value.evidence["derived_values.estimated_price"]["source_text"]
 
     hidden_cap = original.replace(

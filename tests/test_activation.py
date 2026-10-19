@@ -264,9 +264,9 @@ def test_activation_rejects_tampered_value_origin_and_derived_values(tmp_path):
 
 def test_adapter_evidence_requires_matching_browser_fetch_receipt(tmp_path):
     fixture = Path(__file__).parent / "fixtures" / "adapters" / "jetcar_detail.html"
-    url = "https://www.jetcar.kr/sub0301/5874"
+    url = "https://www.jetcar.kr/sub0301/987654"
     source = Source("jet", "Jetcar", "web", url, ["vehicle"], adapter="jetcar", account_scope="public")
-    product = Product("vehicle", "Vehicle", identifiers={"item_id": "5874"}, price_profile="rental")
+    product = Product("vehicle", "Vehicle", identifiers={"item_id": "987654"}, price_profile="rental")
     from su_crawler.models import CollectionConfig
 
     config = CollectionConfig("adapter", [product], [source], str(tmp_path), str(tmp_path))

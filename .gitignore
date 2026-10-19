@@ -16,6 +16,14 @@ workspace/
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+*.xlsx
+*.xls
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 docs/architecture/*.visual-check.*
 build/
 dist/
