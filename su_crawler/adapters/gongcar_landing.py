@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from ..models import Candidate, FetchResult, stable_id
-from .common import annotate_evidence, decimal_string, evidence, html_soup, is_visible, visible_text
+from .common import annotate_evidence, decimal_string, disambiguate_identical_ids, evidence, html_soup, is_visible, visible_text
 
 
 PRICE = re.compile(r"월\s*([\d,]+)\s*원\s*(~)?")
@@ -45,7 +45,7 @@ def extract(result: FetchResult, path: str, mode: str, visibility: str) -> list[
         specs = [node for node in card.select('.deal-spec') if is_visible(node)]
         spec = visible_text(specs[0]) if len(specs) == 1 else ""
         # Non-price attributes only: a price change must not look like a new offer.
-        item_id = 'local-observation-gongcar-' + stable_id(path, index, str(card.get('data-id') or ''),
+        item_id = 'local-observation-gongcar-' + stable_id(path, str(card.get('data-id') or ''),
                                                            visible_text(names[0]), spec, basis)
         fields = {"item_id": item_id, "name": visible_text(names[0]), "section": _key(path)}
         proofs = {"item_id": evidence(locator, item_id, raw, proof_kind="local_observation"),
@@ -103,7 +103,7 @@ def extract(result: FetchResult, path: str, mode: str, visibility: str) -> list[
                                     extraction_method='gongcar_landing_deal_cards', value_origin='observed',
                                     source_visibility=visibility, derived_values=derived,
                                     review_flags=flags, evidence_mode=mode))
-    return candidates
+    return disambiguate_identical_ids(candidates)
 
 
 def coverage(result: FetchResult, candidates: list[Candidate], path: str) -> list[dict]:

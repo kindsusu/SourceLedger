@@ -232,3 +232,24 @@ def annotate_evidence(proofs: dict[str, dict[str, Any]], mode: str,
             proof.setdefault("display_state", "visible" if visible else "unconfirmed")
             proof.setdefault("proof_kind", "rendered_text" if visible else "html_text")
     return proofs
+
+
+def disambiguate_identical_ids(candidates: list) -> list:
+    """Give later candidates with the same item_id an occurrence suffix (#2, #3, ...).
+
+    Identities are built from non-price, non-position attributes so re-ordering
+    distinct cards never changes them; only exact duplicates get a suffix.
+    """
+    seen: dict[str, int] = {}
+    for candidate in candidates:
+        item_id = candidate.fields.get("item_id")
+        if not item_id:
+            continue
+        seen[item_id] = seen.get(item_id, 0) + 1
+        if seen[item_id] > 1:
+            suffixed = f"{item_id}#{seen[item_id]}"
+            candidate.fields["item_id"] = suffixed
+            proof = candidate.evidence.get("item_id")
+            if isinstance(proof, dict) and proof.get("raw") == item_id:
+                proof["raw"] = suffixed
+    return candidates

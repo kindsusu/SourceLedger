@@ -6,7 +6,7 @@ import re
 from bs4 import Tag
 
 from ..models import Candidate, FetchResult, stable_id
-from .common import annotate_evidence, decimal_string, evidence, html_soup, is_visible, visible_text, won
+from .common import annotate_evidence, decimal_string, disambiguate_identical_ids, evidence, html_soup, is_visible, visible_text, won
 
 
 _PRICE = re.compile(r"^(월|일)\s*([\d,]+(?:\.\d+)?)\s*만원\s*(부터)?$")
@@ -96,7 +96,7 @@ def extract(result: FetchResult, path: str, mode: str, visibility: str) -> list[
         locator = f"gongcar:{path}:card:{index}"
         section = "monthly_catalog" if basis == "monthly" else "daily_catalog"
         # Non-price attributes only: a price change must not look like a new offer.
-        item_id = "local-observation-gongcar-" + stable_id(path, index, name, section, term[0] if term else "")
+        item_id = "local-observation-gongcar-" + stable_id(path, name, section, term[0] if term else "")
         fields = {"item_id": item_id, "name": name, "section": section}
         proofs = {"item_id": evidence(locator, item_id, raw_card, proof_kind="local_observation"),
                   "name": evidence(f"{locator}/h4", name, visible_text(names[0]), raw_card),
@@ -133,7 +133,7 @@ def extract(result: FetchResult, path: str, mode: str, visibility: str) -> list[
                                     extraction_method=f"gongcar_{path}_catalog_cards",
                                     value_origin="observed", source_visibility=visibility,
                                     derived_values=derived, review_flags=flags, evidence_mode=mode))
-    return candidates
+    return disambiguate_identical_ids(candidates)
 
 
 def section_coverage(result: FetchResult, candidates: list[Candidate], path: str) -> list[dict[str, object]]:
@@ -234,7 +234,7 @@ def extract_monthly_detail(result: FetchResult, path: str, mode: str, visibility
             continue
         locator = f"gongcar:{path}:period:{index}"
         raw_button = visible_text(button) or ""
-        item_id = "local-observation-gongcar-" + stable_id(path, index, term, name)
+        item_id = "local-observation-gongcar-" + stable_id(path, term, name)
         fields = {"item_id": item_id, "name": name, "section": "monthly_detail",
                   "term_months": term, "price": amount, "currency": "KRW", "price_basis": "monthly"}
         proofs = {"item_id": evidence(locator, item_id, raw_button, proof_kind="local_observation"),
@@ -266,7 +266,7 @@ def extract_monthly_detail(result: FetchResult, path: str, mode: str, visibility
                                     review_flags=["cross_run_identity_uncertain",
                                                   "deposit_or_advance_role_unresolved"],
                                     evidence_mode=mode))
-    return candidates
+    return disambiguate_identical_ids(candidates)
 
 
 def extract_daily_detail(result: FetchResult, path: str, mode: str, visibility: str) -> list[Candidate]:

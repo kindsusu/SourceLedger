@@ -229,8 +229,11 @@ def test_gongcar_public_money_cells_reject_ranges_and_percentages(old, new):
     source = Source("s", "gongcar", "web", "https://gongcarrent.kr/public-quote", ["p"], adapter="gongcar")
     result = FetchResult("s", "fetched", "playwright", html.encode("utf-8"), final_url=source.location)
     values = extract(result, source)
-    assert len(values) == 3
-    assert all(value.fields["deposit_amount"] not in {"700000 ~ 900000", "12"} for value in values)
+    # The offer row is kept for review, but the malformed amount is never recorded.
+    assert len(values) == 4
+    assert all(value.fields.get("deposit_amount") not in {"700000 ~ 900000", "12"} for value in values)
+    malformed = [value for value in values if "deposit_amount" not in value.fields]
+    assert len(malformed) == 1 and "deposit_not_won_amount" in malformed[0].review_flags
 
 
 def test_gongcar_public_model_without_parenthetical_trim_does_not_invent_trim():

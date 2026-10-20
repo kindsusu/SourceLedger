@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from bs4 import NavigableString, Tag
 
 from ..models import Candidate, FetchResult, Source, stable_id
-from .common import (annotate_evidence, decimal_string, evidence, evidence_mode, html_soup, is_visible, text,
+from .common import (annotate_evidence, disambiguate_identical_ids, decimal_string, evidence, evidence_mode, html_soup, is_visible, text,
                      unstruck_text, visible_text, won, won_amount)
 
 
@@ -112,8 +112,14 @@ def _public_candidates(table: Tag, table_index: int, visibility: str, mode: str)
         vehicle_value = _won_integer(values[vehicle_col])
         deposit = _won_integer(values[deposit_col])
         price = _won_integer(values[price_col])
-        if not all((model, driver_age, option, vehicle_value, deposit, price)):
-            continue
+        if not all((model, driver_age, option)):
+            continue  # Not an identifiable offer row.
+        # A row whose price, deposit or vehicle value is not one won amount
+        # (문의, "-", 무보증) is kept with those fields absent and a review flag,
+        # never dropped and never guessed.
+        review_flags = [flag for flag, value in (("price_inquiry_or_unavailable", price),
+                                                 ("deposit_not_won_amount", deposit),
+                                                 ("vehicle_value_not_won_amount", vehicle_value)) if value is None]
         trim_match = re.search(r"\(([^()]*)\)\s*$", model)
         trim = trim_match.group(1).strip() if trim_match else None
         # Driver age and vehicle value are offer conditions; rows differing only
@@ -127,6 +133,13 @@ def _public_candidates(table: Tag, table_index: int, visibility: str, mode: str)
             "vehicle_value": vehicle_value, "deposit_amount": deposit,
             "price": price, "currency": "KRW", "price_basis": "monthly",
         }
+        if price is None:
+            fields.pop("currency")
+            if values[price_col]:
+                fields["availability"] = values[price_col]
+        for key in ("vehicle_value", "deposit_amount", "price"):
+            if fields.get(key) is None:
+                fields.pop(key, None)
         if price_age_basis:
             fields["price_age_basis"] = price_age_basis
         if trim:
@@ -147,11 +160,19 @@ def _public_candidates(table: Tag, table_index: int, visibility: str, mode: str)
             proofs["trim"] = evidence(f"{location}/td:{model_col + 1}", trim, values[model_col], raw_row)
         if price_age_basis:
             proofs["price_age_basis"] = evidence(f"table:{table_index}/header:{price_col + 1}", price_age_basis, headers[price_col])
+        for key in ("vehicle_value", "deposit_amount"):
+            if key not in fields:
+                proofs.pop(key)
+        if price is None:
+            proofs.pop("currency")
+            if "availability" in fields:
+                proofs["availability"] = evidence(f"{location}/td:{price_col + 1}", fields["availability"],
+                                                  values[price_col], raw_row)
         annotate_evidence(proofs, mode, source_identity={"item_id"}, displayed_fields=set(proofs) - {"item_id"})
         candidates.append(Candidate(
             fields=fields, evidence=proofs, locator=f"gongcar:public-table:{table_index}:row:{row_index}",
             extraction_method="gongcar_rendered_public_table", value_origin="observed", source_visibility=visibility,
-            evidence_mode=mode,
+            review_flags=review_flags, evidence_mode=mode,
         ))
     return candidates
 
@@ -255,10 +276,11 @@ def _card_candidate(card: Tag, path: str, kind: str, index: int,
     option = visible_text(option_node) if option_node and is_visible(option_node) else None
     if option and _PRICE.fullmatch(option):
         option = None
-    # Identity uses stable, non-price attributes so a price change is a
-    # price change, not a removed and an added offer.
+    # Identity uses stable, non-price, non-position attributes so a price
+    # change is a price change and a re-ordered grid is not a removed and an
+    # added offer. Identical cards are disambiguated by the caller.
     item_id = "local-observation-gongcar-" + stable_id(
-        path, kind, str(index), str(public_id or ""), name, option or "", term, condition, percentage + unit)
+        path, kind, str(public_id or ""), name, option or "", term, condition, percentage + unit)
     fields = {"item_id": item_id, "name": name, "currency": "KRW",
               "price_basis": "monthly", "term_months": term, "section": f"{path}_{kind}"}
     proofs = {"item_id": evidence(locator, item_id, card_text, proof_kind="local_observation"),
@@ -336,7 +358,7 @@ def _catalog_candidates(soup, path: str, visibility: str, mode: str) -> list[Can
             candidate = _card_candidate(card, path, kind, index, basis, visibility, mode)
             if candidate:
                 candidates.append(candidate)
-    return candidates
+    return disambiguate_identical_ids(candidates)
 
 
 def section_coverage(result: FetchResult, candidates: list[Candidate]) -> list[dict[str, object]]:
@@ -513,7 +535,11 @@ def _quote_table_candidates(soup, table: Tag, table_index: int, visibility: str,
             price_raw = unstruck_text(cell) or ""
             price, problem = won_amount(price_raw, allow_from=True)
             if problem == "no_won_amount":
-                continue
+                if not price_raw.strip():
+                    continue  # Nothing displayed in this cell.
+                # 문의, "-" and similar: a displayed offer without a price is kept
+                # with a null price and its displayed text, never dropped.
+                problem = "price_inquiry_or_unavailable"
             flags: list[str] = []
             derived: dict[str, str] = {}
             if price is None:
@@ -538,6 +564,9 @@ def _quote_table_candidates(soup, table: Tag, table_index: int, visibility: str,
                               price_basis=evidence(header_location, "monthly", header))
             else:
                 proofs["price"] = evidence(cell_location, None, row[price_col][1], raw_row)
+                if problem == "price_inquiry_or_unavailable":
+                    fields["availability"] = price_raw.strip()
+                    proofs["availability"] = evidence(cell_location, fields["availability"], price_raw, raw_row)
             if term is not None:
                 fields["term_months"] = term
                 proofs["term_months"] = evidence(header_location, term, header)
