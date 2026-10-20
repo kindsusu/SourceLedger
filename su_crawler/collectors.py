@@ -35,6 +35,11 @@ MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_VARIANT_SNAPSHOTS = 200
 MAX_VARIANT_BYTES = 32 * 1024 * 1024
 MAX_REDIRECTS = 10
+# Final evidence capture budget kept back from list expansion/enumeration.
+FINAL_CAPTURE_RESERVE_SECONDS = 15.0
+UNSETTLED_CAPTURE_SECONDS = 3.0
+UNSETTLED_MESSAGE = "Browser observation did not settle before capture; retained for review"
+_BOUNDED_RECIPE_ACTIONS = {"expand_list", "enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}
 WELL_KNOWN_NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _PASSWORD_FIELD = re.compile(r"<input\b[^>]*(?:type\s*=\s*['\"]?password|name\s*=\s*['\"]password['\"]?)", re.I)
 
@@ -1173,15 +1178,29 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             if initial_challenge:
                 return challenge_result(initial_challenge, page.url)
 
-            def capture_settled(listing_expectation: dict[str, Any] | None = None) -> dict[str, Any]:
+            def capture_unsettled(reason: str) -> dict[str, Any]:
+                # Keep the rendered DOM, e.g. hundreds of expanded cards, as
+                # review evidence instead of discarding it for the initial
+                # HTTP rows. It is never reported as a settled observation.
+                snapshot = _evidence_snapshot(page)
+                require_navigation_policy()
+                _check_url(source, snapshot['probe']['url'])
+                trace.append({'event': 'observation_unsettled', 'phase': 'final_capture',
+                              'reason': reason, 'at': utc_now()})
+                return snapshot
+
+            def capture_settled(listing_expectation: dict[str, Any] | None = None, *,
+                                allow_unsettled: bool = False) -> dict[str, Any]:
                 # A page-specific row selector narrows the stability probe. Without
                 # one, the visible document is conservative (e.g. a ticking page
                 # can time out rather than manufacture a verified observation).
                 for _ in range(2):
+                    # Leave time to retain an unsettled snapshot after a timeout.
+                    available = remaining_ms() / 1000 - (UNSETTLED_CAPTURE_SECONDS if allow_unsettled else 0)
                     settled = wait_settled_sync(
                         page, lambda: page.evaluate(_OBSERVATION_PROBE_JS, source.row_selector),
                         ready=lambda value: bool(value.get('text')),
-                        timeout_seconds=min(15, remaining_ms() / 1000),
+                        timeout_seconds=min(15, max(0.5, available)),
                     )
                     network = settled.get('network') or {}
                     trace.append({'event': 'observation_settlement', 'status': settled['status'],
@@ -1189,6 +1208,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                                   'pending': network.get('pending'), 'loading': network.get('loading'),
                                   'at': utc_now()})
                     if settled['status'] != 'settled':
+                        if allow_unsettled:
+                            return capture_unsettled('settle_timeout')
                         raise PlaywrightTimeoutError('Observation did not settle')
                     snapshot = _evidence_snapshot(page, listing_expectation,
                                                   observation=settled['probe'], selector=source.row_selector,
@@ -1197,7 +1218,19 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                         require_navigation_policy()
                         _check_url(source, snapshot['probe']['url'])
                         return snapshot
+                if allow_unsettled:
+                    return capture_unsettled('observation_changed')
                 raise PlaywrightTimeoutError('Observation changed during evidence capture')
+
+            # List expansion and enumeration stop early enough to leave this
+            # reserve for the final capture; otherwise an expanded DOM could
+            # be lost to a deadline in the last settlement wait.
+            final_reserve_ms = (min(FINAL_CAPTURE_RESERVE_SECONDS, source.timeout_seconds * 0.25) * 1000
+                                if any(step.get('action') in _BOUNDED_RECIPE_ACTIONS for step in source.recipe) else 0.0)
+
+            def recipe_remaining_ms() -> float:
+                # Never hand Playwright a zero timeout: zero disables it.
+                return max(1.0, remaining_ms() - final_reserve_ms)
 
             def capture_variant(selections: dict[str, str], selection_values: dict[str, str] | None = None,
                                 listing_expectation: dict[str, Any] | None = None) -> None:
@@ -1269,15 +1302,15 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                     if expected not in actual:
                         raise AssertionError("Browser text assertion failed")
                 elif action == "expand_list":
-                    _expand_list(page, step, remaining_ms, trace)
+                    _expand_list(page, step, recipe_remaining_ms, trace)
                 elif action == "enumerate_options":
-                    enumerate_options(page, step, remaining_ms, capture_variant, trace, source.unavailable_markers)
+                    enumerate_options(page, step, recipe_remaining_ms, capture_variant, trace, source.unavailable_markers)
                 elif action == "enumerate_buttons":
-                    enumerate_buttons(page, step, remaining_ms, capture_variant, trace, source.unavailable_markers)
+                    enumerate_buttons(page, step, recipe_remaining_ms, capture_variant, trace, source.unavailable_markers)
                 elif action == "paginate":
-                    paginate(page, step, remaining_ms, capture_variant, trace)
+                    paginate(page, step, recipe_remaining_ms, capture_variant, trace)
                 elif action == "scroll_list":
-                    scroll_list(page, step, remaining_ms, capture_variant, trace)
+                    scroll_list(page, step, recipe_remaining_ms, capture_variant, trace)
                 if challenge_seen:
                     return challenge_result(challenge_seen, page.url)
                 if pending_redirect:
@@ -1305,7 +1338,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             evidence_started = time.monotonic()
             browser_phase = 'evidence_capture'
             require_navigation_policy()
-            snapshot = capture_settled()
+            snapshot = capture_settled(allow_unsettled=True)
+            unsettled = any(event.get('event') == 'observation_unsettled' for event in trace)
             html = snapshot['html'].encode('utf-8')
             challenge = detect_challenge(html, document_status.get("latest", 200))
             if challenge:
@@ -1327,7 +1361,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             trace.append({"event": "evidence_timing", "duration_ms": round((time.monotonic() - evidence_started) * 1000, 1), "at": utc_now()})
             return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url,
                            fetched_at=snapshot['captured_at'], screenshot=screenshot, trace=trace,
-                           variant_snapshots=variant_snapshots)
+                           variant_snapshots=variant_snapshots,
+                           message=UNSETTLED_MESSAGE if unsettled else "")
     except _AccessChallengeFound as exc:
         return challenge_result(exc.challenge, page.url)
     except PlaywrightTimeoutError:

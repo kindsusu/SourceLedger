@@ -84,7 +84,34 @@ def _offer_fingerprint(fields, evidence_sha256):
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
+UNSETTLED_FLAG = 'Browser observation did not settle before capture'
+
+
+def _unsettled(result):
+    return any(event.get('event') == 'observation_unsettled' for event in result.trace)
+
+
 def _sections(result, candidates, adapter):
+    """Describe section coverage; an unsettled capture is never complete.
+
+    Candidates from an unsettled browser capture receive a review flag here so
+    every caller (fresh capture, retained-evidence reanalysis, site collection)
+    treats them alike.
+    """
+    unsettled = _unsettled(result)
+    if unsettled:
+        for candidate in candidates:
+            if UNSETTLED_FLAG not in candidate.review_flags:
+                candidate.review_flags.append(UNSETTLED_FLAG)
+    sections = _adapter_sections(result, candidates, adapter)
+    if unsettled:
+        for section in sections:
+            if section.get('status') == 'complete':
+                section.update(status='partial', reason='observation_unsettled')
+    return sections
+
+
+def _adapter_sections(result, candidates, adapter):
     if adapter == 'gongcar':
         from .adapters.gongcar import section_coverage
         sections = section_coverage(result, candidates)
