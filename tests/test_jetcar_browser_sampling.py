@@ -291,3 +291,22 @@ def test_resume_without_a_recorded_fallback_samples_again(tmp_path, monkeypatch)
     journal = batch.read_batch_journal(tmp_path, plan_data["id"], job["id"])
     assert [entry["execution"]["jetcar_browser_sampled"] for entry in journal["batches"]] == [4, 1, 0]
     assert [entry["execution"]["jetcar_http_accepted"] for entry in journal["batches"]] == [0, 3, 4]
+
+
+def test_cli_and_batch_arguments_carry_the_ratio(tmp_path, monkeypatch):
+    from su_crawler import research_unattended
+    from su_crawler.cli import main
+    seen = {}
+    monkeypatch.setattr(research_unattended, "collect_url_file",
+                        lambda root, **kwargs: seen.update(kwargs) or {"status": "succeeded"})
+    url_file = tmp_path / "urls.txt"
+    url_file.write_text(jetcar_url(0) + "\n", encoding="utf-8")
+    assert main(["collect-plan", "--workspace-root", str(tmp_path / "ws"), "--urls-file", str(url_file),
+                 "--industry", "Vehicle rental", "--product", "Passenger vehicle", "--market", "South Korea",
+                 "--browser-sample-ratio", "0.5", "--yes", "--json"]) == 0
+    assert seen["browser_sample_ratio"] == 0.5
+    plan_data = _confirmed_jetcar(tmp_path, 3)
+    with pytest.raises(ValueError, match="browser_sample_ratio"):
+        batch.queue_batch_run(tmp_path, {**_batch_args(plan_data), "browser_sample_ratio": 0})
+    job = batch.queue_batch_run(tmp_path, {**_batch_args(plan_data), "browser_sample_ratio": 1})
+    assert job["arguments"]["browser_sample_ratio"] == 1.0
