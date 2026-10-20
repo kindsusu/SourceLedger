@@ -116,7 +116,9 @@ def _public_candidates(table: Tag, table_index: int, visibility: str, mode: str)
             continue
         trim_match = re.search(r"\(([^()]*)\)\s*$", model)
         trim = trim_match.group(1).strip() if trim_match else None
-        item_id = "gongcar-row-" + stable_id(model, trim, option, values[deposit_col])
+        # Driver age and vehicle value are offer conditions; rows differing only
+        # by them are distinct offers.
+        item_id = "gongcar-row-" + stable_id(model, trim, option, values[deposit_col], driver_age, vehicle_value)
         raw_row = " | ".join(values)
         location = f"table:{table_index}/tbody/tr:{row_index}"
         fields = {
@@ -249,7 +251,14 @@ def _card_candidate(card: Tag, path: str, kind: str, index: int,
     card_text = visible_text(card) or ""
     public_id_attribute = "data-car-id" if card.get("data-car-id") else "data-item-id"
     public_id = card.get(public_id_attribute)
-    item_id = "local-observation-gongcar-" + stable_id(path, kind, str(index), card_text, footnote)
+    option_node = name_node.find_next_sibling("span") if kind == "popular" else None
+    option = visible_text(option_node) if option_node and is_visible(option_node) else None
+    if option and _PRICE.fullmatch(option):
+        option = None
+    # Identity uses stable, non-price attributes so a price change is a
+    # price change, not a removed and an added offer.
+    item_id = "local-observation-gongcar-" + stable_id(
+        path, kind, str(index), str(public_id or ""), name, option or "", term, condition, percentage + unit)
     fields = {"item_id": item_id, "name": name, "currency": "KRW",
               "price_basis": "monthly", "term_months": term, "section": f"{path}_{kind}"}
     proofs = {"item_id": evidence(locator, item_id, card_text, proof_kind="local_observation"),
@@ -283,9 +292,7 @@ def _card_candidate(card: Tag, path: str, kind: str, index: int,
     if "currency" not in proofs:
         fields.pop("currency")
         fields.pop("price_basis")
-    option_node = name_node.find_next_sibling("span") if kind == "popular" else None
-    option = visible_text(option_node) if option_node and is_visible(option_node) else None
-    if option and not _PRICE.fullmatch(option):
+    if option:
         fields["options"] = option
         proofs["options"] = evidence(f"{locator}/option", option, option, card_text)
     derived = {"identity_scope": "local_observation"}

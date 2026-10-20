@@ -94,8 +94,9 @@ def extract(result: FetchResult, path: str, mode: str, visibility: str) -> list[
             continue
         raw_card = visible_text(card) or ""
         locator = f"gongcar:{path}:card:{index}"
-        item_id = "local-observation-gongcar-" + stable_id(path, index, raw_card)
         section = "monthly_catalog" if basis == "monthly" else "daily_catalog"
+        # Non-price attributes only: a price change must not look like a new offer.
+        item_id = "local-observation-gongcar-" + stable_id(path, index, name, section, term[0] if term else "")
         fields = {"item_id": item_id, "name": name, "section": section}
         proofs = {"item_id": evidence(locator, item_id, raw_card, proof_kind="local_observation"),
                   "name": evidence(f"{locator}/h4", name, visible_text(names[0]), raw_card),
@@ -233,7 +234,7 @@ def extract_monthly_detail(result: FetchResult, path: str, mode: str, visibility
             continue
         locator = f"gongcar:{path}:period:{index}"
         raw_button = visible_text(button) or ""
-        item_id = "local-observation-gongcar-" + stable_id(path, term, raw_button, name)
+        item_id = "local-observation-gongcar-" + stable_id(path, index, term, name)
         fields = {"item_id": item_id, "name": name, "section": "monthly_detail",
                   "term_months": term, "price": amount, "currency": "KRW", "price_basis": "monthly"}
         proofs = {"item_id": evidence(locator, item_id, raw_button, proof_kind="local_observation"),
@@ -291,7 +292,7 @@ def extract_daily_detail(result: FetchResult, path: str, mode: str, visibility: 
         return []
     name = visible_text(names[0]) or ""
     locator = f"gongcar:{path}:daily-price"
-    item_id = "local-observation-gongcar-" + stable_id(path, name, amount_raw)
+    item_id = "local-observation-gongcar-" + stable_id(path, name, "daily_detail")
     fields = {"item_id": item_id, "name": name, "section": "daily_detail", "price": price,
               "currency": "KRW", "price_basis": "daily"}
     proofs = {"item_id": evidence(locator, item_id, amount_raw, proof_kind="local_observation"),

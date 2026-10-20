@@ -187,3 +187,68 @@ def test_jetcar_term_with_inquiry_price_is_kept_as_null_price_candidate():
     assert observation.status == "review" and observation.amount is None and not observation.comparable
     assert "review flag: price_inquiry_or_unavailable" in observation.reason
     assert not any(part.startswith("evidence") for part in observation.reason.split("; "))
+
+
+# --- Item 3: identities never depend on the displayed price ---
+
+def _gongcar_ids(path: str, html: str) -> list[str]:
+    return [value.fields["item_id"] for value in _gongcar(html, f"https://gongcar.kr/{path}")]
+
+
+def _popular_card(price: str) -> str:
+    return ('<section><h2>인기 차량 한눈에 보기</h2><div class="grid">'
+            f'<button><img alt="Model A"><span>Model A</span><span>Gasoline</span><span>월 {price}원~</span></button>'
+            f'<button><img alt="Model A"><span>Model A</span><span>Gasoline</span><span>월 {price}원~</span></button>'
+            '</div><p>* 48개월 / 보증금 30% 기준 | 최근 업데이트 : 26.10.12</p></section>')
+
+
+def _monthly_card(price: str) -> str:
+    return ('<button>1개월</button><p>총 1종의 차량이 있습니다.</p><div class="grid">'
+            f'<div class="group"><h4>Model B<span> · Gasoline</span></h4><span>월 {price}만원부터</span></div></div>')
+
+
+def _monthly_detail(price: str) -> str:
+    return ('<h1>Model C</h1><section><h2>대여 기간</h2>'
+            f'<button><span>1개월</span><span><span>{price}원</span></span></button>'
+            f'<button><span>6개월</span><span><span>{price}원</span></span></button>'
+            '</section><span>월 렌트료</span>')
+
+
+def _daily_detail(price: str) -> str:
+    return ('<h1>Model D</h1><div><h3>렌트 가격</h3><div><span>일 렌트료</span>'
+            f'<span>{price}원</span></div></div>')
+
+
+def _landing(price: str) -> str:
+    return ('<section aria-labelledby="sec-price"><div id="deals">'
+            f'<button class="deal"><span class="deal-name">Model E</span><span class="deal-spec">Gasoline</span>'
+            f'<span class="deal-price">월 {price}원~</span></button></div>'
+            '<p class="deal-basis-line">48개월 / 보증금 30% / 만 26세</p></section>')
+
+
+@pytest.mark.parametrize("path,builder,before,after", [
+    ("rentpass", _popular_card, "290,000", "299,000"),
+    ("monthly-rent", _monthly_card, "44", "45"),
+    ("monthly-rent/43", _monthly_detail, "440,000", "450,000"),
+    ("daily-rent/5", _daily_detail, "190,000", "200,000"),
+    ("rentpass", _landing, "300,000", "310,000"),
+])
+def test_gongcar_price_change_keeps_item_identity(path, builder, before, after):
+    old_ids, new_ids = _gongcar_ids(path, builder(before)), _gongcar_ids(path, builder(after))
+    assert old_ids and old_ids == new_ids
+    assert len(set(old_ids)) == len(old_ids)
+
+
+def _public_table(second_age: str, second_value: str) -> str:
+    header = ''.join(f'<div><p>{label}</p></div>' for label in (
+        "Synthetic", "운전연령", "옵션", "차량가액(원)", "보증금(원)", "월 렌트료(원)", ""))
+    rows = (f'<tr><td>Model F</td><td>만26세이상</td><td>기본</td><td>40,000,000</td><td>0</td><td>700,000</td><td></td></tr>'
+            f'<tr><td>Model F</td><td>{second_age}</td><td>기본</td><td>{second_value}</td><td>0</td><td>750,000</td><td></td></tr>')
+    return f'<div class="quote-columns">{header}</div><table><tbody>{rows}</tbody></table>'
+
+
+@pytest.mark.parametrize("age,value", [("만21세이상", "40,000,000"), ("만26세이상", "41,000,000")])
+def test_gongcar_public_rows_differing_only_by_age_or_vehicle_value_stay_distinct(age, value):
+    values = _gongcar(_public_table(age, value), "https://gongcarrent.kr/public-quote")
+    assert len(values) == 2
+    assert values[0].fields["item_id"] != values[1].fields["item_id"]
