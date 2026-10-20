@@ -163,7 +163,8 @@ def main(argv: list[str] | None = None) -> int:
     unattended.add_argument("--batch-size", type=int, default=20)
     unattended.add_argument("--concurrency", type=int, default=2)
     unattended.add_argument("--browser-concurrency", type=int, default=1)
-    unattended.add_argument("--browser-reuse", action="store_true")
+    unattended.add_argument("--browser-reuse", action=argparse.BooleanOptionalAction, default=True,
+                            help="Reuse one browser per slot with a fresh context per URL (default: on).")
     unattended.add_argument("--max-seconds", type=float, default=600, help="Time budget per batch (1-600).")
     unattended.add_argument("--timeout", type=float, default=7200,
                             help="Seconds to wait when another worker owns the job (default 7200).")

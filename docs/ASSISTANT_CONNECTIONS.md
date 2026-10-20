@@ -180,7 +180,7 @@ explicit `--yes` plus the URL file are the operator's approval; without `--yes`
 it refuses before touching the workspace, and a file with invalid lines is
 rejected. When `--plan-id` already has a confirmed revision with the same topic
 and URL list, that revision is reused. Options: `--batch-size` (default 20),
-`--concurrency` (2), `--browser-concurrency` (1), `--browser-reuse`,
+`--concurrency` (2), `--browser-concurrency` (1), `--browser-reuse` (on; `--no-browser-reuse` disables),
 `--max-seconds` per batch (600) and `--timeout` for waiting on another worker
 (7200). It prints one JSON summary (status, coverage and observation counts,
 final XLSX/dashboard paths, change counts, errors). Exit codes: 0 succeeded,
