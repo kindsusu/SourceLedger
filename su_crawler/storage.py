@@ -91,6 +91,10 @@ class Store:
         );
         CREATE INDEX IF NOT EXISTS collection_issues_run_status
             ON collection_issues(run_id, status, page_url);
+        CREATE INDEX IF NOT EXISTS observations_run ON observations(run_id);
+        CREATE INDEX IF NOT EXISTS observations_task ON observations(task_id);
+        CREATE INDEX IF NOT EXISTS attempts_run_source ON attempts(run_id, source_id);
+        CREATE INDEX IF NOT EXISTS browser_submissions_run ON browser_submissions(run_id);
         CREATE TABLE IF NOT EXISTS collection_issue_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             issue_id TEXT NOT NULL REFERENCES collection_issues(id),
@@ -295,15 +299,40 @@ class Store:
             (run_id, run_id))]
 
     def update_task(self, task_id: str, status: str, reason: str = "", backend: str | None = None, attempt: bool = False):
-        self.db.execute("UPDATE tasks SET status=?, reason=?, backend=?, updated_at=?, attempts=attempts+? WHERE id=?",
-                        (status, reason, backend, utc_now(), int(attempt), task_id))
-        self.db.commit()
+        self.update_tasks([task_id], status, reason, backend, attempt)
+
+    def update_tasks(self, task_ids: list[str], status: str, reason: str = "", backend: str | None = None,
+                     attempt: bool = False):
+        """Update several tasks in one transaction (all or none are recorded)."""
+        now = utc_now()
+        with self.db:
+            self.db.executemany("UPDATE tasks SET status=?, reason=?, backend=?, updated_at=?, attempts=attempts+? WHERE id=?",
+                                [(status, reason, backend, now, int(attempt), task_id) for task_id in task_ids])
+
+    def record_attempt(self, run_id: str, source_id: str, task_ids: list[str], backend: str, status: str,
+                       at: str, data: dict) -> None:
+        """Count one fetch attempt for every task and store its trace atomically."""
+        now = utc_now()
+        with self.db:
+            self.db.executemany("UPDATE tasks SET status='running', reason='', backend=?, updated_at=?, attempts=attempts+1 WHERE id=?",
+                                [(backend, now, task_id) for task_id in task_ids])
+            self.db.execute("INSERT INTO attempts(run_id,source_id,backend,status,at,data) VALUES(?,?,?,?,?,?)",
+                            (run_id, source_id, backend, status, at, json.dumps(data, ensure_ascii=False)))
 
     def finish_task(self, task_id: str, status: str, reason: str, backend: str, observations: list[dict]):
+        self.finish_tasks([(task_id, status, reason, backend, observations)])
+
+    def finish_tasks(self, items: list[tuple[str, str, str, str, list[dict]]]) -> None:
+        """Replace task observations and outcomes in one transaction.
+
+        A crash leaves either every listed task finished or none of them, so a
+        resume re-collects the whole source rather than a half-written subset.
+        """
         with self.db:
-            self.db.execute("DELETE FROM observations WHERE task_id=?", (task_id,))
-            for row in observations:
-                self.db.execute("INSERT INTO observations(id,run_id,task_id,data) VALUES(?,?,?,?)",
-                                (row["id"], row["run_id"], task_id, json.dumps(row, ensure_ascii=False)))
-            self.db.execute("UPDATE tasks SET status=?,reason=?,backend=?,updated_at=? WHERE id=?",
-                            (status, reason, backend, utc_now(), task_id))
+            for task_id, status, reason, backend, observations in items:
+                self.db.execute("DELETE FROM observations WHERE task_id=?", (task_id,))
+                self.db.executemany("INSERT INTO observations(id,run_id,task_id,data) VALUES(?,?,?,?)",
+                                    [(row["id"], row["run_id"], task_id, json.dumps(row, ensure_ascii=False))
+                                     for row in observations])
+                self.db.execute("UPDATE tasks SET status=?,reason=?,backend=?,updated_at=? WHERE id=?",
+                                (status, reason, backend, utc_now(), task_id))

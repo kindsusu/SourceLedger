@@ -303,8 +303,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                 if max_tasks is not None:
                     tasks = tasks[:max_tasks - processed]
                 if time.monotonic() >= deadline:
-                    for task in tasks:
-                        store.update_task(task["id"], "budget_exhausted", "Run time limit reached")
+                    store.update_tasks([task["id"] for task in tasks], "budget_exhausted", "Run time limit reached")
                     continue
                 backends = ["file"] if source.kind == "file" else source.backends
                 # A supplied recipe requires the browser state after the clicks.
@@ -344,13 +343,11 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                                            'capture_count': len(capture_evidence),
                                            'receipts': [item['receipt_path'] for item in capture_evidence]})
                     for attempt in attempts:
-                        for task in tasks:
-                            store.update_task(task["id"], "running", backend=attempt['backend'], attempt=True)
-                        with store.db:
-                            store.db.execute("INSERT INTO attempts(run_id,source_id,backend,status,at,data) VALUES(?,?,?,?,?,?)",
-                                             (run_id, source.id, attempt['backend'], attempt['status'], attempt['at'],
-                                              json.dumps({'message': attempt['message'], 'trace': attempt['trace'],
-                                                          'prior_capture_evidence': capture_evidence}, ensure_ascii=False)))
+                        # One transaction per attempt: counters and trace agree after a crash.
+                        store.record_attempt(run_id, source.id, [task["id"] for task in tasks], attempt['backend'],
+                                             attempt['status'], attempt['at'],
+                                             {'message': attempt['message'], 'trace': attempt['trace'],
+                                              'prior_capture_evidence': capture_evidence})
                     if last.status == "fetched":
                         try:
                             candidates = captured_response[1] if captured_response else extract_current(last, source, saved, extract)
@@ -405,10 +402,11 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                                            if captured_responses and fetched.backend == "http" else source)
                         save_snapshot(store, snapshot_source, fetched, candidates, evidence_path, digest)
                         evidence_by_response[response_index] = (evidence_path, digest)
+                    finished = []
                     for task in tasks:
                         response_index = best_by_task.get(task["id"], fallback_index)
                         if response_index is None:
-                            store.finish_task(task["id"], last.status if last.status in TERMINAL else "failed", last.message, last.backend, [])
+                            finished.append((task["id"], last.status if last.status in TERMINAL else "failed", last.message, last.backend, []))
                             continue
                         fetched, candidates = responses[response_index]
                         evidence_path, digest = evidence_by_response[response_index]

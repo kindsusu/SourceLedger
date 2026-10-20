@@ -339,3 +339,27 @@ def test_candidate_quality_rejects_unproven_price(proof):
     )
     assert _candidate_quality(candidate)[0] == 0
     assert not _has_sufficient_evidence([candidate])
+
+
+def test_ledger_indexes_and_atomic_attempt_records(tmp_path):
+    store = Store(tmp_path)
+    try:
+        indexes = {row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        assert {"observations_run", "observations_task", "attempts_run_source", "browser_submissions_run"} <= indexes
+        plan = store.db.execute("EXPLAIN QUERY PLAN DELETE FROM observations WHERE task_id=?", ("t",)).fetchall()
+        assert any("observations_task" in str(tuple(row)) for row in plan)
+        with store.db:
+            store.db.execute("INSERT INTO runs(id,config_hash,status,started_at,demo) VALUES('r','h','running','now',0)")
+            for task in ("a", "b"):
+                store.db.execute("INSERT INTO tasks(id,run_id,source_id,product_id,status,updated_at) VALUES(?,?,?,?,?,?)",
+                                 (task, "r", "s", task, "queued", "now"))
+        store.record_attempt("r", "s", ["a", "b"], "http", "fetched", "now", {"message": "", "trace": []})
+        assert [row["attempts"] for row in store.tasks("r")] == [1, 1]
+        with pytest.raises(Exception):
+            # A failed attempt record must not leave counted attempts behind.
+            store.record_attempt("missing-run", "s", ["a", "b"], "http", "fetched", "now", {"x": object()})
+        assert [row["attempts"] for row in store.tasks("r")] == [1, 1]
+        store.finish_tasks([("a", "verified", "", "http", []), ("b", "failed", "x", "http", [])])
+        assert [row["status"] for row in store.tasks("r")] == ["verified", "failed"]
+    finally:
+        store.close()
