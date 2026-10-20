@@ -69,7 +69,7 @@ def build_execution_brief(plan: dict, provider: str = "connected", model: str = 
         "plan_id": plan.get("id"), "plan_revision": plan.get("revision"),
         "plan_state": plan.get("state"),
         "refresh_policy": plan.get("refresh_policy", {"mode": "full", "full_interval_days": 7}),
-        "refresh_note": "Incremental checks revalidate eligible HTTP evidence. Dynamic pages are rendered again. Full reconciliation is due on the next run after the configured interval, within approved scope; no background timer is installed.",
+        "refresh_note": "Full collection is the default. Incremental checks revalidate eligible plain HTTP evidence only; adapter and browser pages are rendered again in either mode, so incremental is not faster for them. Full reconciliation is due on the next run after the configured interval, within approved scope; no background timer is installed.",
         "provider": provider, "model": models[provider] if provider != "connected" else None,
         "model_recommendations": models,
         "host_model_note": "Connected AI app model is selected in that app; SourceLedger cannot set or verify it before execution.",

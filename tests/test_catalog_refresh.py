@@ -429,3 +429,24 @@ def test_first_partial_run_retains_successful_page_without_validating_whole_scop
     a_change = next(row for row in second['refresh']['item_changes'] if row['url'] == a)
     assert a_change['previous_checked_at'] == first['refresh']['checked_at']
     assert second['refresh']['full_recheck_succeeded']
+
+
+def test_adapter_pages_are_recollected_in_full_even_in_incremental_mode(tmp_path):
+    from pathlib import Path
+    url = 'https://gongcar.kr/rentpass'
+    payload = (Path(__file__).parent / 'fixtures' / 'adapters' / 'gongcar_rentpass.html').read_bytes()
+    calls = []
+
+    def fetch(source, _base, backend, *, validators=None):
+        calls.append((backend, validators))
+        return FetchResult(source.id, 'fetched', backend, content=payload, final_url=url,
+                           media_type='text/html', http_metadata={'etag': 'v1'})
+
+    for _ in range(2):
+        result = collect_plan(tmp_path, _plan(url), output_dir=tmp_path / 'out', collector=fetch,
+                              max_pages=1, follow_links=False)
+    assert result['refresh']['policy']['mode'] == 'incremental'
+    # Rendered adapter evidence has no HTTP validator: every run captures the
+    # page again and never sends conditional request headers.
+    assert calls == [('playwright', None), ('playwright', None)]
+    assert not any(item.get('code') == 'http_not_modified' for item in result['coverage'][0]['trace'])
