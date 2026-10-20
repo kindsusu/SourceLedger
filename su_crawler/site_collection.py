@@ -37,6 +37,8 @@ HOST_ADAPTERS = {
 # is only a fallback when the browser fails, times out, is unavailable, or
 # extracts nothing. Jetcar sections can be complete from static HTML, so it
 # keeps HTTP first and stops early only with complete, sufficient evidence.
+# Catalog collection derives products from the chosen response only, so a
+# skipped HTTP response cannot remove an observation row there.
 BROWSER_FIRST_ADAPTERS = frozenset({'gongcar'})
 
 
@@ -283,9 +285,10 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                 best: tuple[FetchResult, list] | None = None
                 best_score: tuple = (-1,)
                 attempts = []
-                order = (['playwright', *[b for b in source.backends if b != 'playwright']]
-                         if browser_first(source) else list(source.backends))
-                for backend in order:
+                # Unlike catalog collection, products here come from every
+                # response, so an HTTP-only item would be lost if HTTP were
+                # skipped. Keep both backends in the original order.
+                for backend in source.backends:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
@@ -338,10 +341,6 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                                 [candidate for candidate in identified
                                  if str(candidate.fields['item_id']) == identity], source.decimal_separator)
                                 for identity in per_identity):
-                            break
-                        if backend == 'playwright' and browser_first(source) and current_candidates:
-                            # Static HTML cannot complete these sections or
-                            # outrank the rendered capture; skip the request.
                             break
                     if result.status == 'policy_denied':
                         break
