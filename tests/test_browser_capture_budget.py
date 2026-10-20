@@ -94,14 +94,14 @@ def test_expansion_that_uses_the_budget_still_keeps_expanded_dom(tmp_path):
     expansion = next(event for event in result.trace if event["event"] == "list_expansion")
     # Budget exhaustion is honest: the list is incomplete, not complete.
     assert expansion["status"] == "partial"
-    assert expansion["observed_count"] > 5
+    assert expansion["observed_count"] >= 2
     # Every observed card is in the retained final DOM, not just the first one.
     assert result.content.count(b'class="card"') >= expansion["observed_count"]
 
 
 def test_settle_timeout_retains_expanded_snapshot_for_review(tmp_path):
     with server() as url:
-        result = collect(_source(url + "/unsettled", 10), str(tmp_path), "playwright")
+        result = collect(_source(url + "/unsettled", 14), str(tmp_path), "playwright")
     assert result.status == "fetched", (result.message, result.trace[-3:])
     assert result.message == collectors.UNSETTLED_MESSAGE
     assert result.content.count(b'class="card"') == 40

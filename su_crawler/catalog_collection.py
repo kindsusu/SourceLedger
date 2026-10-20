@@ -106,7 +106,8 @@ def _coverage_trace(events):
             cards = event['observed_cards']
             event = {key: value for key, value in event.items() if key != 'observed_cards'}
             event['observed_cards_count'] = len(cards)
-            event.setdefault('observed_cards_sha256', _cards_digest(cards))
+            if 'observed_cards_sha256' not in event:
+                event['observed_cards_sha256'] = _cards_digest(cards)
         compact.append(event)
     return compact
 

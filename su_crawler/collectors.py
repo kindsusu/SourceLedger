@@ -38,7 +38,7 @@ MAX_VARIANT_BYTES = 32 * 1024 * 1024
 MAX_REDIRECTS = 10
 # Final evidence capture budget kept back from list expansion/enumeration.
 FINAL_CAPTURE_RESERVE_SECONDS = 15.0
-UNSETTLED_CAPTURE_SECONDS = 3.0
+UNSETTLED_CAPTURE_SECONDS = 2.0
 UNSETTLED_MESSAGE = "Browser observation did not settle before capture; retained for review"
 _BOUNDED_RECIPE_ACTIONS = {"expand_list", "enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}
 WELL_KNOWN_NAT64 = ipaddress.ip_network("64:ff9b::/96")
@@ -1284,7 +1284,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 # can time out rather than manufacture a verified observation).
                 for _ in range(2):
                     # Leave time to retain an unsettled snapshot after a timeout.
-                    available = remaining_ms() / 1000 - (UNSETTLED_CAPTURE_SECONDS if allow_unsettled else 0)
+                    left = remaining_ms() / 1000
+                    available = left - (min(UNSETTLED_CAPTURE_SECONDS, left * 0.2) if allow_unsettled else 0)
                     settled = wait_settled_sync(
                         page, lambda: page.evaluate(_OBSERVATION_PROBE_JS, source.row_selector),
                         ready=lambda value: bool(value.get('text')),
