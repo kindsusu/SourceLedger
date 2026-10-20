@@ -114,15 +114,36 @@ def install_config(client: str, path: Path, name: str, spec: dict) -> dict:
     return {"status": "configured", "config_path": str(path), "backup_path": str(backup) if backup else None}
 
 
+def claude_user_scope_command(name: str, spec: dict) -> dict:
+    """The equivalent ``claude mcp add --scope user`` command; SourceLedger never runs it."""
+    argv = (["claude", "mcp", "add", name, "--scope", "user"]
+            + [part for key, value in spec.get("env", {}).items() for part in ("--env", f"{key}={value}")]
+            + ["--", spec["command"], *spec["args"]])
+    if os.name == "nt":
+        # PowerShell: call operator form with single-quoted literals.
+        line = "& " + " ".join("'" + part.replace("'", "''") + "'" for part in argv)
+    else:
+        import shlex
+        line = shlex.join(argv)
+    return {"argv": argv, "command_line": line}
+
+
 def connect(client: str, *, workspace_root: str | Path, output_dir: str | Path | None = None,
             name: str = "sourceledger", install: bool = False,
-            config_file: str | Path | None = None, project_dir: str | Path | None = None) -> dict:
+            config_file: str | Path | None = None, project_dir: str | Path | None = None,
+            scope: str = "project") -> dict:
     if client not in CLIENTS:
         raise ValueError("Unknown client")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
         raise ValueError("Server name must be 1-64 letters, digits, underscores, or hyphens")
     if config_file and not install:
         raise ValueError("--config-file requires --install")
+    if scope not in {"project", "user"}:
+        raise ValueError("scope must be project or user")
+    if scope == "user" and client != "claude-code":
+        raise ValueError("--scope user is only available for --client claude-code")
+    if scope == "user" and config_file:
+        raise ValueError("--scope user prints a command and does not write --config-file")
     if importlib.util.find_spec("mcp") is None:
         raise ValueError("MCP is not installed. Run setup.cmd --mcp or bash setup.sh --mcp first")
     root = Path(workspace_root).expanduser().resolve()
@@ -149,6 +170,14 @@ def connect(client: str, *, workspace_root: str | Path, output_dir: str | Path |
                   "Run source-ledger assistant start --workspace-root <workspace_root> in a normal terminal outside the assistant client.",
                   "Restart or refresh the client connection, then ask SourceLedger to initialize your industry, product, and market.",
               ]}
+    if scope == "user":
+        # Claude Code owns its user configuration file. Print the supported CLI
+        # command instead of editing that file; the operator runs it.
+        command = claude_user_scope_command(name, spec)
+        result.update(scope="user", claude_command=command, install_status="not_run")
+        result["next_steps"][0] = ("Run this command yourself to register the server for every project: "
+                                   + command["command_line"])
+        return result
     if install:
         target = Path(config_file) if config_file else _default_config(client, project_dir=project)
         result.update(install_config(client, target, name, spec))
