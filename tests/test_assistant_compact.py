@@ -313,3 +313,22 @@ def test_wait_for_job_accepts_up_to_120_seconds(tmp_path, monkeypatch):
     server = build_assistant_server(tmp_path)
     waited = _call(server, "wait_for_job", {"job_id": "a" * 32, "timeout_seconds": 120})
     assert waited["completed"] and waited["result_summary"] == {"reports_ready": 3, "target_count": 9}
+
+
+def test_claude_code_kit_is_portable_and_least_privilege():
+    root = Path(__file__).resolve().parents[1]
+    files = [root / "CLAUDE.md", root / ".claude/settings.json", root / ".claude/agents/sourceledger-collector.md",
+             root / ".claude/skills/collect/SKILL.md"]
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        assert r"C:\Users" not in text and "/home/" not in text and "/Users/" not in text, path
+    assert (root / "CLAUDE.md").read_text(encoding="utf-8").startswith("@AGENTS.md")
+    settings = json.loads(files[1].read_text(encoding="utf-8"))
+    assert set(settings) == {"permissions"} and "hooks" not in settings
+    assert all(rule.startswith("mcp__sourceledger__") for rule in
+               settings["permissions"]["allow"] + settings["permissions"]["ask"])
+    assert not any(rule.split("__")[-1].startswith(("confirm", "start", "retry"))
+                   for rule in settings["permissions"]["allow"])
+    header = files[2].read_text(encoding="utf-8").split("---")[1]
+    fields = dict(line.split(": ", 1) for line in header.strip().splitlines())
+    assert fields["model"] == "haiku" and fields["tools"] == "mcp__sourceledger__*"

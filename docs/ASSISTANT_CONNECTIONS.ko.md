@@ -44,6 +44,12 @@ source-ledger.cmd connect --client claude-desktop
 source-ledger.cmd connect --client claude-code --project-dir "C:\work\my-project" --install
 ```
 
+한 프로젝트가 아니라 모든 Claude Code 프로젝트에 서버를 등록하려면 `--scope user`를 사용합니다. 이때 SourceLedger는 동일한 `claude mcp add --scope user --env PYTHONUTF8=1 --transport stdio <이름> -- <python> -m su_crawler serve-assistant ...` 명령(`claude_command.command_line`)을 출력만 하고, 직접 실행하거나 사용자 설정 파일을 수정하지 않습니다. 출력된 명령을 직접 실행하세요.
+
+```bat
+source-ledger.cmd connect --client claude-code --scope user
+```
+
 `--config-file PATH`는 클라이언트 설정 파일을 직접 지정하며 `--install`과 함께만 쓸 수 있습니다. Windows·macOS 이외 운영체제에서 Claude Desktop을 연결할 때 이 옵션이 필요합니다.
 
 설치는 없는 `sourceledger` 서버 항목만 병합합니다. 다른 설정을 유지하고, 대상 파일 옆에 바이트 단위 백업(`.sourceledger-<id>.bak`)을 남기며, 같은 이름에 다른 설정이 있으면 덮어쓰지 않고 거절합니다. 그 경우 다른 이름을 쓰거나 생성된 설정을 직접 검토해 병합하세요. 프로젝트 `.mcp.json`과 백업 파일은 Git이 추적하지 않습니다.
@@ -78,7 +84,38 @@ source-ledger.cmd assistant stop --workspace-root .sourceledger
 
 ## 로컬 MCP 서버의 범위
 
-새 연구 계획 경로에는 `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, `generate_research_preview`의 도구 8개가 추가되어 assistant MCP 도구는 보완 도구 3개를 포함해 총 30개입니다. 짧거나 여러 줄의 상세 요청을 그대로 저장합니다. 연결된 AI 앱은 자체 검색·브라우저 도구로 실제 근거를 살펴본 뒤 `submit_research_preview`로 URL과 이유를 제출할 수 있으며, 모델은 호스트 앱이 관리합니다. 또는 Codex CLI·Claude Code CLI 공급자와 모델을 명시적으로 선택해 `generate_research_preview`를 실행할 수 있습니다. 두 경로의 결과는 제한된 미검증 출처 근거이며 가격 관측이 아닙니다. 사용자는 후보를 추가·제거·선택하고 산업군·상품·시장과 표시된 수정본을 승인한 뒤 `start_research_plan`으로 수집을 시작합니다. 정확한 상품 식별자는 이 흐름에서 고급 선택 사항입니다.
+assistant MCP 서버의 도구는 총 46개입니다. 기본 연구 계획 경로는 `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, `generate_research_preview`의 8개 도구를 사용합니다. 짧거나 여러 줄의 상세 요청을 그대로 저장합니다. 연결된 AI 앱은 자체 검색·브라우저 도구로 실제 근거를 살펴본 뒤 `submit_research_preview`로 URL과 이유를 제출할 수 있으며, 모델은 호스트 앱이 관리합니다. 또는 Codex CLI·Claude Code CLI 공급자와 모델을 명시적으로 선택해 `generate_research_preview`를 실행할 수 있습니다. 두 경로의 결과는 제한된 미검증 출처 근거이며 가격 관측이 아닙니다. 사용자는 후보를 추가·제거·선택하고 산업군·상품·시장과 표시된 수정본을 승인한 뒤 `start_research_plan`으로 수집을 시작합니다. 정확한 상품 식별자는 이 흐름에서 고급 선택 사항입니다.
+
+### 간결한 응답
+
+큰 도구 결과를 파일로 돌리는 호스트(Claude Code는 매우 큰 결과를 이렇게 처리합니다)에서도 상태를 볼 수 있도록 응답은 기본적으로 간결합니다.
+
+- 계획 도구(`create_research_plan`, `get_research_plan`, `update_research_plan`, `submit_research_preview`, `confirm_research_plan`)는 계획 요약을 반환합니다. 요약에는 ID, 수정본, 상태, 주제, 요청, 조건, 후보 수, 호스트별 수, `url_fingerprint`(선택 URL 순서를 반영한 SHA-256, 배치 실행이 고정하는 값과 동일)가 들어 있습니다. 후보 레코드는 `include_candidates=true`와 `offset`/`limit`(최대 200)으로 페이지 단위 조회합니다. `list_research_plans`와 `get_workspace_status`는 계획 요약만 나열합니다.
+- `get_research_batch_progress`는 개수, 상태별 URL 수, 경과 시간, 변경 수, 최종 파일 경로를 반환합니다. `include_changes=true`와 `offset`/`limit`(최대 50)을 주면 간결한 변경 행을 추가합니다. URL별 상태는 `get_research_gaps`, 전체 변경 행은 `get_collection_changes`로 페이지 조회합니다.
+- `get_research_batch_reports`는 최종 XLSX·대시보드 경로와 배치별 보고서 파일명 한 페이지(기본 10, 최대 50)를 반환합니다.
+- `get_job_status`와 `list_recent_jobs`는 `include_arguments`/`include_result`가 true일 때만 원래 인자와 결과를 포함합니다.
+- `get_job_observations`는 범위(coverage) 개수만 알려 주며, `include_coverage=true`와 `coverage_offset`/`coverage_limit`으로 범위와 섹션 누락을 페이지 조회합니다.
+- `wait_for_job`의 `timeout_seconds`는 최대 120초(기본 20초)이며 간결한 상태만 반환합니다.
+
+525개 URL의 합성 배치 작업에서도 기본 배치 진행·배치 보고서·계획 응답은 각각 3,000자 미만이며 테스트로 확인합니다.
+
+### URL 목록과 배치 후속 작업
+
+`import_plan_urls(plan_id, expected_revision, path, replace=false)`는 워크스페이스 기준 상대 경로 또는 절대 경로의 `.txt`(한 줄에 URL 하나, `#` 주석), `.csv`(`url` 열), `.json`(목록 또는 `{"urls": [...]}`) 파일을 읽어 파일 순서대로 선택된 후보로 추가합니다. 개수, 두 지문(fingerprint), 중복, 잘못된 줄, 처음·마지막 URL 3개를 반환합니다. 잘못된 줄은 보고만 하고 고치지 않습니다. 호스트는 URL 목록을 `update_research_plan`에 다시 입력하지 마세요. 다른 편집과 마찬가지로 가져오기는 승인되지 않은 새 수정본을 만듭니다.
+
+`get_research_gaps`, `get_job_observations`, `retry_research_pages`는 단일 계획 작업뿐 아니라 배치 작업에서도 동작합니다. `urls` 없이 `retry_research_pages`를 호출하면 작업 자체가 재시도 가능하다고 보고한 페이지만 다시 시도합니다(접근·정책·근거 검토가 필요한 페이지는 제외). 배치 재시도는 같은 계획 수정본과 URL 목록에 고정된 새 `research_batch` 작업이며, 저널에서 재시도한 배치를 부모 결과에 합쳐 새 최종 통합 문서를 만듭니다.
+
+### 모델 없는 무인 수집
+
+예약 실행이나 무인 실행에는 AI 도구가 필요하지 않습니다.
+
+```bat
+source-ledger.cmd collect-plan --workspace-root .sourceledger --urls-file urls.txt ^
+  --industry "..." --product "..." --market "..." --yes --json
+source-ledger.cmd assistant wait --workspace-root .sourceledger --job-id <작업_ID> --timeout 7200 --json
+```
+
+`collect-plan`은 계획을 만들거나 `--plan-id`를 재사용하고, 파일을 교체 방식으로 가져와 승인한 뒤 같은 프로세스에서 배치 작업 하나를 실행합니다. 명시적인 `--yes`와 URL 파일이 운영자의 승인입니다. `--yes`가 없으면 워크스페이스를 건드리기 전에 거부하고, 잘못된 줄이 있는 파일도 거부합니다. `--plan-id`에 같은 주제와 URL 목록의 승인된 수정본이 있으면 그 수정본을 재사용합니다. 옵션은 `--batch-size`(기본 20), `--concurrency`(2), `--browser-concurrency`(1), `--browser-reuse`, 배치당 `--max-seconds`(600), 다른 worker를 기다리는 `--timeout`(7200)입니다. 결과로 JSON 요약 하나(상태, 범위·관측 개수, 최종 XLSX·대시보드 경로, 변경 수, 오류)를 출력합니다. 종료 코드는 0 성공, 1 실패·중단, 2 거부·잘못된 입력, 3 대기 시간 초과(아직 실행 중)입니다. `assistant wait`는 기존 작업에 대해 같은 요약을 출력합니다. 성공한 작업은 실행 결과일 뿐 확인된 가격 근거가 아닙니다.
 
 승인한 계획은 페이지·시간 한도 안에서 선택 URL을 수집하고 방문·미처리 범위를 기록하며 SQLite 원문 근거와 XLSX 보고서를 만듭니다. 선택 호스트의 관련 없는 탐색 링크도 한도 안에서 방문할 수 있습니다. 일반 JSON-LD Product/Offer는 여러 상품 종류의 원문 가격·속성을 보존할 수 있지만 화면 표시 근거가 없는 값은 검토 대상으로 남습니다. 지원하는 구조화 조건은 근거와 규칙으로 판정하고 확인 불가·제외 상품을 별도로 집계합니다. 이 판정이 모든 자연어·상업 조건의 확인을 뜻하지 않으므로 알려진 어댑터의 가격에도 범위 검토 표시를 유지합니다. 임의 페이지 레이아웃과 제한 없는 의미 검증은 지원하지 않으며 없는 값은 추정하지 않습니다. 미리보기 내용은 범위를 넓히거나 가격 수집을 지시하는 명령이 아닙니다.
 
@@ -106,6 +143,8 @@ stdio만 사용합니다. MCP 클라이언트가 이 명령을 시작하므로 �
 
 요청 실행은 로컬 worker 작업을 대기열에 넣습니다. 결과는 Sources에서 사람이 검토하고 선택해야 하는 미검증 추천 후보이며, 가격 수집 작업을 시작하거나 가격 관측을 만들지 않습니다. 검색 중 공급자 CLI가 웹 페이지에 접근할 수 있습니다. 기존 수집 모델 호출은 계속 선택 사항이며 기본값은 0회입니다.
 
-이 연결은 클라우드 배포가 아닙니다. Codex/Claude 웹·모바일 접근, 원격 산출물 다운로드, 호스트 브라우저 세션 직접 재사용, 예약 실행, 무인 복구는 이번 구현 범위 밖입니다.
+이 연결은 클라우드 배포가 아닙니다. Codex/Claude 웹·모바일 접근, 원격 산출물 다운로드, 호스트 브라우저 세션 직접 재사용, 무인 복구는 이번 구현 범위 밖입니다. SourceLedger는 스케줄러를 설치하지 않으며, 운영자가 직접 만든 예약 작업에서 `collect-plan`을 실행할 수 있습니다.
+
+저장소의 `CLAUDE.md`와 `.claude/` 폴더에는 선택 사항인 Claude Code 도구 모음(수집 스킬, 수집 하위 에이전트, 읽기 전용 권한 기본값)이 있습니다. 자격 증명이나 컴퓨터별 경로는 포함하지 않습니다.
 
 실패·누락 조회, 브라우저 근거 제출, 부분 재시도와 체크포인트 재개는 [MCP 근거 보완과 조사 재개](MCP_FOLLOWUP.ko.md)를 참고하세요.
