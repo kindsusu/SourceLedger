@@ -52,10 +52,16 @@ class RobotsUnavailable(Exception):
 
 
 class RobotsPolicyCache:
-    """A bounded cache owned by one collection job, shareable across workers."""
+    """A bounded cache owned by one collection job, shareable across workers.
 
-    def __init__(self, ttl_seconds: float = 300.0) -> None:
+    Unavailable answers are cached too, so a robots.txt that answers 401/403
+    (or fails) is not requested again for every page. Server and network
+    failures use a short TTL because they may be transient.
+    """
+
+    def __init__(self, ttl_seconds: float = 900.0, failure_ttl_seconds: float = 15.0) -> None:
         self.ttl_seconds = ttl_seconds
+        self.failure_ttl_seconds = failure_ttl_seconds
         self._entries: dict[tuple[Any, ...], tuple[float, RobotFileParser | None, str]] = {}
         self._lock = threading.Lock()
 
@@ -69,12 +75,14 @@ class RobotsPolicyCache:
                 return None
             return entry[1], entry[2]
 
-    def put(self, key: tuple[Any, ...], parser: RobotFileParser | None, reason: str) -> None:
+    def put(self, key: tuple[Any, ...], parser: RobotFileParser | None, reason: str,
+            *, transient: bool = False) -> None:
+        ttl = self.failure_ttl_seconds if transient else self.ttl_seconds
         with self._lock:
-            if len(self._entries) >= 256:
+            if len(self._entries) >= 256 and key not in self._entries:
                 oldest = min(self._entries, key=lambda item: self._entries[item][0])
                 del self._entries[oldest]
-            self._entries[key] = (time.monotonic() + self.ttl_seconds, parser, reason)
+            self._entries[key] = (time.monotonic() + ttl, parser, reason)
 
 
 _robots_cache: ContextVar[RobotsPolicyCache | None] = ContextVar("robots_policy_cache", default=None)
@@ -89,6 +97,66 @@ def robots_policy_scope(cache: RobotsPolicyCache | None = None) -> Any:
         yield shared
     finally:
         _robots_cache.reset(token)
+
+
+def _new_http_client(timeout_seconds: float) -> httpx.Client:
+    return httpx.Client(
+        timeout=httpx.Timeout(timeout_seconds),
+        follow_redirects=False,
+        headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/json,*/*;q=0.8"},
+        trust_env=False,
+    )
+
+
+class HttpClientPool:
+    """One connection-pooling HTTP client per collection job.
+
+    ``httpx.Client`` is safe to share between worker threads. Per-request
+    timeouts still follow each source's remaining budget. Redirects are never
+    followed by the client; each hop is checked by the collector.
+    """
+
+    def __init__(self) -> None:
+        self._client: httpx.Client | None = None
+        self._lock = threading.Lock()
+
+    def client(self) -> httpx.Client:
+        with self._lock:
+            if self._client is None:
+                self._client = _new_http_client(30.0)
+            return self._client
+
+    def close(self) -> None:
+        with self._lock:
+            client, self._client = self._client, None
+        if client is not None:
+            client.close()
+
+
+_http_pool: ContextVar[HttpClientPool | None] = ContextVar("http_client_pool", default=None)
+
+
+@contextmanager
+def http_client_scope(pool: HttpClientPool | None = None) -> Any:
+    """Reuse HTTP connections within one job; pass the pool to worker threads."""
+    shared = pool or HttpClientPool()
+    token = _http_pool.set(shared)
+    try:
+        yield shared
+    finally:
+        _http_pool.reset(token)
+        if pool is None:
+            shared.close()
+
+
+@contextmanager
+def collection_job_scope() -> Any:
+    """Share robots decisions and HTTP connections across a job's batches.
+
+    ``collect_plan`` reuses an active scope instead of creating its own.
+    """
+    with robots_policy_scope(_robots_cache.get()) as robots, http_client_scope(_http_pool.get()) as pool:
+        yield robots, pool
 
 
 def _policy_error(code: str, message: str) -> PolicyError:
@@ -279,18 +347,19 @@ def _file_collect(source: Source, base_dir: str) -> FetchResult:
 
 def _get_following_policy(
     client: httpx.Client, source: Source, url: str, *, headers: dict[str, str] | None = None,
-    enforce_robots: bool = False,
+    enforce_robots: bool = False, timeout: float | None = None,
 ) -> tuple[httpx.Response, list[dict[str, Any]]]:
     trace: list[dict[str, Any]] = []
     current = url
     for _ in range(MAX_REDIRECTS + 1):
         _check_url(source, current)
         if enforce_robots:
-            _require_robots_access(client, source, current)
+            _require_robots_access(client, source, current, timeout=timeout)
         # Validators can identify a prior response, so never forward them to a
         # redirect target (including another allowed domain).
         request_headers = headers if current == url else None
-        response = client.send(client.build_request("GET", current, headers=request_headers), stream=True)
+        options: dict[str, Any] = {"timeout": httpx.Timeout(timeout)} if timeout is not None else {}
+        response = client.send(client.build_request("GET", current, headers=request_headers, **options), stream=True)
         trace.append({"event": "http", "url": _safe_url(str(response.url)), "status": response.status_code, "at": utc_now()})
         if response.status_code not in {301, 302, 303, 307, 308}:
             return response, trace
@@ -302,11 +371,21 @@ def _get_following_policy(
     raise httpx.TooManyRedirects("Redirect limit exceeded")
 
 
-def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[str, str]:
-    """Return allowed/disallowed/unavailable without treating fetch errors as rules."""
+_AMBIENT = object()
+
+
+def _robots_decision(client: httpx.Client, source: Source, url: str,
+                     cache: RobotsPolicyCache | None | object = _AMBIENT,
+                     timeout: float | None = None) -> tuple[str, str]:
+    """Return allowed/disallowed/unavailable without treating fetch errors as rules.
+
+    Pass ``cache`` explicitly from callbacks (such as Playwright route
+    handlers) that may run outside the caller's context variables.
+    """
     parsed = urlsplit(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    cache = _robots_cache.get()
+    if cache is _AMBIENT:
+        cache = _robots_cache.get()
     key = (parsed.scheme, parsed.netloc.lower(), USER_AGENT, tuple(sorted(source.allowed_domains)), source.internal)
     cached = cache.get(key) if cache is not None else None
     if cached is not None:
@@ -314,8 +393,14 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
         if parser is None:
             return "unavailable" if reason != "robots.txt not found" else "allowed", reason
         return ("allowed", "robots.txt allows collection") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt disallows collection")
+
+    def unavailable(reason: str, *, transient: bool) -> tuple[str, str]:
+        if cache is not None:
+            cache.put(key, None, reason, transient=transient)
+        return "unavailable", reason
+
     try:
-        response, _ = _get_following_policy(client, source, robots_url)
+        response, _ = _get_following_policy(client, source, robots_url, timeout=timeout)
         if response.status_code in {404, 410}:
             response.close()
             if cache is not None:
@@ -323,13 +408,13 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
             return "allowed", "robots.txt not found"
         if response.status_code in {401, 403}:
             response.close()
-            return "unavailable", "robots.txt access is unavailable"
+            return unavailable("robots.txt access is unavailable", transient=False)
         if 400 <= response.status_code < 500:
             response.close()
-            return "unavailable", "robots.txt request failed"
+            return unavailable("robots.txt request failed", transient=response.status_code == 429)
         if response.status_code >= 500:
             response.close()
-            return "unavailable", "robots.txt server error"
+            return unavailable("robots.txt server error", transient=True)
         try:
             data = _read_limited(response).decode(response.encoding or "utf-8", errors="replace")
         finally:
@@ -341,11 +426,13 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
             cache.put(key, parser, "robots.txt policy loaded")
         return ("allowed", "robots.txt allows collection") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt disallows collection")
     except (httpx.HTTPError, OSError, ValueError, PolicyError):
-        return "unavailable", "Unable to check robots.txt"
+        return unavailable("Unable to check robots.txt", transient=True)
 
 
-def _require_robots_access(client: httpx.Client, source: Source, url: str) -> None:
-    decision, reason = _robots_decision(client, source, url)
+def _require_robots_access(client: httpx.Client, source: Source, url: str,
+                           cache: RobotsPolicyCache | None | object = _AMBIENT, *,
+                           timeout: float | None = None) -> None:
+    decision, reason = _robots_decision(client, source, url, cache, timeout)
     if decision == "disallowed":
         raise _policy_error("robots_disallowed", "robots.txt does not allow collection")
     if decision == "unavailable":
@@ -382,15 +469,16 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
         _check_url(source, source.location)
     except PolicyError as exc:
         return _policy_result(source, "http", exc)
-    timeout = httpx.Timeout(source.timeout_seconds)
+    pool = _http_pool.get()
     try:
-        with robots_policy_scope(_robots_cache.get()), httpx.Client(
-            timeout=timeout,
-            follow_redirects=False,
-            headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/json,*/*;q=0.8"},
-            trust_env=False,
-        ) as client:
-            response, trace = _get_following_policy(client, source, source.location, headers=_conditional_headers(validators), enforce_robots=source.respect_robots)
+        with ExitStack() as scope:
+            scope.enter_context(robots_policy_scope(_robots_cache.get()))
+            client = (pool.client() if pool is not None
+                      else scope.enter_context(_new_http_client(source.timeout_seconds)))
+            response, trace = _get_following_policy(client, source, source.location, headers=_conditional_headers(validators),
+                                                    enforce_robots=source.respect_robots, timeout=source.timeout_seconds)
+            # A pooled connection is returned only after the body is closed.
+            scope.callback(response.close)
             final_url = str(response.url)
             metadata = _http_metadata(response)
             if response.status_code == 304:
@@ -920,14 +1008,17 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
     try:
         session = None if source.profile_dir else getattr(_browser_thread_state, "session", None)
         with ExitStack() as cleanup:
-            cleanup.enter_context(robots_policy_scope(_robots_cache.get()))
+            # Route callbacks run in Playwright's dispatcher context, where
+            # this thread's context variables are not visible. Pass the job's
+            # robots cache explicitly so navigations reuse its decisions.
+            robots_cache = cleanup.enter_context(robots_policy_scope(_robots_cache.get()))
             robots_client = None
             if source.respect_robots:
-                robots_client = cleanup.enter_context(httpx.Client(
-                    timeout=httpx.Timeout(min(source.timeout_seconds, max(0.1, deadline - time.monotonic()))),
-                    follow_redirects=False, headers={"User-Agent": USER_AGENT}, trust_env=False,
-                ))
-                _require_robots_access(robots_client, source, source.location)
+                pool = _http_pool.get()
+                robots_client = (pool.client() if pool is not None else
+                                 cleanup.enter_context(_new_http_client(min(source.timeout_seconds, max(0.1, deadline - time.monotonic())))))
+                _require_robots_access(robots_client, source, source.location, robots_cache,
+                                       timeout=max(0.1, deadline - time.monotonic()))
             # Unroute and close while Playwright's driver is still running.
             # An outer finally executes too late: __exit__ already stops it.
             if session is not None:
@@ -966,7 +1057,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                             raise _policy_error("navigation_method_denied", "Browser navigation method is not allowed")
                         _check_url(source, request.url)
                         if robots_client is not None:
-                            _require_robots_access(robots_client, source, request.url)
+                            _require_robots_access(robots_client, source, request.url, robots_cache,
+                                                   timeout=max(0.1, deadline - time.monotonic()))
                         # Browser-followed redirects do not reliably trigger a
                         # route callback. Stop at this response and perform the
                         # next navigation explicitly so each hop is checked.
@@ -977,7 +1069,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                                 destination = urljoin(request.url, location)
                                 _check_url(source, destination)
                                 if robots_client is not None:
-                                    _require_robots_access(robots_client, source, destination)
+                                    _require_robots_access(robots_client, source, destination, robots_cache,
+                                                           timeout=max(0.1, deadline - time.monotonic()))
                                 pending_redirect.append(destination)
                                 trace.append({"event": "navigation_redirect_verified", "url": _safe_url(destination), "at": utc_now()})
                                 route.abort("blockedbyclient")
