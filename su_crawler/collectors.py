@@ -9,6 +9,7 @@ import asyncio
 from contextlib import ExitStack, contextmanager
 import hashlib
 import importlib.util
+import json
 import ipaddress
 import mimetypes
 import socket
@@ -25,7 +26,7 @@ import httpx
 
 from .models import FetchResult, Source, resolve_path, utc_now
 from .browser_runtime import browser_headless, select_browser_runtime
-from .browser_settlement import install_tracker_sync, wait_settled_sync
+from .browser_settlement import SETTLEMENT_STATE_JS, install_tracker_sync, wait_settled_sync
 from .browser_enumeration import ListingChanged, SnapshotBudgetExceeded, enumerate_buttons, enumerate_options, paginate, scroll_list, validate_enumeration_step
 from .access_challenges import detect_challenge
 
@@ -590,6 +591,28 @@ def _expand_options(step: dict[str, Any]) -> tuple[str, str, int, int, str | Non
             float(step.get("initial_wait_seconds", 8)), float(step.get("progress_wait_seconds", 5)))
 
 
+_LIGHT_LIST_PROBE_JS = """els => ({count: els.length,
+  last: els.length ? (els[els.length - 1].innerText || '').trim().slice(0, 4096) : ''})"""
+
+# A list whose growth was observed to wait on fetch/XHR may confirm its end
+# after this much network-quiet, button-free and card-stable time instead of
+# the full progress window. Lists without that evidence keep the full window.
+NETWORK_TERMINAL_FLOOR_SECONDS = 2.5
+
+
+def _network_state(page: Any) -> dict[str, Any]:
+    try:
+        state = page.evaluate(SETTLEMENT_STATE_JS)
+    except Exception:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _network_quiet(state: dict[str, Any], quiet_ms: float) -> bool:
+    return (state.get("tracked") is True and state.get("pending") == 0 and state.get("loading") == 0
+            and isinstance(state.get("idleMs"), (int, float)) and state["idleMs"] >= quiet_ms)
+
+
 def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list[dict[str, Any]]) -> None:
     """Expand one scoped, append-only list; record incomplete or replaced lists honestly."""
     item_selector, button_selector, max_clicks, max_items, empty_selector, all_selector, initial_wait, progress_wait = _expand_options(step)
@@ -604,6 +627,7 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
     replaced = False
     start_url = page.url
     current: list[str] = []
+    network_driven = False
 
     def scoped_one(selector: str, kind: str) -> Any:
         matches = container.locator(selector)
@@ -613,6 +637,12 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
 
     def visible_count(selector: str) -> int:
         return container.locator(selector + ":visible").count()
+
+    def light() -> tuple[int, str]:
+        # Polling reads the count and last card text only. Full card HTML is
+        # serialized on progress and for terminal confirmation.
+        data = container.locator(item_selector + ":visible").evaluate_all(_LIGHT_LIST_PROBE_JS)
+        return int(data.get("count", 0)), hashlib.sha256(str(data.get("last", "")).encode("utf-8")).hexdigest()
 
     def observe() -> list[str]:
         nonlocal count, replaced
@@ -640,26 +670,54 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
         return identities
 
     def terminal_confirmed() -> bool:
-        """Confirm the button and cards stay unchanged for the recipe's progress window."""
-        if (remaining_ms() - 1500) / 1000 < progress_wait:
+        """Confirm the button and cards stay unchanged for the terminal window.
+
+        The window is the recipe's progress wait. A list whose every load was
+        seen on the tracked network uses a shorter floor, counted from the
+        last network activity and only while no fetch/XHR or loader is active.
+        """
+        floor = min(progress_wait, NETWORK_TERMINAL_FLOOR_SECONDS)
+        if (remaining_ms() - 1500) / 1000 < (floor if network_driven else progress_wait):
             return False
         stable_since = time.monotonic()
         baseline = prior.copy()
+        baseline_light = light()
         while True:
             if page.url != start_url or visible_count(button_selector):
                 return False
-            if observe() != baseline:
-                baseline = prior.copy()
-                stable_since = time.monotonic()
+            current_light = light()
+            if current_light != baseline_light:
+                baseline_light = current_light
+                if observe() != baseline:
+                    baseline = prior.copy()
+                    stable_since = time.monotonic()
             if replaced:
                 return False
+            window = progress_wait
+            if network_driven:
+                state = _network_state(page)
+                if state.get("tracked") is True:
+                    now = time.monotonic()
+                    if state.get("pending") or state.get("loading"):
+                        stable_since = now
+                    elif isinstance(state.get("idleMs"), (int, float)):
+                        stable_since = max(stable_since, now - state["idleMs"] / 1000)
+                    window = floor
             elapsed = time.monotonic() - stable_since
-            if elapsed >= progress_wait:
+            if elapsed >= window:
+                # Positive confirmation: a full re-read must match exactly.
+                if observe() != baseline:
+                    if replaced:
+                        return False
+                    baseline = prior.copy()
+                    baseline_light = light()
+                    stable_since = time.monotonic()
+                    continue
                 return page.url == start_url and visible_count(button_selector) == 0
             available_ms = remaining_ms() - 1500
             if available_ms <= 0:
                 return False
-            page.wait_for_timeout(min(200, max(1, (progress_wait - elapsed) * 1000), available_ms))
+            page.wait_for_timeout(min(200, max(1, (window - elapsed) * 1000), available_ms))
 
     try:
         if container.count() != 1:
@@ -680,9 +738,10 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
                 reason = "unexpected_navigation"
                 status = "partial" if count else "unknown"
                 break
-            current = observe()
-            if current:
-                break
+            if light()[0]:
+                current = observe()
+                if current:
+                    break
             if empty_selector and visible_count(empty_selector) == 1:
                 status, reason = "complete", "explicit_empty"
                 break
@@ -717,6 +776,8 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
                 status, reason = "partial", "click_budget" if clicks >= max_clicks else "item_budget"
                 break
             control = scoped_one(button_selector + ":visible", "button")
+            before_light = light()
+            before_network = _network_state(page)
             if step.get("trigger", "click") == "scroll":
                 control.scroll_into_view_if_needed(timeout=remaining_ms())
             else:
@@ -724,16 +785,26 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
             clicks += 1
             before = current
             progressed = False
+            saw_request = False
             progress_until = time.monotonic() + min(progress_wait, max(0.0, (remaining_ms() - 1500) / 1000))
             while time.monotonic() < progress_until:
                 if page.url != start_url:
                     break
-                current = observe()
-                if current != before:
-                    progressed = True
-                    break
+                state = _network_state(page)
+                saw_request = saw_request or bool(state.get("pending")) or (
+                    state.get("version") is not None and before_network.get("version") is not None
+                    and state["version"] != before_network["version"])
+                if light() != before_light:
+                    current = observe()
+                    if current != before:
+                        progressed = True
+                        break
                 page.wait_for_timeout(min(200, max(1, (progress_until - time.monotonic()) * 1000)))
-            if not progressed:
+            if progressed:
+                # Each load must be network-driven for the shorter terminal
+                # floor to apply; one client-side reveal disables it.
+                network_driven = saw_request and (network_driven or clicks == 1)
+            else:
                 if page.url != start_url:
                     status, reason = "partial", "unexpected_navigation"
                 elif visible_count(button_selector) == 0:
@@ -749,6 +820,11 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
                     else:
                         status, reason = "partial", "completion_unconfirmed"
                 else:
+                    current = observe()
+                    if current != before:
+                        # A card changed without changing the count or last
+                        # card; treat as progress and let replacement checks run.
+                        continue
                     status, reason = "partial", "no_progress"
                 break
     except ValueError as exc:
@@ -759,9 +835,16 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
         reason = "action_timeout" if type(exc).__name__.endswith("TimeoutError") else "browser_error"
         status = "partial" if count else "unknown"
     finally:
+        cards = list(observed.values())
         trace.append({"event": "list_expansion", "section": section, "status": status,
                       "reason": reason, "observed_count": count, "click_count": clicks,
-                      "replaced": replaced, "observed_cards": list(observed.values()), "at": utc_now()})
+                      "replaced": replaced, "network_driven": network_driven,
+                      "observed_cards_sha256": _cards_digest(cards),
+                      "observed_cards": cards, "at": utc_now()})
+
+
+def _cards_digest(cards: list[dict[str, Any]]) -> str:
+    return hashlib.sha256(json.dumps(cards, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 _OBSERVATION_PROBE_JS = r"""(selector) => {
