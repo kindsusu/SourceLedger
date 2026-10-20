@@ -14,7 +14,7 @@ from .research_plans import canonical_url
 def build_execution_brief(plan: dict, provider: str = "connected", model: str = "",
                           max_pages: int = 10, max_seconds: float = 120,
                           follow_links: bool = False, concurrency: int = 2,
-                          browser_reuse: bool = False, browser_concurrency: int = 1) -> dict:
+                          browser_reuse: bool = True, browser_concurrency: int = 1) -> dict:
     """Return model and selected-site facts to show before a collection run."""
     if not isinstance(plan, dict):
         raise ValueError("Research plan must be an object")

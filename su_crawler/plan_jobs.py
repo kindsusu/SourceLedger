@@ -45,7 +45,9 @@ def _validate(args: dict, operation: str, *, prepared: bool = False) -> dict:
         if isinstance(concurrency, bool) or not isinstance(concurrency, int) or not 1 <= concurrency <= 4:
             raise ValueError("concurrency must be an integer from 1 to 4")
         clean["concurrency"] = concurrency
-        browser_reuse = args.get("browser_reuse", False)
+        # Chromium reuse (fresh context per URL) is the default for new jobs;
+        # older prepared jobs keep their pinned browser settings on resume.
+        browser_reuse = args.get("browser_reuse", not prepared)
         browser_concurrency = args.get("browser_concurrency", 1)
         if not isinstance(browser_reuse, bool):
             raise ValueError("browser_reuse must be a boolean")
@@ -105,7 +107,7 @@ def confirm_research(root: str | Path, **args) -> dict:
 def preview_execution(root: str | Path, plan_id: str, expected_revision: int,
                       provider: str = "connected", model: str = "", max_pages: int = 10,
                       max_seconds: float = 120, follow_links: bool = False, concurrency: int = 2,
-                      browser_reuse: bool = False, browser_concurrency: int = 1) -> dict:
+                      browser_reuse: bool = True, browser_concurrency: int = 1) -> dict:
     """Describe a pinned scope and execution capability without starting work."""
     from .execution_policy import build_execution_brief
     clean = _validate({"plan_id": plan_id, "expected_revision": expected_revision,
