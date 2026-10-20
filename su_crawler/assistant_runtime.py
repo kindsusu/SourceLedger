@@ -367,6 +367,39 @@ def start_worker(root: str | Path) -> dict[str, Any]:
         raise RuntimeError(f"Assistant worker did not become ready within {STARTUP_SECONDS:g} seconds; inspect {runtime / 'worker.log'}")
 
 
+def run_inline_worker(root: str | Path, *, idle_timeout: float = 1.0) -> bool:
+    """Drain the queue in this process when no worker owns the workspace.
+
+    Used by unattended CLI runs so no detached process outlives them. Returns
+    False without doing work when another worker is active or wins the launch
+    race; callers then wait for that worker instead.
+    """
+    if isinstance(idle_timeout, bool) or not isinstance(idle_timeout, (int, float)) or not 0 < idle_timeout <= 60:
+        raise ValueError("idle_timeout must be between 0 and 60 seconds")
+    workspace = _root(root)
+    runtime = workspace / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    for path in (runtime / "start.lock", runtime / "worker.lock"):
+        if path.is_symlink() or (path.exists() and path.resolve().parent != runtime.resolve()):
+            raise ValueError("assistant runtime files must not be symbolic links or junctions")
+    try:
+        with _locked(runtime / "start"):
+            if _status_with_start_lock(workspace)["status"] != "stopped":
+                return False
+            token = uuid.uuid4().hex
+            (runtime / "stop.json").unlink(missing_ok=True)
+            _write_json(runtime / "state.json", {
+                "status": "starting", "pid": os.getpid(), "token": token, "current_job_id": None,
+                "updated_at": utc_now(), "mode": "inline",
+            })
+    except RuntimeError:
+        return False  # Another launcher owns the start lock.
+    try:
+        return _run_worker(workspace, token, float(idle_timeout)) == 0
+    except RuntimeError:
+        return False  # Another worker acquired the worker lock first.
+
+
 def stop_worker(root: str | Path) -> dict[str, Any]:
     workspace = _root(root)
     runtime = workspace / "runtime"

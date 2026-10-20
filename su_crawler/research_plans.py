@@ -360,6 +360,184 @@ def confirm_plan(root: str | Path, plan_id: str, expected_revision: int,
     return {"plan": plan}
 
 
+MAX_URL_FILE_BYTES = 2 * 1024 * 1024
+URL_FILE_SUFFIXES = (".txt", ".csv", ".json")
+_HOST_COUNT_LIMIT = 20
+
+
+def selected_urls(plan: dict[str, Any]) -> list[str]:
+    """Return selected, non-excluded candidate URLs in plan order without duplicates."""
+    excluded = set(plan.get("excluded_urls", []))
+    return list(dict.fromkeys(item["url"] for item in plan.get("candidates", [])
+                              if item.get("selected") and item["url"] not in excluded))
+
+
+def url_fingerprint(urls: list[str]) -> str:
+    """Order-sensitive digest of an approved URL list (same as the batch-run pin)."""
+    encoded = json.dumps(list(urls), ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def host_counts(urls: list[str], limit: int = _HOST_COUNT_LIMIT) -> dict[str, Any]:
+    from collections import Counter
+    counts = Counter(urlsplit(url).hostname or "" for url in urls)
+    result: dict[str, Any] = {"host_counts": dict(counts.most_common(limit))}
+    if len(counts) > limit:
+        result["other_host_count"] = len(counts) - limit
+    return result
+
+
+def plan_summary(plan: dict[str, Any], *, brief: bool = False) -> dict[str, Any]:
+    """Bounded plan view: identity, topic, counts and URL pin, never the candidate list."""
+    urls = selected_urls(plan)
+    candidates = plan.get("candidates", [])
+    value: dict[str, Any] = {
+        "id": plan["id"], "revision": plan["revision"], "state": plan["state"],
+        "topic": plan.get("topic", {}), "updated_at": plan.get("updated_at"),
+        "confirmed_at": plan.get("confirmed_at"),
+        "counts": {"candidates": len(candidates), "selected": len(urls),
+                   "unselected": sum(not item.get("selected") for item in candidates),
+                   "excluded_urls": len(plan.get("excluded_urls", [])),
+                   "conditions": len(plan.get("conditions", [])),
+                   "collection_rules": len(plan.get("collection_rules", {}))},
+        **host_counts(urls),
+        "url_fingerprint": url_fingerprint(urls) if urls else None,
+    }
+    request = plan.get("request_text", "")
+    if brief:
+        value["request_excerpt"] = request[:160] + ("…" if len(request) > 160 else "")
+        return value
+    value.update(request_text=request[:1000], request_text_truncated=len(request) > 1000,
+                 summary=plan.get("summary", ""), categories=plan.get("categories", []),
+                 conditions=plan.get("conditions", []), include_terms=plan.get("include_terms", []),
+                 exclude_terms=plan.get("exclude_terms", []), note=plan.get("note", ""),
+                 refresh_policy=plan.get("refresh_policy"), created_at=plan.get("created_at"))
+    return value
+
+
+def _page_bounds(offset: Any, limit: Any) -> tuple[int, int]:
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("offset must be a non-negative integer")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+        raise ValueError("limit must be an integer from 1 to 200")
+    return offset, limit
+
+
+def candidate_page(plan: dict[str, Any], *, offset: int = 0, limit: int = 20) -> dict[str, Any]:
+    """Page full candidate records with their rules; excluded URLs are bounded too."""
+    offset, limit = _page_bounds(offset, limit)
+    candidates = plan.get("candidates", [])
+    page = candidates[offset:offset + limit]
+    rules = plan.get("collection_rules", {})
+    excluded = plan.get("excluded_urls", [])
+    return {"candidates": page, "candidate_total": len(candidates), "candidate_offset": offset,
+            "candidate_limit": limit, "candidate_has_more": offset + limit < len(candidates),
+            "collection_rules": {item["url"]: rules[item["url"]] for item in page if item["url"] in rules},
+            "excluded_urls": excluded[:100], "excluded_url_total": len(excluded)}
+
+
+def _url_entries(path: Path) -> list[tuple[str, Any]]:
+    """Read (location, raw value) pairs from a .txt, .csv or .json URL list."""
+    import csv
+    import io
+    suffix = path.suffix.lower()
+    text = path.read_bytes().decode("utf-8-sig")
+    if suffix == ".txt":
+        return [(f"line {number}", line.strip()) for number, line in enumerate(text.splitlines(), 1)
+                if line.strip() and not line.lstrip().startswith("#")]
+    if suffix == ".csv":
+        reader = csv.DictReader(io.StringIO(text))
+        columns = {name.strip().casefold(): name for name in (reader.fieldnames or []) if isinstance(name, str)}
+        if "url" not in columns:
+            raise ValueError("CSV URL files need a header row with a 'url' column")
+        entries = []
+        for row in reader:
+            value = (row.get(columns["url"]) or "").strip()
+            if value:
+                entries.append((f"line {reader.line_num}", value))
+        return entries
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"URL file is not valid JSON: {exc.msg}") from exc
+    if isinstance(document, dict) and set(document) >= {"urls"}:
+        document = document["urls"]
+    if not isinstance(document, list):
+        raise ValueError("JSON URL files must be a list or an object with a 'urls' list")
+    return [(f"item {number}", item.get("url") if isinstance(item, dict) else item)
+            for number, item in enumerate(document, 1)]
+
+
+def parse_url_file(path: str | Path) -> dict[str, Any]:
+    """Canonicalize an operator URL list exactly in file order; nothing is fetched.
+
+    Returns accepted URLs, later duplicates (after canonicalization), and invalid
+    entries with their location and reason. Invalid entries are never guessed.
+    """
+    source = Path(path)
+    if source.is_symlink() or not source.is_file():
+        raise ValueError("URL file does not exist or is a symbolic link")
+    if source.suffix.lower() not in URL_FILE_SUFFIXES:
+        raise ValueError("URL file must be .txt (one URL per line), .csv (url column) or .json")
+    if source.stat().st_size > MAX_URL_FILE_BYTES:
+        raise ValueError(f"URL file exceeds {MAX_URL_FILE_BYTES // (1024 * 1024)} MiB")
+    urls: list[str] = []
+    seen: dict[str, str] = {}
+    duplicates: list[dict[str, str]] = []
+    invalid: list[dict[str, str]] = []
+    entries = _url_entries(source)
+    for location, raw in entries:
+        try:
+            url = canonical_url(raw)
+        except ValueError as exc:
+            shown = raw if isinstance(raw, str) else type(raw).__name__
+            invalid.append({"location": location, "value": str(shown)[:120], "reason": str(exc)})
+            continue
+        if url in seen:
+            duplicates.append({"location": location, "url": url, "first": seen[url]})
+            continue
+        seen[url] = location
+        urls.append(url)
+    if len(urls) > MAX_CANDIDATES:
+        raise ValueError(f"URL file has more than {MAX_CANDIDATES} distinct URLs")
+    return {"urls": urls, "entry_count": len(entries), "duplicates": duplicates, "invalid": invalid}
+
+
+def import_urls(root: str | Path, plan_id: str, expected_revision: int, urls: list[str], *,
+                replace: bool = False) -> dict[str, Any]:
+    """Add canonical URLs as selected user candidates in the given order.
+
+    Existing records keep their names and reasons. With ``replace`` the candidate
+    list becomes exactly these URLs; otherwise other candidates stay in front.
+    Like any edit, this creates a new unconfirmed revision.
+    """
+    if not isinstance(urls, list) or not urls or len(urls) > MAX_CANDIDATES:
+        raise ValueError(f"Provide 1 to {MAX_CANDIDATES} URLs")
+    clean = list(dict.fromkeys(canonical_url(url) for url in urls))
+    if not isinstance(replace, bool):
+        raise ValueError("replace must be a boolean")
+    with _db(root) as db:
+        plan = _next(_current(db, plan_id, expected_revision))
+        existing = {item["url"]: item for item in plan["candidates"]}
+        wanted = set(clean)
+        imported = [{**existing[url], "selected": True} if url in existing else _candidate({"url": url}, "user")
+                    for url in clean]
+        kept = [] if replace else [dict(item) for item in plan["candidates"] if item["url"] not in wanted]
+        candidates = kept + imported
+        if len(candidates) > MAX_CANDIDATES:
+            raise ValueError("Too many candidates")
+        plan["excluded_urls"] = [url for url in plan["excluded_urls"] if url not in wanted]
+        plan["candidates"] = candidates
+        if "collection_rules" in plan:
+            remaining = {item["url"] for item in candidates}
+            plan["collection_rules"] = {url: rule for url, rule in plan["collection_rules"].items() if url in remaining}
+        plan["state"] = "preview"
+        _save(db, plan)
+    return {"plan": plan, "added": sum(url not in existing for url in clean),
+            "already_present": sum(url in existing for url in clean),
+            "removed": (len(existing) - len(wanted & set(existing))) if replace else 0}
+
+
 def confirmed_snapshot(root: str | Path, plan_id: str, revision: int) -> dict[str, Any]:
     with _db(root) as db:
         plan = _load(db, _id(plan_id), _revision(revision))
