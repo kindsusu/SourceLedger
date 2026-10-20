@@ -341,6 +341,36 @@ def test_candidate_quality_rejects_unproven_price(proof):
     assert not _has_sufficient_evidence([candidate])
 
 
+def test_report_export_never_reloads_the_finished_workbook(tmp_path, monkeypatch):
+    import openpyxl
+    from su_crawler import final_report, xlsx_sheets
+    from su_crawler.collection_issues import sync_coverage_issues
+
+    config = demo(tmp_path)
+    run = execute(config)
+    store = Store(tmp_path)
+    try:
+        coverage = [{"url": "https://example.org/item", "source_id": "catalog", "status": "visited",
+                     "sections": [{"section": "offers", "status": "unknown"}]}]
+        store.save_run_coverage(run["id"], coverage)
+        sync_coverage_issues(store, run["id"], coverage)
+        fail = lambda *a, **k: pytest.fail("finished workbook was reloaded")
+        monkeypatch.setattr(openpyxl, "load_workbook", fail)
+        monkeypatch.setattr(final_report, "load_workbook", fail)
+        monkeypatch.setattr(xlsx_sheets, "_replace_openpyxl", fail)
+        result = report_for_run(config, store, run["id"])
+        monkeypatch.undo()
+        assert Path(result["dashboard_path"]).is_file()
+        book = openpyxl.load_workbook(result["report_path"], read_only=True)
+        try:
+            assert book.sheetnames[-2:] == ["Catalog coverage", "Collection Issues"]
+            assert list(book["Collection Issues"].values)[1][3] == "open"
+        finally:
+            book.close()
+    finally:
+        store.close()
+
+
 def test_ledger_indexes_and_atomic_attempt_records(tmp_path):
     store = Store(tmp_path)
     try:

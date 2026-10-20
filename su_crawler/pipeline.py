@@ -235,7 +235,7 @@ def _conflicts(rows: list[dict]):
 
 
 def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
-    from .report import export_report
+    from .report import _export
     from .validation import _expiry
     run = store.run(run_id)
     if run["config_hash"] != config_fingerprint(config):
@@ -256,11 +256,7 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
         if expired or expiry_problem:
             row.update(comparable=False, reason=row["reason"] + "; validity date at report time expired or needs review")
     path = Path(config.output_dir) / f"{'demo-' if config.demo else ''}prices-{run_id}.xlsx"
-    export_report(config, run, store.tasks(run_id), rows, path)
     coverage = store.run_coverage(run_id)
-    if coverage:
-        from .report import append_section_coverage
-        append_section_coverage(path, coverage)
     # Triage is mutable; re-exports must read its current state instead of the
     # immutable issue snapshot embedded in historical coverage.
     issue_rows: list[dict] = []
@@ -268,19 +264,26 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
     while batch := store.collection_issues(run_id, offset=offset, limit=500):
         issue_rows.extend(batch)
         offset += len(batch)
-    if coverage or issue_rows:
-        from .report import append_collection_issues
-        append_collection_issues(path, issue_rows)
+    # Coverage and issue sheets are written in the same pass as the evidence
+    # sheets; the finished workbook is never reloaded to append them.
+    path, summary = _export(config, run, store.tasks(run_id), rows, path,
+                            section_coverage=coverage or None,
+                            collection_issues=issue_rows if coverage or issue_rows else None,
+                            deep_validation=False)
     from .catalog_refresh import refresh_for_run
     refresh = refresh_for_run(Path(config.output_dir), run_id)
     if refresh:
         from .report import append_refresh_summary
         append_refresh_summary(path, refresh)
+        added = ["Collection Changes", "Item Changes"]
+        summary["sheet_names"] = [name for name in summary["sheet_names"] if name not in added] + added
+    stat = path.stat()
+    summary["file"] = [stat.st_size, stat.st_mtime_ns]
     from .final_report import finalize_reports
     artifacts = finalize_reports([path], path, metadata={
         "status": run["status"], "run_id": run_id,
         "coverage": coverage, "started_at": run.get("started_at"),
-        "finished_at": run.get("finished_at"),
+        "finished_at": run.get("finished_at"), "workbook_summary": summary,
     })
     with store.db:
         store.db.execute("UPDATE runs SET report_path=? WHERE id=?", (str(path), run_id))
@@ -471,10 +474,12 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                             known_candidates = [c for c in candidates if c.fields]
                             state = "product_not_found" if known_candidates else "review"
                             reason = "Configured product identifier was not found in the source" if known_candidates else (fetched.message or "No extraction candidate: review CSS/column mapping, PDF rules, or OCR")
-                        store.finish_task(task["id"], state, reason, fetched.backend, rows)
+                        finished.append((task["id"], state, reason, fetched.backend, rows))
+                    # Evidence files are durable before this single commit for the source.
+                    store.finish_tasks(finished)
                 else:
-                    for task in tasks:
-                        store.finish_task(task["id"], last.status if last.status in TERMINAL else "failed", last.message, last.backend, [])
+                    store.finish_tasks([(task["id"], last.status if last.status in TERMINAL else "failed", last.message, last.backend, [])
+                                        for task in tasks])
                 processed += len(tasks)
             tasks = store.tasks(run_id)
             paused = paused or any(t["status"] in {"queued", "running"} for t in tasks)

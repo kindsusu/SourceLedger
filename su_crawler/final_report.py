@@ -27,10 +27,6 @@ def _headers(ws):
     return tuple(ws.cell(row, col).value for col in range(1, ws.max_column + 1))
 
 
-def _data(ws):
-    return list(ws.iter_rows(min_row=_header_row(ws) + 1))
-
-
 def _safe_link(link):
     if link is None:
         return None
@@ -192,47 +188,80 @@ def _merge(paths, destination):
         combined.close()
 
 
-def _records(wb, sheet):
-    if sheet not in wb:
-        return [], []
-    ws = wb[sheet]
-    header = [str(value or "") for value in _headers(ws)]
-    rows = [[cell.value for cell in row[:len(header)]] for row in _data(ws)]
-    return header, rows
+_PRICE = "Recorded Price (not a final quote)"
+
+
+def _stream_records(wb, sheet, *, keep_rows=True):
+    """Read one sheet once, in streaming order: (header, data rows or count)."""
+    if sheet not in wb.sheetnames:
+        return [], [] if keep_rows else 0
+    rows = wb[sheet].iter_rows(values_only=True)
+    first = next(rows, None)
+    if first is None:
+        return [], [] if keep_rows else 0
+    header_row = 5 if sheet == "Collection Changes" else (
+        2 if str((first[0] if first else None) or "").startswith("Demo data") else 1)
+    header = first
+    for _ in range(header_row - 1):
+        header = next(rows, ())
+    header = [str(value or "") for value in header]
+    if not keep_rows:
+        return header, sum(1 for _ in rows)
+    return header, [list(row[:len(header)]) for row in rows]
 
 
 def _column(header, row, name):
     return row[header.index(name)] if name in header and header.index(name) < len(row) else None
 
 
-def _dashboard(wb, xlsx_name, metadata):
-    result_h, results = _records(wb, "Results")
-    task_h, tasks = _records(wb, "Collection Status")
-    evidence_h, evidence = _records(wb, "Source Evidence")
-    _, comparison = _records(wb, "Price Comparison")
-    price_count = sum(_column(result_h, row, "Recorded Price (not a final quote)") is not None
-                      for row in results) if "Recorded Price (not a final quote)" in result_h else 0
+def workbook_summary(path) -> dict:
+    """Dashboard inputs read from a finished workbook without loading every sheet.
+
+    ``report._export`` returns the same structure for the workbook it wrote.
+    """
+    wb = load_workbook(path, read_only=True, data_only=False)
+    try:
+        result_h, results = _stream_records(wb, "Results")
+        _, task_count = _stream_records(wb, "Collection Status", keep_rows=False)
+        _, comparison_count = _stream_records(wb, "Price Comparison", keep_rows=False)
+        evidence_urls = []
+        if not results:
+            evidence_h, evidence = _stream_records(wb, "Source Evidence")
+            evidence_urls = [_column(evidence_h, row, "Source URL") for row in evidence]
+        categories = None
+        if "Category" in result_h:
+            categories = Counter()
+            for row in results:
+                value = _column(result_h, row, "Category")
+                categories[str(value) if value not in (None, "") else None] += 1
+        demo = False
+        if "Run Summary" in wb.sheetnames:
+            _, run_rows = _stream_records(wb, "Run Summary")
+            info = {str(row[0]): row[1] if len(row) > 1 else None for row in run_rows if row and row[0] is not None}
+            demo = str(info.get("Demo data") or "").casefold() == "yes"
+        return {"result_rows": [[_column(result_h, row, "Source URL"), _column(result_h, row, _PRICE) is not None]
+                                for row in results],
+                "price_column": _PRICE in result_h, "evidence_urls": evidence_urls,
+                "categories": dict(categories) if categories is not None else None,
+                "task_count": task_count, "comparison_count": comparison_count,
+                "demo": demo, "sheet_names": list(wb.sheetnames)}
+    finally:
+        wb.close()
+
+
+def _dashboard(summary, xlsx_name, metadata):
+    results = summary["result_rows"]
+    price_count = sum(1 for _, priced in results if priced) if summary["price_column"] else 0
     sites = defaultdict(lambda: [0, 0])
-    for header, rows, kind in ((result_h, results, 0), (evidence_h, evidence, 2)):
-        if kind == 2 and results:
-            continue
-        url_name = "Source URL"
-        for row in rows:
-            url = _column(header, row, url_name)
-            parsed = urlparse(str(url or ""))
-            site = parsed.hostname
-            if kind == 0:
-                sites[site][0] += 1
-                if _column(header, row, "Recorded Price (not a final quote)") is not None:
-                    sites[site][1] += 1
-            else:
-                sites[site][0] += 1
-    categories = Counter()
-    if "Category" in result_h:
-        for row in results:
-            value = _column(result_h, row, "Category")
-            categories[str(value) if value not in (None, "") else None] += 1
-    category_available = "Category" in result_h
+    for url, priced in results:
+        site = urlparse(str(url or "")).hostname
+        sites[site][0] += 1
+        if priced:
+            sites[site][1] += 1
+    for url in ([] if results else summary["evidence_urls"]):
+        sites[urlparse(str(url or "")).hostname][0] += 1
+    category_available = summary["categories"] is not None
+    categories = Counter(summary["categories"] or {})
     coverage = metadata.get("coverage") if isinstance(metadata, dict) else None
     coverage_text = "Unknown"
     if isinstance(coverage, list):
@@ -262,7 +291,7 @@ def _dashboard(wb, xlsx_name, metadata):
                 if all(isinstance(v, int) and v >= 0 for v in (partial, unknown, excluded)):
                     coverage_text = (f"{complete} / {total} ({complete / total:.1%}) complete; "
                                      f"{partial} partial, {unknown} unknown, {excluded} excluded")
-    demo = str(_run_info(wb).get("Demo data") or "").casefold() == "yes"
+    demo = bool(summary["demo"])
     name = escape(xlsx_name, quote=True)
     href = quote(xlsx_name, safe="")
     labels = {
@@ -280,7 +309,8 @@ def _dashboard(wb, xlsx_name, metadata):
     finished = metadata.get("finished_at") if isinstance(metadata, dict) else None
     included_names = [name for name in ("Results", "Collection Status", "Price Comparison", "Observation History",
                                          "Source Evidence", "Review Required", "Catalog coverage", "Collection Issues",
-                                         "Collection Changes", "Item Changes", "Rental Quotes", "Supporting Evidence") if name in wb]
+                                         "Collection Changes", "Item Changes", "Rental Quotes", "Supporting Evidence")
+                      if name in summary["sheet_names"]]
     sections = []
     for lang, lab in labels.items():
         localized_site_rows = ("".join(f"<tr><th scope='row'>{escape(site or lab[11])}</th><td>{values[0]}</td><td>{values[1]}</td></tr>"
@@ -312,9 +342,9 @@ def _dashboard(wb, xlsx_name, metadata):
             f"<div class='file'><div><strong>{lab[21]}</strong><p class='small muted'>{name}</p></div>"
             f"<a href='{href}'>{lab[1]} ↗</a></div>"
             f"<div class='stats'><article class='stat'><span>{lab[2]}</span><b>{len(results):,}</b></article>"
-            f"<article class='stat'><span>{lab[3]}</span><b>{len(tasks):,}</b></article>"
+            f"<article class='stat'><span>{lab[3]}</span><b>{summary['task_count']:,}</b></article>"
             f"<article class='stat'><span>{lab[4]}</span><b>{price_count:,}</b></article>"
-            f"<article class='stat'><span>{lab[5]}</span><b>{len(comparison):,}</b></article></div>"
+            f"<article class='stat'><span>{lab[5]}</span><b>{summary['comparison_count']:,}</b></article></div>"
             f"<div class='columns'><article class='panel'><h2>{lab[6]}</h2><p class='subheading'>{lab[15]}</p>"
             f"<table><thead><tr><th>{lab[20]}</th><th class='num'>{lab[8]}</th><th class='num'>{lab[4]}</th>"
             f"</tr></thead><tbody>{localized_site_rows}</tbody></table></article>"
@@ -365,11 +395,24 @@ def _dashboard(wb, xlsx_name, metadata):
             "<div class='languages' role='group' aria-label='Language'><label for='en'>English</label>"
             "<label for='ko'>한국어</label><label for='ja'>日本語</label></div></div>"
             + "".join(sections) + "</main></body></html>"), {
-                "observed_product_records": len(results), "collection_tasks": len(tasks),
+                "observed_product_records": len(results), "collection_tasks": summary["task_count"],
                 "recorded_price_rows": price_count,
-                "comparable_price_rows": len(comparison),
+                "comparable_price_rows": summary["comparison_count"],
                 "source_sites": sum(site is not None for site in sites),
             }
+
+
+def summary_matches(summary, path: Path) -> bool:
+    """A summary is reused only for the exact file state it describes."""
+    if not isinstance(summary, dict) or not isinstance(summary.get("file"), (list, tuple)):
+        return False
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return False
+    return list(summary["file"]) == [stat.st_size, stat.st_mtime_ns] and {
+        "result_rows", "price_column", "evidence_urls", "categories", "task_count",
+        "comparison_count", "demo", "sheet_names"}.issubset(summary)
 
 
 def _temp_near(path: Path, suffix: str) -> Path:
@@ -383,6 +426,8 @@ def finalize_reports(report_paths: list[Path], output_path: Path, *, metadata: d
 
     A single report at ``output_path`` is reused without rewriting its workbook.
     Batch inputs must be distinct from the output so source workbooks stay intact.
+    ``metadata["workbook_summary"]`` (from the exporter) replaces re-reading the
+    workbook when it still describes the file byte-for-byte (size and mtime).
     """
     paths = [Path(os.path.abspath(p)) for p in report_paths]
     output = Path(os.path.abspath(output_path))
@@ -399,9 +444,11 @@ def finalize_reports(report_paths: list[Path], output_path: Path, *, metadata: d
     for path in paths:
         if not path.is_file():
             raise FileNotFoundError(path)
-        _validate_xlsx(path)
+        _validate_xlsx(path)  # The one full CRC check of each input.
     output.parent.mkdir(parents=True, exist_ok=True)
     same = len(paths) == 1 and paths[0] == output
+    supplied = (metadata or {}).get("workbook_summary")
+    summary = supplied if same and summary_matches(supplied, output) else None
     staged_book = None if same else _temp_near(output, ".xlsx")
     staged_html = _temp_near(dashboard, ".html")
     old_book = old_html = None
@@ -411,15 +458,14 @@ def finalize_reports(report_paths: list[Path], output_path: Path, *, metadata: d
         elif len(paths) == 1:
             shutil.copyfile(paths[0], staged_book)
             workbook_path = staged_book
+            _validate_xlsx(workbook_path, deep=False)
         else:
             _merge(paths, staged_book)
             workbook_path = staged_book
-        _validate_xlsx(workbook_path)
-        wb = load_workbook(workbook_path, read_only=False, data_only=False)
-        try:
-            html, counts = _dashboard(wb, output.name, metadata or {})
-        finally:
-            wb.close()
+            _validate_xlsx(workbook_path)
+        if summary is None:
+            summary = workbook_summary(workbook_path)
+        html, counts = _dashboard(summary, output.name, metadata or {})
         staged_html.write_text(html, encoding="utf-8")
         if not staged_html.read_text(encoding="utf-8").startswith("<!doctype html>"):
             raise ValueError("invalid HTML dashboard")
