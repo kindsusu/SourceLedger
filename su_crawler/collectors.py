@@ -735,6 +735,11 @@ def _evidence_snapshot(page: Any, listing_expectation: dict[str, Any] | None = N
               copy.setAttribute('hidden', '');
               copy.setAttribute('data-sourceledger-computed-hidden', 'true');
             }
+            // Struck-through amounts are usually former prices. Record the
+            // computed decoration so extraction need not trust class names.
+            if ((style.textDecorationLine || '').includes('line-through')) {
+              copy.setAttribute('data-sourceledger-computed-line-through', 'true');
+            }
           });
           return { html: '<!doctype html>\\n' + clone.outerHTML, probe, captured_at: new Date().toISOString() };
         }""", {"expectation": listing_expectation, "observation": observation, "selector": selector,
