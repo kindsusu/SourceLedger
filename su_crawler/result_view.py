@@ -2,7 +2,7 @@
 
 Association never changes an observed value or promotes evidence to verified.
 """
-from copy import deepcopy
+from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 import re
 import unicodedata
@@ -110,20 +110,36 @@ def _field_proof_summary(row):
     return {"price_evidence": price_evidence, "normalization": normalization, "comparison": comparison}
 
 
+def _identity(row):
+    """Offers and captures are associated only within one source URL and product name."""
+    raw = row.get("raw_fields")
+    return row.get("source_url"), _text(raw.get("name", "") if isinstance(raw, dict) else "")
+
+
 def build_result_view(rows):
-    offers = [deepcopy(row) for row in rows if row.get("extraction_method") != "host_browser_submission"]
-    submissions = [deepcopy(row) for row in rows if row.get("extraction_method") == "host_browser_submission"]
+    # Only top-level keys of a view row are (re)assigned below, so a shallow
+    # copy keeps the caller's records unchanged without deep-copying evidence.
+    offers = [dict(row) for row in rows if row.get("extraction_method") != "host_browser_submission"]
+    submissions = [dict(row) for row in rows if row.get("extraction_method") == "host_browser_submission"]
+    by_identity = defaultdict(list)
     for row in offers:
         row["supporting_evidence"] = []
         row["price_kind"] = (row.get("derived_values") or {}).get("price_kind")
+        by_identity[_identity(row)].append(row)
+    parsed = {}
+
+    def offer_fields(row):
+        # Offer fields do not change below; parse each offer once, not per capture.
+        if id(row) not in parsed:
+            parsed[id(row)] = _fields(row)
+        return parsed[id(row)]
     unlinked = []
     for evidence in submissions:
         fields = _fields(evidence)
         candidates = []
-        for row in offers:
-            base = _fields(row)
-            if row.get("source_url") != evidence.get("source_url") or not fields.get("name") or _text(base.get("name", "")) != _text(fields["name"]):
-                continue
+        same_name = by_identity.get((evidence.get("source_url"), _text(fields["name"]))) if fields.get("name") else None
+        for row in same_name or ():
+            base = offer_fields(row)
             if _variant_conflicts(fields, base) or any(
                 _present(fields.get(key)) and not _present(base.get(key)) for key in variant_keys(fields)
             ):
@@ -174,12 +190,11 @@ def build_result_view(rows):
         raw_fields = evidence.get("raw_fields") or {}
         if not _present(raw_fields.get("price")):
             continue
-        same_identity = [row for row in offers if row.get("source_url") == evidence.get("source_url")
-                         and _text((row.get("raw_fields") or {}).get("name", "")) == _text(raw_fields.get("name", ""))]
+        same_identity = list(by_identity.get(_identity(evidence), ()))
         # Suppress an identical browser candidate while retaining its evidence.
         submitted_fields = _fields(evidence)
         matching_browser_candidates = [row for row in same_identity if row.get("primary_candidate")
-                                       and _variant_signature(_fields(row)) == _variant_signature(submitted_fields)
+                                       and _variant_signature(offer_fields(row)) == _variant_signature(submitted_fields)
                                        and _value("price", (row.get("raw_fields") or {}).get("price", ""))
                                        == _value("price", raw_fields.get("price", ""))]
         if len(matching_browser_candidates) == 1:
@@ -195,11 +210,11 @@ def build_result_view(rows):
         # attributes never prove a new variant, and an ambiguous association
         # stays in the evidence list instead of becoming another result.
         if same_identity and not all(
-            _variant_conflicts(submitted_fields, _fields(row))
+            _variant_conflicts(submitted_fields, offer_fields(row))
             for row in same_identity
         ):
             continue
-        candidate = deepcopy(evidence)
+        candidate = dict(evidence)
         candidate["primary_candidate"] = True
         candidate["price_kind"] = (candidate.get("derived_values") or {}).get("price_kind")
         candidate["status"] = "review"
@@ -219,6 +234,7 @@ def build_result_view(rows):
         candidate["missing_conditions"] = [key for key in required if fields.get(key) in (None, "")]
         candidate["result_status"] = "review" if fields.get("price") not in (None, "") else "price_unavailable"
         offers.append(candidate)
+        by_identity[_identity(candidate)].append(candidate)
     for row in offers:
         row["field_validation"] = _field_proof_summary(row)
     return {"rows": offers, "evidence_submissions": unlinked,
