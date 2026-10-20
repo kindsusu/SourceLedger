@@ -39,19 +39,29 @@ def _safe_link(link):
     return copy(link)
 
 
-def _copy_cell(source: Cell, target: Cell):
+def _copy_cell(source: Cell, target: Cell, style_cache: dict | None = None):
     # A supplied workbook is data. Formula cells must remain literal after merging.
     target.value = str(source.value) if source.data_type == "f" else source.value
-    if source.has_style:
-        target.font = copy(source.font)
-        target.fill = copy(source.fill)
-        target.border = copy(source.border)
-    if source.number_format:
-        target.number_format = source.number_format
-    if source.alignment:
-        target.alignment = copy(source.alignment)
-    if source.protection:
-        target.protection = copy(source.protection)
+    # Copying style objects cell by cell dominated large merges. Within one
+    # source workbook, cells with the same style indices get the same target
+    # style, so resolve each distinct style once and reuse its index array.
+    key = tuple(source._style) if style_cache is not None and source.has_style else None
+    cached = style_cache.get(key) if key is not None else None
+    if cached is not None:
+        target._style = copy(cached)
+    else:
+        if source.has_style:
+            target.font = copy(source.font)
+            target.fill = copy(source.fill)
+            target.border = copy(source.border)
+        if source.number_format:
+            target.number_format = source.number_format
+        if source.alignment:
+            target.alignment = copy(source.alignment)
+        if source.protection:
+            target.protection = copy(source.protection)
+        if key is not None:
+            style_cache[key] = copy(target._style)
     if source.comment:
         target.comment = copy(source.comment)
     target.hyperlink = _safe_link(source.hyperlink)
@@ -59,10 +69,10 @@ def _copy_cell(source: Cell, target: Cell):
         target.data_type = "s"
 
 
-def _copy_sheet(source, destination, *, source_run=None):
+def _copy_sheet(source, destination, *, source_run=None, style_cache=None):
     for row in source:
         for cell in row:
-            _copy_cell(cell, destination.cell(cell.row, cell.column))
+            _copy_cell(cell, destination.cell(cell.row, cell.column), style_cache)
         if source.row_dimensions[row[0].row].height is not None:
             destination.row_dimensions[row[0].row].height = source.row_dimensions[row[0].row].height
     for key, dim in source.column_dimensions.items():
@@ -104,6 +114,7 @@ def _merge(paths, destination):
     try:
         for index, path in enumerate(paths, 1):
             wb = load_workbook(path, data_only=False)
+            style_cache = {}  # source style indices -> target style indices, per source workbook
             try:
                 info = _run_info(wb)
                 run_id = str(info.get("Run ID") or f"Run {index}")
@@ -122,7 +133,7 @@ def _merge(paths, destination):
                     headers = _headers(source)
                     if source.title not in sheet_state:
                         target = combined.create_sheet(source.title)
-                        _copy_sheet(source, target, source_run=run_id)
+                        _copy_sheet(source, target, source_run=run_id, style_cache=style_cache)
                         sheet_state[source.title] = (headers, _header_row(source), len(headers) + 1,
                                                      target.max_row)
                         continue
@@ -133,7 +144,7 @@ def _merge(paths, destination):
                     start = last_row + 1
                     for source_row in source.iter_rows(min_row=_header_row(source) + 1):
                         for cell in source_row:
-                            _copy_cell(cell, target.cell(start, cell.column))
+                            _copy_cell(cell, target.cell(start, cell.column), style_cache)
                         target.cell(start, provenance_col, run_id).data_type = "s"
                         start += 1
                     last_row = start - 1
