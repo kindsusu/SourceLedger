@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "source-ledger"
-version = "1.0.0"
+version = "1.0.1"
 description = "Evidence-first product price collection, provenance storage, and XLSX reporting"
 readme = "README.md"
 requires-python = ">=3.11"
