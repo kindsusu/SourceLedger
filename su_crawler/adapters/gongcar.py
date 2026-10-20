@@ -7,7 +7,8 @@ from urllib.parse import urlparse
 from bs4 import NavigableString, Tag
 
 from ..models import Candidate, FetchResult, Source, stable_id
-from .common import annotate_evidence, decimal_string, evidence, evidence_mode, html_soup, is_visible, text, visible_text, won
+from .common import (annotate_evidence, decimal_string, evidence, evidence_mode, html_soup, is_visible, text,
+                     unstruck_text, visible_text, won, won_amount)
 
 
 def _rental_path(path: str) -> str:
@@ -424,47 +425,119 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
         if public:
             candidates.extend(public)
             continue
-        rows = _expanded_rows(table)
-        header_at = next((i for i, row in enumerate(rows) if any("월" in raw and ("렌트" in raw or "대여" in raw) for _, raw in row)), None)
-        if header_at is None:
+        candidates.extend(_quote_table_candidates(soup, table, table_index, visibility, mode))
+    return candidates
+
+
+def _monthly_price_header(raw: str) -> bool:
+    return "월" in raw and ("렌트" in raw or "대여" in raw)
+
+
+_HEADER_TERM = re.compile(r"(\d+)\s*개월")
+_FLOOR_QUALIFIER = re.compile(r"[~∼〜]|부터|이상")
+
+
+def _price_columns(rows: list[list[tuple[Tag, str]]],
+                   header_at: int) -> tuple[list[tuple[int, str, str | None]], int]:
+    """Return ``(column, header text, term)`` per monthly price column and the first data row.
+
+    A grouped header ("월 렌트료" spanning "36개월 | 48개월") continues on the
+    following rows whose price-column cells are bare period labels. A column
+    whose header text names no single period keeps its term unset.
+    """
+    columns = [index for index, (node, raw) in enumerate(rows[header_at])
+               if _monthly_price_header(raw) and is_visible(node)]
+    header_rows = [rows[header_at]]
+    for row in rows[header_at + 1:]:
+        cells = [row[index][1] if index < len(row) else "" for index in columns]
+        if not cells or not all(re.fullmatch(r"\d+\s*개월", raw) for raw in cells):
+            break
+        header_rows.append(row)
+    result = []
+    for index in columns:
+        nodes: list[Tag] = []
+        parts: list[str] = []
+        for row in header_rows:
+            if index < len(row) and all(row[index][0] is not node for node in nodes):
+                nodes.append(row[index][0])
+                parts.append(row[index][1])
+        header = " / ".join(part for part in parts if part)
+        terms = set(_HEADER_TERM.findall(header))
+        result.append((index, header, next(iter(terms)) if len(terms) == 1 else None))
+    return result, header_at + len(header_rows)
+
+
+def _quote_table_candidates(soup, table: Tag, table_index: int, visibility: str, mode: str) -> list[Candidate]:
+    """Generic rendered quote table: one candidate per visible monthly price cell."""
+    rows = _expanded_rows(table)
+    header_at = next((i for i, row in enumerate(rows) if any(_monthly_price_header(raw) for _, raw in row)), None)
+    if header_at is None:
+        return []
+    price_columns, data_at = _price_columns(rows, header_at)
+    # One untermed price column keeps its historical identity and locator.
+    legacy_identity = len(price_columns) == 1 and price_columns[0][2] is None
+    candidates: list[Candidate] = []
+    for row_index, row in enumerate(rows[data_at:], start=data_at + 1):
+        raw_row = " | ".join(raw for _, raw in row)
+        option = row[0][1] if row and row[0][1] else None
+        deposit_cell = next((raw for _, raw in row if "보증금" in raw or re.search(r"\b(?:10|20|30)\s*%", raw)), None)
+        deposit = won(deposit_cell)
+        percent_match = re.search(r"(\d+)\s*%", deposit_cell or "")
+        model_node = soup.select_one("[data-car-id], [data-item-id], h1, h2")
+        if not is_visible(model_node):
+            model_node = None
+        model = _visible_text(model_node) if model_node else None
+        actual_id = model_node.get("data-car-id") or model_node.get("data-item-id") if model_node else None
+        if not actual_id:
+            actual_id = table.get("data-car-id") or table.get("data-item-id")
+        if not actual_id:
             continue
-        headers = [raw for _, raw in rows[header_at]]
-        price_col = next((i for i, raw in enumerate(headers) if "월" in raw and ("렌트" in raw or "대여" in raw)), None)
-        if price_col is None:
-            continue
-        for row_index, row in enumerate(rows[header_at + 1 :], start=header_at + 2):
+        seen: list[Tag] = []
+        for price_col, header, _ in price_columns:
             if price_col >= len(row) or not is_visible(row[price_col][0]):
                 continue
-            raw_row = " | ".join(raw for _, raw in row)
-            price_raw = row[price_col][1]
-            price = won(price_raw)
-            if not price:
+            cell = row[price_col][0]
+            if any(cell is node for node in seen):
+                continue  # A cell spanning several columns is one displayed value.
+            seen.append(cell)
+            spanned = [term for column, _, term in price_columns if column < len(row) and row[column][0] is cell]
+            term = spanned[0] if len(set(spanned)) == 1 else None
+            # Struck-through list prices are reference values, never the offer.
+            price_raw = unstruck_text(cell) or ""
+            price, problem = won_amount(price_raw, allow_from=True)
+            if problem == "no_won_amount":
                 continue
-            option = row[0][1] if row and row[0][1] else None
-            deposit_cell = next((raw for _, raw in row if "보증금" in raw or re.search(r"\b(?:10|20|30)\s*%", raw)), None)
-            deposit = won(deposit_cell)
-            percent_match = re.search(r"(\d+)\s*%", deposit_cell or "")
-            model_node = soup.select_one("[data-car-id], [data-item-id], h1, h2")
-            if not is_visible(model_node):
-                model_node = None
-            model = _visible_text(model_node) if model_node else None
-            actual_id = model_node.get("data-car-id") or model_node.get("data-item-id") if model_node else None
-            if not actual_id:
-                actual_id = table.get("data-car-id") or table.get("data-item-id")
-            if not actual_id:
-                continue
+            flags: list[str] = []
+            derived: dict[str, str] = {}
+            if price is None:
+                flags.append(problem)
+            elif _FLOOR_QUALIFIER.search(price_raw):
+                derived["price_kind"] = "from"
+                flags.append("starting_price_not_fixed_quote")
             item_id = f"{actual_id}:option={option or ''}:deposit={deposit_cell or ''}"
-            fields = {"item_id": item_id, "price": price, "currency": "KRW", "price_basis": "monthly"}
-            proofs = {
-                "item_id": evidence(f"table:{table_index}/tr:{row_index}", item_id, raw_row),
-                "price": evidence(f"table:{table_index}/tr:{row_index}/td:{price_col + 1}", price, price_raw, raw_row),
-                "currency": evidence(f"table:{table_index}/tr:{row_index}/td:{price_col + 1}", "KRW", "원", raw_row),
-                "price_basis": evidence(f"table:{table_index}/thead", "monthly", headers[price_col]),
-            }
+            locator = f"gongcar:table:{table_index}:row:{row_index}"
+            header_location = f"table:{table_index}/thead"
+            if not legacy_identity:
+                item_id += f":term={term or ''}:column={price_col + 1}"
+                locator += f":column:{price_col + 1}"
+                header_location += f"/th:{price_col + 1}"
+            cell_location = f"table:{table_index}/tr:{row_index}/td:{price_col + 1}"
+            fields = {"item_id": item_id}
+            proofs = {"item_id": evidence(f"table:{table_index}/tr:{row_index}", item_id, raw_row)}
+            if price is not None:
+                fields.update(price=price, currency="KRW", price_basis="monthly")
+                proofs.update(price=evidence(cell_location, price, price_raw, raw_row),
+                              currency=evidence(cell_location, "KRW", "원", raw_row),
+                              price_basis=evidence(header_location, "monthly", header))
+            else:
+                proofs["price"] = evidence(cell_location, None, row[price_col][1], raw_row)
+            if term is not None:
+                fields["term_months"] = term
+                proofs["term_months"] = evidence(header_location, term, header)
             for key, value, raw in (("name", model, text(model_node)), ("options", option, option), ("deposit_amount", deposit, deposit_cell), ("deposit_percent", percent_match.group(1) if percent_match else None, deposit_cell)):
                 if value is not None:
                     fields[key] = value
                     proofs[key] = evidence(f"table:{table_index}/tr:{row_index}", value, raw, raw_row)
             annotate_evidence(proofs, mode, source_identity={"item_id"}, displayed_fields=set(proofs) - {"item_id"})
-            candidates.append(Candidate(fields=fields, evidence=proofs, locator=f"gongcar:table:{table_index}:row:{row_index}", extraction_method="gongcar_rendered_quote_table", value_origin="observed", source_visibility=visibility, evidence_mode=mode))
+            candidates.append(Candidate(fields=fields, evidence=proofs, locator=locator, extraction_method="gongcar_rendered_quote_table", value_origin="observed", source_visibility=visibility, derived_values=derived, review_flags=flags, evidence_mode=mode))
     return candidates
