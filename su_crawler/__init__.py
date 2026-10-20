@@ -1,3 +1,3 @@
 """Evidence-first price collection."""
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
