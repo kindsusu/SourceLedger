@@ -256,7 +256,7 @@ def build_assistant_server(root: str | Path):
                                     provider: str = "connected", model: str = "",
                                     max_pages: int = 10, max_seconds: float = 120,
                                     follow_links: bool = False, concurrency: int = 2,
-                                    browser_reuse: bool = False, browser_concurrency: int = 1) -> dict[str, Any]:
+                                    browser_reuse: bool = True, browser_concurrency: int = 1) -> dict[str, Any]:
         """Show model recommendations, selected sites and actual execution mode before collection.
 
         Does not search, call a model, confirm, or start workers. Preserve the user's model choice.
@@ -281,7 +281,7 @@ def build_assistant_server(root: str | Path):
     @server.tool(annotations=open_world)
     def start_research_plan(plan_id: str, expected_revision: int, max_pages: int = 10,
                             max_seconds: float = 120, follow_links: bool = False, concurrency: int = 2,
-                            browser_reuse: bool = False, browser_concurrency: int = 1) -> dict[str, Any]:
+                            browser_reuse: bool = True, browser_concurrency: int = 1) -> dict[str, Any]:
         """Start bounded collection of the confirmed revision and its selected URLs; auto-start the worker.
 
         First show get_research_execution_plan, including model, sites and actual execution mode.
@@ -299,7 +299,7 @@ def build_assistant_server(root: str | Path):
     @server.tool(annotations=read_only)
     def get_research_batch_execution_plan(plan_id: str, expected_revision: int,
                                           batch_size: int = 20, max_seconds: float = 600,
-                                          concurrency: int = 2, browser_reuse: bool = False,
+                                          concurrency: int = 2, browser_reuse: bool = True,
                                           browser_concurrency: int = 1) -> dict[str, Any]:
         """Show the selected inventory, exact URL count and server batch settings before approval.
 
@@ -331,7 +331,7 @@ def build_assistant_server(root: str | Path):
     @server.tool(annotations=open_world)
     def start_research_batch_run(plan_id: str, expected_revision: int,
                                  batch_size: int = 20, max_seconds: float = 600,
-                                 concurrency: int = 2, browser_reuse: bool = False,
+                                 concurrency: int = 2, browser_reuse: bool = True,
                                  browser_concurrency: int = 1) -> dict[str, Any]:
         """Collect every selected URL in a confirmed plan with one durable server job.
 

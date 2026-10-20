@@ -54,7 +54,7 @@ def _validate(args: dict, *, prepared: bool = False) -> dict:
     size = args.get("batch_size", 20)
     seconds = args.get("max_seconds", 600)
     concurrency = args.get("concurrency", 2)
-    browser_reuse = args.get("browser_reuse", False)
+    browser_reuse = args.get("browser_reuse", True)
     browser_concurrency = args.get("browser_concurrency", 1)
     if isinstance(size, bool) or not isinstance(size, int) or not 1 <= size <= 50:
         raise ValueError("batch_size must be an integer from 1 to 50")
@@ -335,43 +335,47 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
             journal.pop('final_artifacts', None)
         journal['rules_version'] = rules_version
         _atomic_write(path, journal)
-    for index in range(len(journal["batches"]), journal["batch_count"]):
-        owner = runtime._read_json(runtime._job_path(base, job_id)) or {}
-        token = owner.get("worker_token")
-        stop = runtime._read_json(base / "runtime" / "stop.json") or {}
-        if token and stop.get("token") == token:
-            raise BatchStopped("Worker stopped between batches; resume the same job")
-        subset = selected[index * clean["batch_size"]:(index + 1) * clean["batch_size"]]
-        snapshot = {**plan, "candidates": subset,
-                    "collection_rules": {url: rule for url, rule in plan.get('collection_rules', {}).items()
-                                         if url in {item['url'] for item in subset}}}
-        checkpoint_id = _batch_checkpoint(job_id, index)
-        started_at = utc_now()
-        result = collect_plan(base, snapshot, output_dir=output, max_pages=len(subset),
-                              max_seconds=clean["max_seconds"], checkpoint_id=checkpoint_id,
-                              follow_links=False, concurrency=clean["concurrency"],
-                              browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"])
-        counts = Counter(item.get("status", "unknown") for item in result.get("coverage", []))
-        observations = _observation_counts(output, result["run_id"])
-        incomplete_sections = sum(1 for page in result.get("coverage", [])
-                                  for section in page.get("sections", []) if section.get("status") != "complete")
-        from .coverage import summarize
-        unknown_sections = sum(1 for page in result.get('coverage', [])
-                               for section in (page.get('sections') or [{'status': 'unknown'}])
-                               if page.get('status') != 'excluded' and section.get('status') == 'unknown')
-        journal["batches"].append({"index": index, "target_count": len(subset),
-                                   "checkpoint_id": checkpoint_id, "run_id": result["run_id"],
-                                   "status": result["status"], "coverage_counts": dict(counts),
-                                   "observation_counts": observations,
-                                   "incomplete_sections": incomplete_sections,
-                                   "unknown_sections": unknown_sections,
-                                   "coverage_summary": result.get('coverage_summary', summarize(result.get('coverage', []))),
-                                   "budget_seconds_used": round(float(result["budget"]["seconds_used"]), 3),
-                                   "execution": result.get("execution", {}),
-                                   "refresh": result.get("refresh"),
-                                   "started_at": started_at, "finished_at": utc_now(),
-                                   "report_path": result["report_path"]})
-        _atomic_write(path, journal)
+    from .collectors import collection_job_scope
+
+    # One robots cache and pooled HTTP client for the whole job, not per batch.
+    with collection_job_scope():
+        for index in range(len(journal["batches"]), journal["batch_count"]):
+            owner = runtime._read_json(runtime._job_path(base, job_id)) or {}
+            token = owner.get("worker_token")
+            stop = runtime._read_json(base / "runtime" / "stop.json") or {}
+            if token and stop.get("token") == token:
+                raise BatchStopped("Worker stopped between batches; resume the same job")
+            subset = selected[index * clean["batch_size"]:(index + 1) * clean["batch_size"]]
+            snapshot = {**plan, "candidates": subset,
+                        "collection_rules": {url: rule for url, rule in plan.get('collection_rules', {}).items()
+                                             if url in {item['url'] for item in subset}}}
+            checkpoint_id = _batch_checkpoint(job_id, index)
+            started_at = utc_now()
+            result = collect_plan(base, snapshot, output_dir=output, max_pages=len(subset),
+                                  max_seconds=clean["max_seconds"], checkpoint_id=checkpoint_id,
+                                  follow_links=False, concurrency=clean["concurrency"],
+                                  browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"])
+            counts = Counter(item.get("status", "unknown") for item in result.get("coverage", []))
+            observations = _observation_counts(output, result["run_id"])
+            incomplete_sections = sum(1 for page in result.get("coverage", [])
+                                      for section in page.get("sections", []) if section.get("status") != "complete")
+            from .coverage import summarize
+            unknown_sections = sum(1 for page in result.get('coverage', [])
+                                   for section in (page.get('sections') or [{'status': 'unknown'}])
+                                   if page.get('status') != 'excluded' and section.get('status') == 'unknown')
+            journal["batches"].append({"index": index, "target_count": len(subset),
+                                       "checkpoint_id": checkpoint_id, "run_id": result["run_id"],
+                                       "status": result["status"], "coverage_counts": dict(counts),
+                                       "observation_counts": observations,
+                                       "incomplete_sections": incomplete_sections,
+                                       "unknown_sections": unknown_sections,
+                                       "coverage_summary": result.get('coverage_summary', summarize(result.get('coverage', []))),
+                                       "budget_seconds_used": round(float(result["budget"]["seconds_used"]), 3),
+                                       "execution": result.get("execution", {}),
+                                       "refresh": result.get("refresh"),
+                                       "started_at": started_at, "finished_at": utc_now(),
+                                       "report_path": result["report_path"]})
+            _atomic_write(path, journal)
     from .final_report import finalize_reports
     # Only this journal's completed runs belong in the final deliverable. Never
     # glob the output directory: it also holds prior revisions and retries.

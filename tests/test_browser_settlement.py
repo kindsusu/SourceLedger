@@ -8,10 +8,20 @@ from su_crawler.browser_settlement import (install_tracker_sync,
                                            wait_settled_sync)
 
 
+
+def _launch_options(chromium):
+    """Use the same browser selection as the collector (managed Chromium, else system Chrome/Edge)."""
+    from su_crawler.browser_runtime import select_browser_runtime
+    runtime = select_browser_runtime(chromium)
+    if runtime is None:
+        import pytest
+        pytest.skip('Browser unavailable')
+    return runtime.launch_options()
+
 def test_delayed_generic_price_and_visible_loader_are_not_accepted_early():
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as driver:
-        browser = driver.chromium.launch(headless=True)
+        browser = driver.chromium.launch(headless=True, **_launch_options(driver.chromium))
         try:
             page = browser.new_page()
             install_tracker_sync(page)
@@ -35,7 +45,7 @@ def test_delayed_generic_price_and_visible_loader_are_not_accepted_early():
 def test_unfinished_loader_times_out_instead_of_emitting_value():
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as driver:
-        browser = driver.chromium.launch(headless=True)
+        browser = driver.chromium.launch(headless=True, **_launch_options(driver.chromium))
         try:
             page = browser.new_page()
             install_tracker_sync(page)
@@ -53,7 +63,7 @@ def test_unfinished_loader_times_out_instead_of_emitting_value():
 def test_cross_origin_fetch_body_remains_pending_after_headers():
     playwright = pytest.importorskip("playwright.sync_api")
     with playwright.sync_playwright() as driver:
-        browser = driver.chromium.launch(headless=True)
+        browser = driver.chromium.launch(headless=True, **_launch_options(driver.chromium))
         try:
             page = browser.new_page()
             page.set_content("<strong id='price'>100</strong>")
