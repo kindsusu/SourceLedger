@@ -40,7 +40,7 @@ def _selected(plan: dict) -> list[dict]:
 
 def _validate(args: dict, *, prepared: bool = False) -> dict:
     allowed = {"plan_id", "expected_revision", "batch_size", "max_seconds", "concurrency",
-               "browser_reuse", "browser_concurrency"}
+               "browser_reuse", "browser_concurrency", "retry_of", "retry_urls"}
     if prepared:
         allowed |= {"plan_fingerprint", "url_fingerprint", "_resume", "_attempt"}
     if not isinstance(args, dict) or set(args) - allowed:
@@ -69,6 +69,13 @@ def _validate(args: dict, *, prepared: bool = False) -> dict:
     clean = {"plan_id": plan_id, "expected_revision": revision, "batch_size": size,
              "max_seconds": seconds, "concurrency": concurrency,
              "browser_reuse": browser_reuse, "browser_concurrency": browser_concurrency}
+    if "retry_of" in args or "retry_urls" in args:
+        parent, urls = args.get("retry_of"), args.get("retry_urls")
+        if not isinstance(parent, str) or not re.fullmatch(r"[0-9a-f]{32}", parent):
+            raise ValueError("retry_of must be a batch job ID")
+        if not isinstance(urls, list) or not 1 <= len(urls) <= MAX_TARGETS:
+            raise ValueError(f"retry_urls must list 1 to {MAX_TARGETS} URLs")
+        clean.update(retry_of=parent, retry_urls=list(dict.fromkeys(plans.canonical_url(url) for url in urls)))
     if prepared:
         for key in ("plan_fingerprint", "url_fingerprint"):
             if not isinstance(args.get(key), str) or not _DIGEST.fullmatch(args[key]):
@@ -292,6 +299,8 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
     from .catalog_collection import collect_plan, collection_rules_version
 
     clean = _validate(args, prepared=True)
+    if "retry_of" in clean:
+        return execute_batch_retry(root, clean, job_id=job_id)
     base = workspace_root(root)
     plan = plans.confirmed_snapshot(base, clean["plan_id"], clean["expected_revision"])
     selected = _selected(plan)
@@ -383,3 +392,291 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
             "plan_fingerprint": clean["plan_fingerprint"], "output_dir": str(output),
             "report_path": artifacts["report_path"], "dashboard_path": artifacts["dashboard_path"],
             "result": summary}
+
+
+# --- Bounded retries of an approved batch inventory ---------------------------------------
+
+def _retry_checkpoint(job_id: str, index: int) -> str:
+    return hashlib.sha256(f"sourceledger-batch-retry-v1:{job_id}:{index}".encode()).hexdigest()[:32]
+
+
+def _parent_batch(root: Path, parent_id: str) -> tuple[dict, dict]:
+    parent = runtime.get_job(root, parent_id)
+    if parent.get("operation") != OPERATION or parent.get("status") != "succeeded":
+        raise ValueError("A succeeded research batch job is required for a batch retry")
+    journal = read_batch_journal(root, parent["arguments"]["plan_id"], parent_id)
+    if not journal or len(journal["batches"]) != journal["batch_count"] or not journal.get("finished_at"):
+        raise ValueError("The parent batch journal is incomplete; resume it instead of retrying")
+    return parent, journal
+
+
+def queue_batch_retry(root: str | Path, parent_id: str, urls: list[str] | None = None,
+                      *, max_seconds: float | None = None) -> dict:
+    """Queue a retry of retryable pages from a finished batch job under the same pinned scope.
+
+    Without ``urls`` every retryable page reported by the job is selected. The retry
+    is itself a ``research_batch`` job whose journal merges retried batches into the
+    parent results, so every batch follow-up tool works on it.
+    """
+    from .research_followup import retryable_batch_urls
+    base = workspace_root(root)
+    runtime._root(base)
+    parent, _ = _parent_batch(base, parent_id)
+    allowed = retryable_batch_urls(base, parent_id)
+    if urls is None:
+        chosen = allowed
+        if not chosen:
+            raise ValueError("This batch job reports no retryable pages; inspect get_research_gaps instead")
+    else:
+        if not isinstance(urls, list) or not urls:
+            raise ValueError("urls must be a non-empty list, or omitted to retry every retryable page")
+        requested = {plans.canonical_url(url) for url in urls}
+        if not requested <= set(allowed):
+            raise ValueError("Retry only unresolved pages reported by this job; review-only prices need evidence, not blind retries")
+        chosen = [url for url in allowed if url in requested]
+    args = {key: parent["arguments"][key] for key in ("plan_id", "expected_revision", "batch_size", "max_seconds",
+                                                       "concurrency", "browser_reuse", "browser_concurrency")
+            if key in parent["arguments"]}
+    if max_seconds is not None:
+        args["max_seconds"] = max_seconds
+    clean = _validate({**args, "retry_of": parent_id, "retry_urls": chosen})
+    clean["plan_fingerprint"] = parent["arguments"]["plan_fingerprint"]
+    clean["url_fingerprint"] = parent["arguments"]["url_fingerprint"]
+    target = base / "runtime" / "plan-submit"
+    runtime._assert_lock_safe(target)
+    with _locked(target):
+        runtime.runtime_status(base)
+        for path in runtime._job_files(base):
+            job = runtime._read_json(path)
+            if (job and job.get("operation") in {OPERATION, "research_plan"}
+                    and job.get("status") in {"queued", "running"}
+                    and job.get("arguments", {}).get("plan_id") == clean["plan_id"]):
+                if job.get("operation") == OPERATION and job["arguments"] == clean:
+                    return job
+                raise ValueError("Another collection for this plan is active")
+        return runtime.submit_job(base, OPERATION, clean)
+
+
+def start_batch_retry(root: str | Path, parent_id: str, urls: list[str] | None = None,
+                      *, max_seconds: float | None = None) -> dict:
+    job = queue_batch_retry(root, parent_id, urls, max_seconds=max_seconds)
+    return {"job": job, "retry_url_count": len(job["arguments"]["retry_urls"]), "worker": runtime.start_worker(root)}
+
+
+def execute_batch_retry(root: str | Path, clean: dict, *, job_id: str) -> dict:
+    from .catalog_collection import collect_plan
+    from .final_report import finalize_reports
+    from .coverage import summarize
+    base = workspace_root(root)
+    parent, parent_journal = _parent_batch(base, clean["retry_of"])
+    pinned = {key: parent["arguments"].get(key) for key in ("plan_id", "expected_revision", "plan_fingerprint",
+                                                              "url_fingerprint", "batch_size")}
+    if any(clean[key] != value for key, value in pinned.items()):
+        raise ValueError("Retry must use the parent's pinned plan revision, URL list and batch size")
+    plan = plans.confirmed_snapshot(base, clean["plan_id"], clean["expected_revision"])
+    selected = _selected(plan)
+    if plans.fingerprint(plan) != clean["plan_fingerprint"] or _url_fingerprint(selected) != clean["url_fingerprint"]:
+        raise ValueError("Confirmed batch plan fingerprint does not match")
+    position = {item["url"]: index for index, item in enumerate(selected)}
+    groups: dict[int, list[str]] = {}
+    for url in clean["retry_urls"]:
+        if url not in position:
+            raise ValueError("Retry URL is outside the approved inventory")
+        groups.setdefault(position[url] // clean["batch_size"], []).append(url)
+    output = _output(base, clean["plan_id"])
+    path = _journal_path(base, clean["plan_id"], job_id)
+    journal = read_batch_journal(base, clean["plan_id"], job_id)
+    if journal is None:
+        journal = {**{key: parent_journal[key] for key in ("schema", "plan_id", "plan_revision", "plan_fingerprint",
+                                                            "url_fingerprint", "target_count", "batch_size",
+                                                            "batch_count", "concurrency", "browser_reuse",
+                                                            "browser_concurrency", "rules_version")
+                      if key in parent_journal},
+                   "job_id": job_id, "retry_of": clean["retry_of"], "retry_urls": clean["retry_urls"],
+                   "max_seconds_per_batch": clean["max_seconds"], "started_at": utc_now(), "finished_at": None,
+                   "batches": [{**item, "inherited_from": item.get("inherited_from", clean["retry_of"])}
+                               for item in parent_journal["batches"]]}
+        _atomic_write(path, journal)
+    for index in sorted(groups):
+        if journal["batches"][index].get("retry_job") == job_id:
+            continue  # Finished before an interruption; its checkpoint is final.
+        parent_entry = parent_journal["batches"][index]
+        subset = selected[index * clean["batch_size"]:(index + 1) * clean["batch_size"]]
+        snapshot = {**plan, "candidates": subset,
+                    "collection_rules": {url: rule for url, rule in plan.get("collection_rules", {}).items()
+                                         if url in {item["url"] for item in subset}}}
+        checkpoint_id = _retry_checkpoint(job_id, index)
+        started_at = utc_now()
+        result = collect_plan(base, snapshot, output_dir=output, max_pages=len(groups[index]),
+                              max_seconds=clean["max_seconds"], checkpoint_id=checkpoint_id,
+                              retry_urls=groups[index], parent_checkpoint_id=parent_entry["checkpoint_id"],
+                              follow_links=False, concurrency=clean["concurrency"],
+                              browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"])
+        coverage = result.get("coverage", [])
+        journal["batches"][index] = {
+            "index": index, "target_count": len(subset), "checkpoint_id": checkpoint_id,
+            "run_id": result["run_id"], "status": result["status"],
+            "coverage_counts": dict(Counter(item.get("status", "unknown") for item in coverage)),
+            "observation_counts": _observation_counts(output, result["run_id"]),
+            "incomplete_sections": sum(1 for page in coverage for section in page.get("sections", [])
+                                       if section.get("status") != "complete"),
+            "unknown_sections": sum(1 for page in coverage for section in (page.get("sections") or [{"status": "unknown"}])
+                                    if page.get("status") != "excluded" and section.get("status") == "unknown"),
+            "coverage_summary": result.get("coverage_summary", summarize(coverage)),
+            "budget_seconds_used": round(float(result["budget"]["seconds_used"]), 3),
+            "execution": result.get("execution", {}), "refresh": result.get("refresh"),
+            "started_at": started_at, "finished_at": utc_now(), "report_path": result["report_path"],
+            "retry_job": job_id, "retry_of_run_id": parent_entry.get("run_id"), "retried_urls": len(groups[index])}
+        _atomic_write(path, journal)
+    journal.pop("final_artifacts", None)
+    artifacts = finalize_reports(
+        [Path(item["report_path"]) for item in journal["batches"]], output / f"final-{job_id}.xlsx",
+        metadata={**_summary(journal, output=output), "topic": plan.get("topic", {}), "finished_at": utc_now()})
+    journal["final_artifacts"] = artifacts
+    journal["finished_at"] = utc_now()
+    _atomic_write(path, journal)
+    summary = _summary(journal, output=output)
+    summary.update(retry_of=clean["retry_of"], retry_url_count=len(clean["retry_urls"]),
+                   retried_batches=sorted(groups))
+    return {"operation": OPERATION, "execution_status": "succeeded", "evidence_status": summary["status"],
+            "plan_id": clean["plan_id"], "plan_revision": clean["expected_revision"],
+            "plan_fingerprint": clean["plan_fingerprint"], "output_dir": str(output), "retry_of": clean["retry_of"],
+            "report_path": artifacts["report_path"], "dashboard_path": artifacts["dashboard_path"], "result": summary}
+
+
+# --- Compact views for assistant hosts ----------------------------------------------------
+
+_TERMINAL = {"succeeded", "failed", "interrupted"}
+
+
+def _refresh_counts(refresh: dict | None) -> dict:
+    refresh = refresh or {}
+    return {"effective_mode": refresh.get("effective_mode"), "counts": refresh.get("counts", {}),
+            "item_counts": refresh.get("item_counts", {}),
+            "item_changes_total": refresh.get("item_changes_total", 0),
+            "page_changes_total": len(refresh.get("changes", [])) + refresh.get("changes_truncated", 0)}
+
+
+def _compact_attention(attention: dict | None) -> dict:
+    attention = attention or {}
+    items = attention.get("items", [])
+    return {"total": attention.get("total", 0), "truncated": attention.get("truncated", False),
+            "collection_continues": attention.get("collection_continues", False),
+            "categories": dict(Counter(item.get("category") for item in items)),
+            "first": [{"url": item.get("url"), "category": item.get("category")} for item in items[:3]]}
+
+
+def _compact_change(item: dict) -> dict:
+    def offer(value):
+        fields = (value or {}).get("fields", {})
+        return {key: fields[key] for key in ("price", "currency", "term_months") if key in fields} if value else None
+    return {"status": item.get("status"), "url": item.get("url"), "product_name": str(item.get("product_name", ""))[:120],
+            "changed_fields": item.get("changed_fields", [])[:8], "before": offer(item.get("before")),
+            "after": offer(item.get("after")), "run_id": item.get("run_id")}
+
+
+def compact_batch_progress(root: str | Path, job_id: str, *, include_changes: bool = False,
+                           offset: int = 0, limit: int = 20) -> dict:
+    """Small polling view: counts, per-status URL counts, elapsed time and artifact paths.
+
+    Change rows are opt-in and paged from SQLite (``include_changes``); per-URL
+    rows are available through get_research_gaps and get_collection_changes.
+    """
+    if not isinstance(include_changes, bool):
+        raise ValueError("include_changes must be a boolean")
+    offset, limit = plans._page_bounds(offset, limit)
+    if limit > 50:
+        raise ValueError("limit must be at most 50")
+    job = runtime.get_job(root, job_id)
+    if job["operation"] != OPERATION:
+        raise ValueError("Job is not a research batch run")
+    from .job_progress import _elapsed_seconds
+    full = batch_progress(root, job_id)
+    args = job["arguments"]
+    value = {"id": job_id, "job_status": job["status"], "completed": job["status"] in _TERMINAL,
+             "attempt": job.get("attempt"), "updated_at": job.get("updated_at"),
+             "elapsed_seconds_since_submission": _elapsed_seconds(job.get("created_at")),
+             "plan_id": args["plan_id"], "plan_revision": args["expected_revision"],
+             "url_fingerprint": args.get("url_fingerprint")}
+    if "retry_of" in args:
+        value.update(retry_of=args["retry_of"], retry_url_count=len(args.get("retry_urls", [])))
+    for key in ("status", "target_count", "batch_count", "completed_batches", "pending_targets", "reports_ready",
+                "coverage_counts", "coverage_summary", "observation_counts", "incomplete_sections",
+                "unknown_sections", "total_collection_seconds", "started_at", "finished_at",
+                "current_batch_index", "final_report_path", "dashboard_path"):
+        if key in full:
+            value[key] = full[key]
+    pages = full.get("current_batch_pages")
+    if isinstance(pages, dict):
+        value["current_batch_pages"] = {key: pages[key] for key in ("queued", "running", "completed", "review",
+                                                                    "failed", "excluded") if key in pages}
+    if "refresh" in full:
+        value["refresh"] = _refresh_counts(full["refresh"])
+    value["attention"] = _compact_attention(full.get("attention"))
+    if job.get("error"):
+        value["error"] = str(job["error"])[:500]
+    if include_changes:
+        from .collection_changes import list_collection_changes
+        changes = list_collection_changes(root, job_id, status="changes", offset=offset, limit=limit)
+        value["item_changes"] = {"items": [_compact_change(item) for item in changes["items"]],
+                                 "total": changes["total"], "offset": offset, "limit": limit,
+                                 "has_more": changes["has_more"]}
+    value["next"] = ("Page per-URL status with get_research_gaps and change rows with get_collection_changes "
+                     "(or include_changes=true). A succeeded job is not verified evidence.")
+    return value
+
+
+def compact_batch_reports(root: str | Path, job_id: str, *, offset: int = 0, limit: int = 10) -> dict:
+    """Final workbook/dashboard paths plus a small page of per-batch report files."""
+    full = list_batch_reports(root, job_id, offset=offset, limit=limit)
+    job = runtime.get_job(root, job_id)
+    output = _output(workspace_root(root), job["arguments"]["plan_id"])
+
+    def name(path):
+        candidate = Path(path)
+        return candidate.name if candidate.parent == output else str(candidate)
+    return {"id": job_id, "output_dir": str(output),
+            "final_report_path": full["final_report_path"], "dashboard_path": full["dashboard_path"],
+            "total": full["total"], "offset": offset, "limit": limit, "has_more": offset + limit < full["total"],
+            "batches": [{"index": item.get("index"), "run_id": item.get("run_id"), "status": item.get("status"),
+                         "target_count": item.get("target_count"),
+                         "observations": (item.get("observation_counts") or {}).get("total"),
+                         "report_file": name(item["report_path"]) if item.get("report_path") else None,
+                         **({"retry_job": item["retry_job"]} if item.get("retry_job") else {})}
+                        for item in full["batches"]],
+            "note": "report_file names are inside output_dir. Use final_report_path for the combined workbook."}
+
+
+def collection_summary(root: str | Path, job_id: str) -> dict:
+    """One compact JSON summary of a plan or batch collection job for unattended runs."""
+    from .job_progress import _elapsed_seconds
+    from .assistant_workspace import job_result_summary
+    job = runtime.get_job(root, job_id)
+    args = job.get("arguments") or {}
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    payload = result.get("result") if isinstance(result.get("result"), dict) else {}
+    value = {"job_id": job_id, "operation": job.get("operation"), "status": job["status"],
+             "completed": job["status"] in _TERMINAL, "attempt": job.get("attempt"),
+             "plan_id": args.get("plan_id"), "plan_revision": args.get("expected_revision"),
+             "url_fingerprint": args.get("url_fingerprint"),
+             "created_at": job.get("created_at"), "updated_at": job.get("updated_at"),
+             "elapsed_seconds_since_submission": _elapsed_seconds(job.get("created_at")),
+             "execution_status": result.get("execution_status"), "evidence_status": result.get("evidence_status")}
+    if job.get("operation") == OPERATION:
+        journal = read_batch_journal(root, args["plan_id"], job_id)
+        if journal is not None:
+            summary = _summary(journal, output=_output(workspace_root(root), args["plan_id"]))
+            for key in ("target_count", "batch_count", "completed_batches", "pending_targets", "coverage_counts",
+                        "coverage_summary", "observation_counts", "incomplete_sections", "unknown_sections",
+                        "total_collection_seconds", "final_report_path", "dashboard_path"):
+                value[key] = summary[key]
+            value["changes"] = _refresh_counts(summary["refresh"])
+    else:
+        value.update(job_result_summary(payload))
+        value.update(final_report_path=result.get("report_path"), dashboard_path=result.get("dashboard_path"),
+                     run_id=result.get("run_id"))
+        if isinstance(payload.get("refresh"), dict):
+            value["changes"] = _refresh_counts(payload["refresh"])
+    value["errors"] = [str(job["error"])[:500]] if job.get("error") else []
+    value["note"] = "Execution status is not price verification; review evidence_status, gaps and the workbook."
+    return value

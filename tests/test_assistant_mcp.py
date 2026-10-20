@@ -57,7 +57,7 @@ def test_server_tool_contract_and_registered_report_resource(tmp_path):
         "update_research_plan", "confirm_research_plan", "start_research_plan", "generate_research_preview",
         "get_research_execution_plan", "prepare_external_discovery",
         "get_research_batch_execution_plan", "start_research_batch_run",
-        "get_research_batch_progress", "get_research_batch_reports",
+        "get_research_batch_progress", "get_research_batch_reports", "import_plan_urls",
         "get_research_gaps", "retry_research_pages", "submit_browser_evidence",
         "get_collection_issues", "triage_collection_issue", "get_collection_changes",
         "prepare_browser_recovery", "begin_browser_recovery", "finish_browser_recovery",
@@ -113,7 +113,7 @@ def test_wait_for_job_returns_small_terminal_status_and_times_out(tmp_path, monk
     timed_out = _call(running_server, "wait_for_job", {"job_id": "a" * 32, "timeout_seconds": 0.05})
     assert timed_out["status"] == "running" and not timed_out["completed"]
     with pytest.raises(Exception, match="timeout_seconds"):
-        _call(running_server, "wait_for_job", {"job_id": "a" * 32, "timeout_seconds": 31})
+        _call(running_server, "wait_for_job", {"job_id": "a" * 32, "timeout_seconds": 121})
 
 
 def test_start_research_plan_limits_collection_to_approved_urls_by_default(tmp_path, monkeypatch):
@@ -233,7 +233,7 @@ def test_real_stdio_disconnect_does_not_cancel_independent_collection(tmp_path):
                     raise AssertionError("assistant job did not finish")
 
         job, report, resource = asyncio.run(reconnect())
-        assert job["result"]["execution_status"] == "succeeded"
+        assert job["execution_status"] == "succeeded" and "result" not in job
         assert report["size"] > 0 and len(report["sha256"]) == 64
         assert resource.contents[0].blob
     finally:

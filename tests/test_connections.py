@@ -134,3 +134,26 @@ def test_configuration_lock_symlink_is_rejected_before_touching_target(tmp_path)
         install_config("claude-desktop", config, "sourceledger", server_spec(tmp_path))
     assert target.read_bytes() == b"original"
     assert not config.exists()
+
+
+def test_claude_code_user_scope_prints_command_without_touching_home(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    home.mkdir()
+    for variable in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(variable, str(home))
+    monkeypatch.chdir(tmp_path)
+    result = connect("claude-code", workspace_root=tmp_path / "work", scope="user", install=True)
+    argv = result["claude_command"]["argv"]
+    assert argv[:5] == ["claude", "mcp", "add", "--scope", "user"]
+    assert argv[argv.index("--") - 3:argv.index("--")] == ["--transport", "stdio", "sourceledger"]
+    assert argv[argv.index("--") + 1:] == [result["server"]["command"], *result["server"]["args"]]
+    assert "PYTHONUTF8=1" in argv and result["install_status"] == "not_run"
+    assert list(home.iterdir()) == [] and not (tmp_path / ".mcp.json").exists()
+    with pytest.raises(ValueError, match="claude-code"):
+        connect("codex", workspace_root=tmp_path / "work", scope="user")
+    from su_crawler.cli import main
+    assert main(["connect", "--client", "claude-code", "--workspace-root", str(tmp_path / "work"),
+                 "--scope", "user"]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["claude_command"]["command_line"].count("serve-assistant") == 1
+    assert list(home.iterdir()) == []

@@ -39,6 +39,13 @@ def _init(args) -> dict:
     return init_workspace(args.workspace, **values, locale=args.lang)
 
 
+def _print(value, *, compact: bool = False) -> None:
+    if compact:
+        print(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str))
+    else:
+        print(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -135,11 +142,32 @@ def main(argv: list[str] | None = None) -> int:
     connection.add_argument("--install", action="store_true", help="Merge the server into client settings; preserve a backup.")
     connection.add_argument("--config-file", help="Override client settings file (requires --install).")
     connection.add_argument("--project-dir", help="Project directory for Claude Code settings (default: current directory).")
+    connection.add_argument("--scope", choices=["project", "user"], default="project",
+                            help="Claude Code scope: project writes .mcp.json; user prints the equivalent "
+                                 "'claude mcp add --scope user' command without running it.")
     assistant = sub.add_parser("assistant", help="Manage the independent local assistant worker.")
-    assistant.add_argument("action", choices=["start", "status", "stop", "jobs", "job", "resume"])
+    assistant.add_argument("action", choices=["start", "status", "stop", "jobs", "job", "resume", "wait"])
     assistant.add_argument("--workspace-root", default=".sourceledger")
-    assistant.add_argument("--job-id", help="Job identifier for job or resume.")
+    assistant.add_argument("--job-id", help="Job identifier for job, resume or wait.")
     assistant.add_argument("--limit", type=int, default=20, help="Maximum jobs to list (1-100).")
+    assistant.add_argument("--timeout", type=float, default=7200, help="Seconds to wait (assistant wait; default 7200).")
+    assistant.add_argument("--json", action="store_true", help="Print one compact JSON line.")
+    unattended = sub.add_parser("collect-plan", help="Collect an operator-approved URL list file without a model "
+                                                     "(create/reuse plan, import, confirm, run, wait, summarize).")
+    unattended.add_argument("--workspace-root", default=".sourceledger")
+    unattended.add_argument("--urls-file", required=True, help=".txt (one URL per line), .csv (url column) or .json list.")
+    for field in ("industry", "product", "market"):
+        unattended.add_argument("--" + field, required=True)
+    unattended.add_argument("--plan-id", help="Reuse this plan; its confirmed revision is reused when URLs and topic match.")
+    unattended.add_argument("--yes", action="store_true", help="Required: the operator approves collecting every URL in the file.")
+    unattended.add_argument("--batch-size", type=int, default=20)
+    unattended.add_argument("--concurrency", type=int, default=2)
+    unattended.add_argument("--browser-concurrency", type=int, default=1)
+    unattended.add_argument("--browser-reuse", action="store_true")
+    unattended.add_argument("--max-seconds", type=float, default=600, help="Time budget per batch (1-600).")
+    unattended.add_argument("--timeout", type=float, default=7200,
+                            help="Seconds to wait when another worker owns the job (default 7200).")
+    unattended.add_argument("--json", action="store_true", help="Print one compact JSON line.")
     assistant_mcp = sub.add_parser("serve-assistant", help="Serve workspace onboarding and queued research tools over local stdio MCP.")
     assistant_mcp.add_argument("--workspace-root", default=".sourceledger")
     web_ui = sub.add_parser("ui", help="Open the local browser workspace and MCP connection settings.")
@@ -163,7 +191,27 @@ def main(argv: list[str] | None = None) -> int:
             from .connections import connect
             result = connect(args.client, workspace_root=args.workspace_root, output_dir=args.output,
                              name=args.name, install=args.install, config_file=args.config_file,
-                             project_dir=args.project_dir)
+                             project_dir=args.project_dir, scope=args.scope)
+        elif args.command == "collect-plan":
+            from .research_unattended import collect_url_file, exit_code
+            if not args.yes:
+                raise ValueError("Refusing to collect without --yes. Review the URL file, then rerun with --yes "
+                                 "to approve collecting every URL in it.")
+            result = collect_url_file(
+                args.workspace_root, urls_file=args.urls_file, industry=args.industry, product=args.product,
+                market=args.market, approved=args.yes, plan_id=args.plan_id, batch_size=args.batch_size,
+                max_seconds=args.max_seconds, concurrency=args.concurrency,
+                browser_concurrency=args.browser_concurrency, browser_reuse=args.browser_reuse, timeout=args.timeout)
+            _print(result, compact=args.json)
+            return exit_code(result)
+        elif args.command == "assistant" and args.action == "wait":
+            from .research_unattended import exit_code, summary_for, wait_for_completion
+            if not args.job_id:
+                raise ValueError("--job-id is required for assistant wait")
+            _, state = wait_for_completion(args.workspace_root, args.job_id, timeout=args.timeout)
+            result = summary_for(args.workspace_root, args.job_id, wait_state=state)
+            _print(result, compact=args.json)
+            return exit_code(result)
         elif args.command == "assistant":
             from .assistant_runtime import start_worker, stop_worker, runtime_status, list_jobs, get_job, resume_job
             root = Path(args.workspace_root)
@@ -173,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
                 operation = get_job if args.action == "job" else resume_job
                 result = operation(root, args.job_id)
             elif args.job_id:
-                raise ValueError("--job-id is only available for assistant job or resume")
+                raise ValueError("--job-id is only available for assistant job, resume or wait")
             elif args.action == "jobs":
                 result = {"jobs": list_jobs(root, limit=args.limit)}
             else:

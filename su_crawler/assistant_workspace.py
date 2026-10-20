@@ -471,13 +471,102 @@ def _compact_observation(row: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+_RESULT_SCALARS = ("status", "observations", "observation_count", "review_count", "verified_count",
+                   "evidence_status", "target_count", "batch_count", "completed_batches", "reports_ready",
+                   "total_collection_seconds", "incomplete_sections", "unknown_sections", "retry_of",
+                   "retry_url_count")
+TERMINAL_STATES = frozenset({"succeeded", "failed", "interrupted"})
+
+
+def job_result_summary(payload: Any) -> dict[str, Any]:
+    """Scalar counts from a collection result; never rows, excerpts or coverage lists."""
+    if not isinstance(payload, dict):
+        return {}
+    summary: dict[str, Any] = {key: payload[key] for key in _RESULT_SCALARS
+                               if key in payload and isinstance(payload[key], (str, int, float, bool))}
+    if isinstance(payload.get("observation_counts"), dict):
+        summary["observation_counts"] = {key: payload["observation_counts"].get(key, 0)
+                                         for key in ("total", "priced", "review", "verified",
+                                                     "raw_price_present", "browser_submissions")}
+    if isinstance(payload.get("coverage_counts"), dict):
+        summary["coverage_counts"] = {key: value for key, value in payload["coverage_counts"].items()
+                                      if isinstance(key, str) and isinstance(value, int)}
+    elif isinstance(payload.get("coverage"), list):
+        from collections import Counter
+        summary["coverage_counts"] = dict(Counter(str(item.get("status", "unknown")) for item in payload["coverage"]
+                                                  if isinstance(item, dict)))
+    if isinstance(payload.get("coverage_summary"), dict):
+        summary["coverage_summary"] = {key: payload["coverage_summary"].get(key, 0)
+                                       for key in ("complete", "partial", "unknown", "excluded")}
+    return summary
+
+
+def compact_job(job: dict[str, Any], *, include_result: bool = False,
+                include_arguments: bool = False) -> dict[str, Any]:
+    """Durable job receipt without raw arguments/results unless explicitly requested."""
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    payload = result.get("result") if isinstance(result.get("result"), dict) else {}
+    arguments = job.get("arguments") if isinstance(job.get("arguments"), dict) else {}
+    value: dict[str, Any] = {
+        "id": job.get("id"), "operation": job.get("operation"), "status": job.get("status"),
+        "completed": job.get("status") in TERMINAL_STATES, "attempt": job.get("attempt"),
+        "created_at": job.get("created_at"), "updated_at": job.get("updated_at"),
+        "execution_status": result.get("execution_status"), "evidence_status": result.get("evidence_status"),
+    }
+    for key in ("plan_id", "expected_revision", "retry_of"):
+        if key in arguments:
+            value[key] = arguments[key]
+    if isinstance(arguments.get("retry_urls"), list):
+        value["retry_url_count"] = len(arguments["retry_urls"])
+    for key in ("run_id", "report_path", "dashboard_path"):
+        if result.get(key):
+            value[key] = result[key]
+    summary = job_result_summary(payload)
+    if summary:
+        value["result_summary"] = summary
+    if job.get("error"):
+        value["error"] = job["error"] if isinstance(job["error"], dict) else str(job["error"])[:1000]
+    if include_arguments:
+        value["arguments"] = arguments
+    if include_result and result:
+        value["result"] = result
+    return value
+
+
+def _job_ledger(base: Path, job: dict[str, Any]) -> tuple[Path, list[str], list[dict[str, Any]]]:
+    """Return a job's output directory, run IDs and page coverage (plan or batch)."""
+    from .storage import Store
+    if job.get("operation") == "research_batch":
+        from .research_batch import read_batch_journal, _output
+        plan_id = (job.get("arguments") or {}).get("plan_id")
+        journal = read_batch_journal(base, plan_id, job["id"])
+        if not journal or not journal.get("batches"):
+            raise ValueError("Batch job has no completed batches yet")
+        output = _output(base, plan_id)
+        run_ids = [item["run_id"] for item in journal["batches"] if item.get("run_id")]
+        coverage: list[dict[str, Any]] = []
+        from .research_followup import batch_coverage
+        for item in journal["batches"]:
+            coverage.extend(batch_coverage(output, item))
+        return output, run_ids, coverage
+    result = job.get("result")
+    if not isinstance(result, dict) or not result.get("run_id") or not result.get("output_dir"):
+        raise ValueError("Completed job has no collection observations")
+    output = _managed_output(base, Path(result["output_dir"]), "job output directory")
+    collection_result = result.get("result") if isinstance(result.get("result"), dict) else result
+    coverage = collection_result.get("coverage", []) if isinstance(collection_result, dict) else []
+    return output, [str(result["run_id"])], coverage if isinstance(coverage, list) else []
+
+
 def result_observations(root: str | Path, job: dict[str, Any], *, offset: int = 0, limit: int = 50,
                         evidence_offset: int = 0, evidence_limit: int = 20,
-                        detail: bool = True) -> dict[str, Any]:
+                        detail: bool = True, coverage_page: tuple[int, int] | None = None) -> dict[str, Any]:
     """Page primary rows and unmatched browser evidence independently.
 
-    The web UI keeps its detailed row shape by default. MCP callers request the
-    compact projection, and can opt into full detail for a bounded page.
+    The web UI keeps its detailed row shape and full coverage by default. MCP
+    callers request the compact projection and pass ``coverage_page`` as
+    (offset, limit) so coverage and section gaps are paged, not repeated.
+    Batch jobs combine every completed batch run of the same ledger.
     """
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("offset must be a non-negative integer")
@@ -487,18 +576,22 @@ def result_observations(root: str | Path, job: dict[str, Any], *, offset: int = 
     _bounded_int(evidence_limit, "evidence_limit", 200)
     if not isinstance(detail, bool):
         raise ValueError("detail must be boolean")
-    result = job.get("result")
-    if not isinstance(result, dict) or not result.get("run_id") or not result.get("output_dir"):
-        raise ValueError("Completed job has no collection observations")
+    if coverage_page is not None:
+        coverage_offset, coverage_limit = coverage_page
+        if isinstance(coverage_offset, bool) or not isinstance(coverage_offset, int) or coverage_offset < 0:
+            raise ValueError("coverage_offset must be a non-negative integer")
+        _bounded_int(coverage_limit, "coverage_limit", 200, lower=0)
     base = workspace_root(root)
-    output = _managed_output(base, Path(result["output_dir"]), "job output directory")
+    output, run_ids, coverage = _job_ledger(base, job)
     if not output.is_dir() or not (output / "prices.sqlite3").is_file():
         raise ValueError("Completed job ledger is missing")
     from .storage import Store
     store = Store(output)
     try:
-        store.run(str(result["run_id"]))
-        rows = store.observations(str(result["run_id"]))
+        rows = []
+        for run_id in run_ids:
+            store.run(run_id)
+            rows.extend(store.observations(run_id))
     finally:
         store.close()
     from .result_view import build_result_view
@@ -508,18 +601,28 @@ def result_observations(root: str | Path, job: dict[str, Any], *, offset: int = 
     if not detail:
         page = [_compact_observation(row) for row in page]
         evidence_page = [_compact_observation(row) for row in evidence_page]
-    collection_result = result.get("result") if isinstance(result.get("result"), dict) else result
-    coverage = collection_result.get("coverage", []) if isinstance(collection_result, dict) else []
-    coverage = coverage if isinstance(coverage, list) else []
     section_gaps = [{"url": item.get("url") or item.get("source_url"), **section}
                     for item in coverage if isinstance(item, dict)
                     for section in (item.get("sections") or []) if isinstance(section, dict)
                     and section.get("status") != "complete"]
-    return {**presentation, "coverage": coverage, "section_gaps": section_gaps,
-            "total": len(presentation["rows"]), "offset": offset, "limit": limit,
-            "rows": page, "evidence_submissions": evidence_page,
-            "evidence_offset": evidence_offset, "evidence_limit": evidence_limit,
-            "total_records": len(rows)}
+    value = {**presentation, "coverage": coverage, "section_gaps": section_gaps,
+             "total": len(presentation["rows"]), "offset": offset, "limit": limit,
+             "rows": page, "evidence_submissions": evidence_page,
+             "evidence_offset": evidence_offset, "evidence_limit": evidence_limit,
+             "total_records": len(rows)}
+    if len(run_ids) > 1:
+        value["run_ids"] = run_ids
+    if coverage_page is not None:
+        from collections import Counter
+        coverage_offset, coverage_limit = coverage_page
+        value.update(coverage=[{key: item[key] for key in ("url", "status", "reason", "sections") if key in item}
+                               for item in coverage[coverage_offset:coverage_offset + coverage_limit]],
+                     section_gaps=section_gaps[coverage_offset:coverage_offset + coverage_limit],
+                     coverage_total=len(coverage), section_gap_total=len(section_gaps),
+                     coverage_counts=dict(Counter(str(item.get("status", "unknown")) for item in coverage
+                                                  if isinstance(item, dict))),
+                     coverage_offset=coverage_offset, coverage_limit=coverage_limit)
+    return value
 
 
 def result_report(root: str | Path, job: dict[str, Any]) -> dict[str, Any]:
