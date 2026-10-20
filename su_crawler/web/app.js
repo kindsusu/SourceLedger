@@ -1066,6 +1066,7 @@ function renderJobDetail() {
   const resumable = !["recommend", "plan_preview", "research_plan"].includes(job.operation) && (job.status === "interrupted" || (job.operation === "agent" && evidence === "paused"));
   if (resumable) actions.append(node("button", { className: "button button-secondary", type: "button", text: t("resume"), disabled: state.resumePending.has(String(job.id)), attrs: { "data-resume-job": job.id } }));
   if (result.report_path) actions.append(node("a", { className: "button button-primary", text: t("downloadXlsx"), attrs: { href: `/api/jobs/${encodeURIComponent(job.id)}/report` } }));
+  if (result.dashboard_path) actions.append(node("a", { className: "button button-secondary", text: t("openDashboard"), attrs: { href: `/api/jobs/${encodeURIComponent(job.id)}/dashboard`, target: "_blank", rel: "noopener" } }));
   const executionStatus = result.execution_status || job.status;
   target.append(node("div", { className: "detail-head" }, [
     node("div", {}, [node("span", { className: "eyebrow", text: t("jobDetail") }), node("h3", { text: operationText(job.operation) }), node("span", { className: "detail-id", text: job.id })]), actions,

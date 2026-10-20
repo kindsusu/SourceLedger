@@ -406,12 +406,14 @@ def _result_metadata(root: Path, operation: str, args: dict[str, Any], result: d
     metadata: dict[str, Any] = {}
     config_value: str | None = args.get("config_path")
     run_id = result.get("id") or result.get("run_id")
-    report_path = result.get("report_path")
+    report_path = result.get("final_report_path") or result.get("report_path")
+    dashboard_path = result.get("dashboard_path")
     if operation == "agent" and isinstance(result.get("collection"), dict):
         collection = result["collection"]
         config_value = collection.get("config_path")
         run_id = collection.get("run_id")
         report_path = collection.get("report_path")
+        dashboard_path = collection.get("dashboard_path")
     elif operation == "collect_sites":
         config_value = result.get("config_path")
     if config_value:
@@ -430,6 +432,8 @@ def _result_metadata(root: Path, operation: str, args: dict[str, Any], result: d
         metadata["run_id"] = str(run_id)
     if report_path:
         metadata["report_path"] = str(_contained(root, Path(report_path), "result report path"))
+    if dashboard_path:
+        metadata["dashboard_path"] = str(_contained(root, Path(dashboard_path), "result dashboard path"))
     return metadata
 
 
@@ -530,3 +534,23 @@ def result_report(root: str | Path, job: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Registered XLSX report exceeds the {MAX_REPORT_BYTES // (1024 * 1024)} MiB resource limit")
     return {"path": str(path), "size": size, "sha256": _file_sha256(path),
             "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+
+
+def result_dashboard(root: str | Path, job: dict[str, Any]) -> dict[str, Any]:
+    """Return only the HTML dashboard explicitly registered by a completed job."""
+    result = job.get("result")
+    if not isinstance(result, dict) or not result.get("dashboard_path") or not result.get("report_path"):
+        raise ValueError("Completed job has no registered dashboard")
+    base = workspace_root(root)
+    path = Path(result["dashboard_path"])
+    report = Path(result["report_path"])
+    _reject_symlink_path(path, "job dashboard", boundary=base)
+    _reject_symlink_path(report, "job report", boundary=base)
+    path = _contained(base, path, "job dashboard")
+    report = _contained(base, report, "job report")
+    if path.suffix.lower() != ".html" or not path.is_file() or report.suffix.lower() != ".xlsx" or not report.is_file():
+        raise ValueError("Registered dashboard or XLSX report is missing")
+    size = path.stat().st_size
+    if size > MAX_REPORT_BYTES:
+        raise ValueError(f"Registered dashboard exceeds the {MAX_REPORT_BYTES // (1024 * 1024)} MiB resource limit")
+    return {"path": str(path), "size": size, "sha256": _file_sha256(path), "media_type": "text/html; charset=utf-8"}

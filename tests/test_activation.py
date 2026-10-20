@@ -19,6 +19,8 @@ from su_crawler.validation import validate
 def test_evidence_assessment_detects_in_place_config_change_with_shared_cache(tmp_path):
     config_path = _write_fixture(tmp_path, products=("A", "B"))
     receipt = verify_config(config_path, receipt_path=tmp_path / "receipt.json")
+    assert Path(receipt['report_path']).is_file()
+    assert Path(receipt['dashboard_path']).is_file()
     config = load_config(config_path)
     store = Store(Path(config.output_dir))
     try:

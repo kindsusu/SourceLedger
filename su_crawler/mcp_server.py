@@ -77,7 +77,7 @@ def build_server(config_path: Path, *, port: int = 8765):
 
     @server.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     def export_price_report(run_id: str) -> dict:
-        """Regenerate an XLSX report from the database. Returned path is local, not a remote download link."""
+        """Regenerate the XLSX report and linked standalone HTML dashboard from the database. Returned paths are local."""
         from .pipeline import report_for_run
         from .storage import workspace_lock
         with workspace_lock(output):

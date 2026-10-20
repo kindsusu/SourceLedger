@@ -26,7 +26,7 @@ def running_server(tmp_path, monkeypatch=None):
         thread.join(timeout=2)
 
 
-def request(server, method, path, body=None, *, token=None, origin=None, headers=None):
+def request(server, method, path, body=None, *, token=None, origin=None, headers=None, raw_headers=False):
     data = body if isinstance(body, bytes) else (None if body is None else json.dumps(body).encode("utf-8"))
     values = dict(headers or {})
     if data is not None:
@@ -40,7 +40,8 @@ def request(server, method, path, body=None, *, token=None, origin=None, headers
     connection.request(method, path, body=data, headers=values)
     response = connection.getresponse()
     raw = response.read()
-    result = (response.status, dict(response.getheaders()), raw)
+    response_headers = response.getheaders()
+    result = (response.status, response_headers if raw_headers else dict(response_headers), raw)
     connection.close()
     return result
 
@@ -308,3 +309,56 @@ def test_report_download_uses_registered_xlsx_only(tmp_path, monkeypatch):
     assert status == 200 and body == b"xlsx fixture"
     assert headers["Content-Disposition"] == 'attachment; filename="job-safe.xlsx"'
     assert headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_dashboard_route_serves_only_registered_html_and_links_report(tmp_path, monkeypatch):
+    report = tmp_path / "final.xlsx"
+    report.write_bytes(b"xlsx fixture")
+    dashboard = tmp_path / "final.html"
+    dashboard.write_text('<a href="report">Download XLSX</a>', encoding="utf-8")
+    job = {"result": {"report_path": str(report), "dashboard_path": str(dashboard)}}
+    monkeypatch.setattr(web_server, "get_job", lambda root, job_id: job)
+    with running_server(tmp_path) as server:
+        status, headers, body = request(server, "GET", "/api/jobs/job-safe/dashboard", raw_headers=True)
+        assert status == 200
+        policies = [value for name, value in headers if name.lower() == "content-security-policy"]
+        assert len(policies) == 1
+        assert "style-src 'unsafe-inline'" in policies[0]
+        assert "default-src 'none'" in policies[0]
+        headers = dict(headers)
+        assert headers["Content-Type"] == "text/html; charset=utf-8"
+        assert b'href="report"' in body
+        assert "script-src" not in headers["Content-Security-Policy"]
+        status, normal_headers, body = request(server, "GET", "/api/jobs/job-safe/report", raw_headers=True)
+        assert status == 200 and body == b"xlsx fixture"
+        normal_policies = [value for name, value in normal_headers if name.lower() == "content-security-policy"]
+        assert len(normal_policies) == 1 and "style-src 'self'" in normal_policies[0]
+        job["result"]["dashboard_path"] = str(tmp_path / "unregistered.html")
+        status, _, _ = request(server, "GET", "/api/jobs/job-safe/dashboard")
+        assert status == 400
+
+
+def test_generated_dashboard_relative_workbook_link_resolves(tmp_path, monkeypatch):
+    import re
+    from html import unescape
+    from urllib.parse import urljoin
+    from openpyxl import Workbook
+    from su_crawler.final_report import finalize_reports
+
+    report = tmp_path / "final report.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Results"
+    workbook.active.append(["Product", "Source URL"])
+    workbook.active.append(["Synthetic item", "https://synthetic.example/item"])
+    workbook.save(report)
+    workbook.close()
+    artifacts = finalize_reports([report], report)
+    job = {"result": {key: str(artifacts[key]) for key in ("report_path", "dashboard_path")}}
+    monkeypatch.setattr(web_server, "get_job", lambda root, job_id: job)
+    with running_server(tmp_path) as server:
+        dashboard_url = "/api/jobs/job-safe/dashboard"
+        status, _, body = request(server, "GET", dashboard_url)
+        assert status == 200
+        href = unescape(re.search(rb"href='([^']+\.xlsx)'", body).group(1).decode("utf-8"))
+        status, _, content = request(server, "GET", urljoin(dashboard_url, href))
+        assert status == 200 and content == report.read_bytes()

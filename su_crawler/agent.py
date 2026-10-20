@@ -98,6 +98,7 @@ def _aggregate(state: dict, directory: Path, workspace: dict, seconds: float) ->
     store = Store(Path(load_config(config_path).output_dir))
     try:
         state["collection"]["report_path"] = store.run(verification["run_id"])["report_path"]
+        state["collection"]["dashboard_path"] = verification.get("dashboard_path")
     finally:
         store.close()
     if state["activate"] and verification["eligible"] and not state.get("activation_blocker"):

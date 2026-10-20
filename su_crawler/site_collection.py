@@ -344,6 +344,12 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
     result = execute(config, prefetched=prefetched)
     _save_coverage(destination, result, coverage)
     result['status'] = apply_status(result['status'], coverage)
+    from .final_report import finalize_reports
+    artifacts = finalize_reports([Path(result['report_path'])], Path(result['report_path']), metadata={
+        'status': result['status'], 'coverage': coverage,
+        'coverage_summary': summarize(coverage), 'target_count': len(locations),
+    })
+    result['dashboard_path'] = artifacts['dashboard_path']
     config_path = destination / f"collection-{result['id']}.json"
     document = asdict(config)
     document.pop('base_dir')

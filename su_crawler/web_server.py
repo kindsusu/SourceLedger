@@ -20,7 +20,7 @@ from .assistant_runtime import (
     get_job, list_jobs, resume_job, runtime_status, start_worker, stop_worker, submit_job,
 )
 from .assistant_workspace import (
-    prepare_job_args, research_path, result_observations, result_report, workspace_guard, workspace_root,
+    prepare_job_args, research_path, result_dashboard, result_observations, result_report, workspace_guard, workspace_root,
 )
 from .connections import CLIENTS, connect
 from .research import _canonical_url, add_source, init_workspace, load_workspace, research_status, set_product
@@ -93,9 +93,12 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
         }
 
     def _send(self, status: int, body: bytes = b"", *, content_type: str = "application/json; charset=utf-8",
-              extra_headers: dict[str, str] | None = None) -> None:
+              extra_headers: dict[str, str] | None = None, content_security_policy: str | None = None) -> None:
         self.send_response(status)
-        for name, value in self._security_headers().items():
+        security_headers = self._security_headers()
+        if content_security_policy is not None:
+            security_headers["Content-Security-Policy"] = content_security_policy
+        for name, value in security_headers.items():
             self.send_header(name, value)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -334,7 +337,12 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             self._json(200, list_collection_issues(self.server.workspace, parts[2],
                        offset=int(query.get('offset', ['0'])[0]), limit=int(query.get('limit', ['50'])[0]),
                        status=query.get('status', [None])[0]))
-        elif parts[3] == "report":
+        elif parts[3] == "report" or (
+            isinstance(job.get("result"), dict)
+            and isinstance(job["result"].get("report_path"), str)
+            and parts[3] == Path(job["result"]["report_path"]).name
+            and bool(job["result"].get("dashboard_path"))
+        ):
             if query:
                 raise ValueError("This endpoint does not accept query parameters")
             metadata = result_report(self.server.workspace, job)
@@ -342,6 +350,17 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
             self._send(200, report.read_bytes(), content_type=metadata["media_type"], extra_headers={
                 "Content-Disposition": f'attachment; filename="{parts[2]}.xlsx"',
             })
+        elif parts[3] == "dashboard":
+            if query:
+                raise ValueError("This endpoint does not accept query parameters")
+            metadata = result_dashboard(self.server.workspace, job)
+            dashboard = Path(metadata["path"])
+            self._send(200, dashboard.read_bytes(), content_type=metadata["media_type"],
+                       extra_headers={"Content-Disposition": f'inline; filename="{parts[2]}.html"'},
+                       content_security_policy=(
+                           "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+                           "form-action 'none'; base-uri 'none'; frame-ancestors 'none'"
+                       ))
         else:
             self._error(404, "API endpoint not found")
 

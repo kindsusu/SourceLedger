@@ -342,6 +342,17 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         state['rules_version'] = rules_version
         reanalysed = True
     if state and state.get("result"):
+        from .final_report import finalize_reports
+        cached = state["result"]
+        report_path = Path(cached['report_path'])
+        # Old checkpoints predate HTML reports; resume repairs the deliverable
+        # from the retained workbook without fetching any page again.
+        artifacts = finalize_reports([report_path], report_path, metadata={
+            "status": cached['status'], "coverage": cached.get('coverage', []),
+            "coverage_summary": cached.get('coverage_summary', {}), "target_count": len(selected),
+        })
+        cached['dashboard_path'] = artifacts['dashboard_path']
+        write_checkpoint(destination, checkpoint_id, state)
         return state["result"]
     captures = {}
     elapsed, dispatched = 0.0, 0
@@ -970,5 +981,12 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     save_refresh_run(destination, run['id'], durable_refresh)
     from .report import append_refresh_summary
     append_refresh_summary(run['report_path'], durable_refresh)
+    from .final_report import finalize_reports
+    artifacts = finalize_reports([Path(run['report_path'])], Path(run['report_path']), metadata={
+        "status": result['status'], "coverage": coverage,
+        "coverage_summary": result['coverage_summary'],
+        "target_count": len(selected), "topic": topic,
+    })
+    result['dashboard_path'] = artifacts['dashboard_path']
     save(result=result)
     return result

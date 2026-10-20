@@ -51,6 +51,12 @@ def test_server_batches_resume_without_recollecting_finished_batches(tmp_path, m
         if index == 1 and fail_once:
             fail_once = False
             raise RuntimeError('simulated interruption')
+        from openpyxl import Workbook
+        workbook = Workbook()
+        workbook.active.title = 'Results'
+        workbook.active.append(['Product', 'Source', 'Recorded Price (not a final quote)', 'Currency', 'Result Status'])
+        workbook.active.append([f'Item {index}', 'shop.example', 12, 'USD', 'review'])
+        workbook.save(tmp_path / f'report-{index}.xlsx')
         return {"run_id": f"run-{index}", "status": "completed",
                 "report_path": str(tmp_path / f"report-{index}.xlsx"),
                 "budget": {"seconds_used": 1.5},
@@ -107,6 +113,16 @@ def test_real_collection_shared_ledger_distinct_checkpoints_and_reports(tmp_path
         store.close()
     assert counts == [2, 1]
     assert result['result']['observation_counts']['total'] == 3
+    from openpyxl import load_workbook
+    final_path = Path(result['result']['final_report_path'])
+    assert result['report_path'] == str(final_path)
+    assert result['dashboard_path'] == result['result']['dashboard_path']
+    assert final_path.is_file()
+    assert Path(result['result']['dashboard_path']).is_file()
+    with final_path.open('rb') as stream:
+        workbook = load_workbook(stream, read_only=True)
+        assert workbook['Results'].max_row == 4
+        workbook.close()
     assert result['result']['coverage_summary']['unknown'] == 3
     assert result['result']['status'] == 'needs_review'
     assert all(Path(row['report_path']).is_file() for row in reports)
@@ -114,6 +130,21 @@ def test_real_collection_shared_ledger_distinct_checkpoints_and_reports(tmp_path
     calls_before_replay = len(calls)
     again = batch.execute_batch_run(tmp_path, job['arguments'], job_id=job['id'])
     assert again['result']['completed_batches'] == 2
+    assert len(calls) == calls_before_replay
+    assert again['result']['final_report_path'] == str(final_path)
+    assert Path(again['result']['dashboard_path']).is_file()
+    from su_crawler import final_report
+    finalize = final_report.finalize_reports
+    def fail_export(*args, **kwargs):
+        raise OSError('synthetic final export failure')
+    monkeypatch.setattr(final_report, 'finalize_reports', fail_export)
+    with pytest.raises(OSError, match='synthetic final export failure'):
+        batch.execute_batch_run(tmp_path, job['arguments'], job_id=job['id'])
+    assert batch.read_batch_journal(tmp_path, plan['id'], job['id']).get('final_artifacts') is None
+    assert len(calls) == calls_before_replay
+    monkeypatch.setattr(final_report, 'finalize_reports', finalize)
+    recovered = batch.execute_batch_run(tmp_path, job['arguments'], job_id=job['id'])
+    assert Path(recovered['report_path']).is_file()
     assert len(calls) == calls_before_replay
     monkeypatch.setattr('su_crawler.catalog_collection.collection_rules_version', lambda: 'updated-rules')
     updated = batch.execute_batch_run(tmp_path, job['arguments'], job_id=job['id'])

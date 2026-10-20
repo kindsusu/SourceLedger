@@ -45,6 +45,11 @@ def test_end_to_end_and_resume_does_not_duplicate(tmp_path):
     final = execute(config, resume_id=result["id"])
     assert final["status"] in {"completed", "partial"}
     assert Path(final["report_path"]).is_file()
+    dashboard = Path(final["dashboard_path"])
+    assert dashboard.is_file()
+    dashboard.unlink()
+    restored = execute(config, resume_id=result["id"], collector=lambda *a: pytest.fail("completed run recollected"))
+    assert Path(restored["dashboard_path"]).is_file()
     execute(config, resume_id=result["id"], collector=lambda *a: pytest.fail("completed run recollected"))
     store = Store(tmp_path)
     rows = store.observations(result["id"])

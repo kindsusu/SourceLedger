@@ -16,7 +16,7 @@ def build_assistant_server(root: str | Path):
 
     from .assistant_runtime import get_job, list_jobs, resume_job, runtime_status, submit_job
     from .assistant_workspace import (
-        prepare_job_args, research_path, result_observations, result_report, workspace_guard, workspace_root,
+        prepare_job_args, research_path, result_dashboard, result_observations, result_report, workspace_guard, workspace_root,
     )
     from .research import _canonical_url, add_source, init_workspace, research_status, set_product
     from .recommendations import create_recommendation_request, list_recommendations, submit_recommendations
@@ -409,7 +409,7 @@ def build_assistant_server(root: str | Path):
 
     @server.tool(annotations=read_only)
     def get_research_batch_reports(job_id: str, offset: int = 0, limit: int = 50) -> dict[str, Any]:
-        """Page through XLSX paths, checkpoint IDs, per-batch seconds and coverage counts."""
+        """Page batch workbooks and return final XLSX/dashboard paths when available."""
         return list_batch_reports(base, job_id, offset=offset, limit=limit)
 
     @server.tool(annotations=read_only)
@@ -449,6 +449,9 @@ def build_assistant_server(root: str | Path):
                         "execution_status": result.get("execution_status"),
                         "evidence_status": result.get("evidence_status"),
                         "result_summary": summary, "has_report": bool(result.get("report_path") or payload.get("reports_ready")),
+                        "has_dashboard": bool(result.get("dashboard_path")),
+                        "report_resource_uri": f"sourceledger://reports/{job_id}" if result.get("report_path") else None,
+                        "dashboard_resource_uri": f"sourceledger://dashboards/{job_id}" if result.get("dashboard_path") else None,
                         **({"error": str(job["error"])[:1000]} if job.get("error") else {})}
             await asyncio.sleep(min(0.75, max(0.01, deadline - time.monotonic())))
 
@@ -597,6 +600,12 @@ def build_assistant_server(root: str | Path):
         metadata = result_report(base, get_job(base, job_id))
         return {**metadata, "resource_uri": f"sourceledger://reports/{job_id}"}
 
+    @server.tool(annotations=read_only)
+    def get_job_dashboard(job_id: str) -> dict[str, Any]:
+        """Return registered standalone HTML metadata, hash, and local MCP resource URI."""
+        metadata = result_dashboard(base, get_job(base, job_id))
+        return {**metadata, "resource_uri": f"sourceledger://dashboards/{job_id}"}
+
     @server.resource(
         "sourceledger://reports/{job_id}",
         name="SourceLedger XLSX report",
@@ -606,5 +615,15 @@ def build_assistant_server(root: str | Path):
     def registered_report(job_id: str) -> bytes:
         metadata = result_report(base, get_job(base, job_id))
         return Path(metadata["path"]).read_bytes()
+
+    @server.resource(
+        "sourceledger://dashboards/{job_id}",
+        name="SourceLedger HTML dashboard",
+        description="A completed job's registered, workspace-contained HTML dashboard (maximum 50 MiB).",
+        mime_type="text/html",
+    )
+    def registered_dashboard(job_id: str) -> str:
+        metadata = result_dashboard(base, get_job(base, job_id))
+        return Path(metadata["path"]).read_text(encoding="utf-8")
 
     return server

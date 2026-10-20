@@ -210,6 +210,8 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
                         "scope": "Approved batch URLs only; full details are in each batch report."},
             "pending_targets": max(0, journal["target_count"] - sum(batch["target_count"] for batch in batches)),
             "reports_ready": len(batches), "output_dir": str(output),
+            "final_report_path": (journal.get("final_artifacts") or {}).get("report_path"),
+            "dashboard_path": (journal.get("final_artifacts") or {}).get("dashboard_path"),
             "journal_path": str(output / "batch-runs" / (journal["job_id"] + ".json")),
             "started_at": journal["started_at"], "finished_at": journal["finished_at"],
             "total_collection_seconds": round(sum(batch["budget_seconds_used"] for batch in batches), 3)}
@@ -262,6 +264,8 @@ def list_batch_reports(root: str | Path, job_id: str, *, offset: int = 0, limit:
     journal = read_batch_journal(root, job["arguments"]["plan_id"], job_id)
     batches = journal["batches"] if journal else []
     return {"id": job_id, "total": len(batches), "offset": offset, "limit": limit,
+            "final_report_path": ((journal or {}).get("final_artifacts") or {}).get("report_path"),
+            "dashboard_path": ((journal or {}).get("final_artifacts") or {}).get("dashboard_path"),
             "batches": batches[offset:offset + limit]}
 
 
@@ -319,6 +323,7 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
                             'batches': journal['batches'], 'finished_at': journal.get('finished_at')})
             journal['batches'] = []
             journal['finished_at'] = None
+            journal.pop('final_artifacts', None)
         journal['rules_version'] = rules_version
         _atomic_write(path, journal)
     for index in range(len(journal["batches"]), journal["batch_count"]):
@@ -358,10 +363,23 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
                                    "started_at": started_at, "finished_at": utc_now(),
                                    "report_path": result["report_path"]})
         _atomic_write(path, journal)
+    from .final_report import finalize_reports
+    # Only this journal's completed runs belong in the final deliverable. Never
+    # glob the output directory: it also holds prior revisions and retries.
+    journal.pop('final_artifacts', None)
+    _atomic_write(path, journal)
+    artifacts = finalize_reports(
+        [Path(item['report_path']) for item in journal['batches']],
+        output / f"final-{job_id}.xlsx",
+        metadata={**_summary(journal, output=output), "topic": plan.get('topic', {}),
+                  "finished_at": utc_now()},
+    )
+    journal['final_artifacts'] = artifacts
     journal["finished_at"] = utc_now()
     _atomic_write(path, journal)
     summary = _summary(journal, output=output)
     return {"operation": OPERATION, "execution_status": "succeeded", "evidence_status": summary["status"],
             "plan_id": clean["plan_id"], "plan_revision": clean["expected_revision"],
             "plan_fingerprint": clean["plan_fingerprint"], "output_dir": str(output),
+            "report_path": artifacts["report_path"], "dashboard_path": artifacts["dashboard_path"],
             "result": summary}
