@@ -26,8 +26,9 @@ connections can be shared across batches with `collection_job_scope()`.
   collection tries the browser first and fetches HTTP only when the browser
   fails, times out, is unavailable, or extracts nothing. Other adapter pages
   keep HTTP first and stop after it only with complete sections and sufficient
-  evidence (static HTML is not sufficient). `collect_sites` keeps both
-  backends because its products come from every response.
+  evidence (static HTML is not sufficient). Jetcar pages are the exception
+  described below. `collect_sites` keeps both backends because its products
+  come from every response.
 - List expansion and enumeration keep a final-capture reserve (up to 15 s). If
   the final capture cannot settle, the rendered DOM is retained, its sections
   are partial (`observation_unsettled`), and its rows need review.
@@ -39,6 +40,60 @@ connections can be shared across batches with `collection_job_scope()`.
 - The optional promotion pop-up wait on landing pages is unchanged:
   its absence cannot be confirmed positively, and a late pop-up could block
   the price-sheet click.
+
+## Jetcar: HTTP acceptance with sampled browser verification
+
+Jetcar detail pages expose the same rental table in static HTML as in the
+rendered page. In an internal benchmark of about 500 Jetcar detail pages, the
+browser stage cost roughly 1.5 times the run's wall time in page-seconds
+(median 3.3 s per page: navigation 1.0 s, settlement 0.8 s, evidence 1.4 s),
+and an offline comparison of the retained HTTP extraction with the kept
+browser rows found identical commercial rows on all but two pages; both were
+removed listings whose pages now redirect.
+
+Catalog collection (`collect_plan`, research plan and research batch jobs)
+therefore handles Jetcar pages as follows:
+
+1. HTTP runs first. When it is fetched, extracts rows, and every Jetcar section
+   is complete (the adapter's existing section coverage), the page accepts the
+   HTTP result and skips the browser. The page trace records
+   `{"event": "browser_skipped", "reason": "http_complete_jetcar"}`.
+2. A verification sample still runs the browser: `browser_sample_ratio` of the
+   job's Jetcar URLs (default 0.1), at least 5, or all of them when there are
+   fewer. Selection is per URL by a stable hash of the job identity and URL, so
+   it is reproducible for one job, rotates between jobs, and is spread across
+   batches. A sampled page keeps the rendered capture as evidence exactly as
+   before, and compares the HTTP and browser row multisets on `price`,
+   `currency`, `price_basis`, `term_months`, `deposit_amount`,
+   `annual_mileage_km`, `name`, `odometer_km` and `availability`. The trace
+   records `browser_sample_verification` with `result` `match`, `mismatch` or
+   `unverified` and the row counts.
+3. Any mismatch switches every remaining Jetcar page of the job, including
+   later batches, to the browser (`browser_required`,
+   `jetcar_sample_mismatch_fallback`). A resumed job keeps a fallback recorded
+   in its journal, checkpoint or a replayed batch result; otherwise it samples
+   its remaining pages again and never assumes an unrecorded pass.
+4. HTTP failure, timeout, partial or unknown sections, or no rows use the
+   browser as before. A sampled browser failure keeps the HTTP result and
+   counts as `unverified`, neither a pass nor a mismatch.
+
+Evidence trade-off: accepted rows are static HTML. They keep
+`evidence_mode=static_html` and `source_visibility=unconfirmed`, so they stay
+review-only and are not comparable as rendered, visible prices. Previously the
+same pages produced rendered evidence. The sample bounds, but does not
+eliminate, the risk that an unsampled page differs from its rendered view; and
+with `concurrency > 1`, pages already in flight when a mismatch is found keep
+their accepted HTTP result.
+
+`browser_sample_ratio` must be greater than 0 and at most 1; `1.0` restores the
+previous always-browser behavior. It is a `collect_plan` argument, a research
+batch job argument (`start_research_batch_run`), and the `collect-plan`
+`--browser-sample-ratio` flag. Run `execution` metadata reports
+`jetcar_http_accepted`, `jetcar_browser_sampled`, `jetcar_sample_mismatches`,
+`jetcar_sample_unverified` and `jetcar_browser_fallback`; batch progress and
+the collection summary aggregate them as `jetcar_sampling`. Gongcar stays
+browser-first, other adapters are unchanged, and `collect_sites` still uses
+both backends.
 
 ## External designs reviewed
 
