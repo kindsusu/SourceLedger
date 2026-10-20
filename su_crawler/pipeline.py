@@ -101,8 +101,43 @@ def _has_sufficient_evidence(candidates: list[Candidate], decimal_separator: str
     return bool(commercial) and all(quality[0] or quality[1] for quality in commercial)
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _link_checkpoint_blob(root: Path, digest: str, size: int, dest: Path) -> Path | None:
+    """Hard-link an identical uncompressed checkpoint capture as pending evidence.
+
+    Catalog checkpoints keep incompressible captures (screenshots, PDFs, small
+    pages) as ``checkpoint_blobs/<xx>/<sha256>.bin``. Linking shares those bytes
+    instead of writing a second copy. Only a verified, link-free regular file
+    inside the output directory qualifies; otherwise the caller writes bytes.
+    """
+    shard = root / 'checkpoint_blobs' / digest[:2]
+    blob = shard / (digest + '.bin')
+    try:
+        if any(_is_linklike(part) for part in (shard.parent, shard, blob)) or not blob.is_file():
+            return None
+        if not blob.resolve().is_relative_to(root) or blob.stat().st_size != size or _file_sha256(blob) != digest:
+            return None
+        pending = dest / f'.capture-{uuid.uuid4().hex}'
+        os.link(blob, pending)
+    except (OSError, ValueError):
+        return None  # e.g. a filesystem without hard links: fall back to a copy.
+    return pending
+
+
 def _store_capture(directory: Path, data: bytes, suffix: str) -> tuple[Path, str]:
-    """Keep identical capture bytes once; replace repairs atomically."""
+    """Keep identical capture bytes once; replace repairs atomically.
+
+    The evidence path is content addressed, so an intact existing file is
+    reused without rewriting it, and an identical uncompressed checkpoint
+    capture is hard-linked rather than copied when the filesystem allows it.
+    """
     digest = hashlib.sha256(data).hexdigest()
     root = directory.resolve()
     dest = root / 'evidence' / digest[:2]
@@ -113,15 +148,17 @@ def _store_capture(directory: Path, data: bytes, suffix: str) -> tuple[Path, str
     if not path.resolve().is_relative_to(root):
         raise ValueError('Evidence capture path escapes output directory')
     dest.mkdir(parents=True, exist_ok=True)
-    if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+    if path.is_file() and path.stat().st_size == len(data) and _file_sha256(path) == digest:
         return path, digest
     pending = None
     try:
-        with tempfile.NamedTemporaryFile(dir=dest, prefix='.capture-', delete=False) as stream:
-            pending = Path(stream.name)
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
+        pending = _link_checkpoint_blob(root, digest, len(data), dest)
+        if pending is None:
+            with tempfile.NamedTemporaryFile(dir=dest, prefix='.capture-', delete=False) as stream:
+                pending = Path(stream.name)
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
         os.replace(pending, path)
     finally:
         if pending is not None:
