@@ -32,7 +32,7 @@ The adapters mark raw or static HTML prices `unconfirmed` because HTML alone doe
 
 When a run contains rental observations, XLSX adds a **Rental Quotes** sheet. It places observed monthly prices and calculator estimates in distinct columns, and keeps deposits, advance payment, and deposit installments as distinct conditions. It is absent for runs without rental observations.
 
-**Observation History** retains observed and estimated amounts separately with raw fields, field evidence, value origin, source visibility, verification level, derived values, and rental conditions. Price-comparison statistics only include verified, visible observed values; estimates and hidden-source values are not comparison inputs.
+**Observation History** retains observed and estimated amounts separately with raw fields, field evidence, value origin, source visibility, verification level, derived values, and rental conditions. Price-comparison statistics only include verified, visible observed values; estimates and hidden-source values are not comparison inputs. When the evidence for a price field records `display_state: hidden`, the report leaves that amount blank and states the reason, while Raw Amount and the field evidence keep the source text. Text longer than Excel's 32,767-character cell limit is cut with an explicit marker; SQLite keeps the full value.
 
 ## Conditional retrieval and extraction reuse
 

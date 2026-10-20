@@ -29,7 +29,7 @@ import zipfile
 EXCEL_CELL_LIMIT = 32767
 TRUNCATION_MARKER = "\n[Truncated for Excel: {shown} of {total} characters shown; the full value is kept in the SQLite ledger.]"
 
-_ILLEGAL_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")
+_ILLEGAL_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 _MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 _REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 _WORKSHEET_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet"
@@ -249,10 +249,6 @@ def _elements(body: str, tag: str) -> list[str]:
     if rest.strip():
         raise SpliceUnsupported(f"unexpected {tag} content")
     return items
-
-
-def _block(xml: str, tag: str) -> re.Match | None:
-    return re.search(rf"<{tag}\b[^>]*?(?:/>|>(.*?)</{tag}>)", xml, re.S)
 
 
 def _part_for_target(base_dir: str, target: str) -> str:
