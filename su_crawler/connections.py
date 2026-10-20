@@ -116,9 +116,11 @@ def install_config(client: str, path: Path, name: str, spec: dict) -> dict:
 
 def claude_user_scope_command(name: str, spec: dict) -> dict:
     """The equivalent ``claude mcp add --scope user`` command; SourceLedger never runs it."""
-    argv = (["claude", "mcp", "add", name, "--scope", "user"]
+    # Documented form: options first; --transport separates the variadic
+    # --env values from the server name.
+    argv = (["claude", "mcp", "add", "--scope", "user"]
             + [part for key, value in spec.get("env", {}).items() for part in ("--env", f"{key}={value}")]
-            + ["--", spec["command"], *spec["args"]])
+            + ["--transport", "stdio", name, "--", spec["command"], *spec["args"]])
     if os.name == "nt":
         # PowerShell: call operator form with single-quoted literals.
         line = "& " + " ".join("'" + part.replace("'", "''") + "'" for part in argv)
