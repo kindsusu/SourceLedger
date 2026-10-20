@@ -196,6 +196,27 @@ def test_sampled_browser_failure_is_unverified_and_keeps_http_rows(tmp_path):
     assert len(rows) == 6 and {row.get("evidence_mode") for row in rows} == {"static_html"}
 
 
+def test_unsettled_sample_capture_is_unverified_not_a_mismatch(tmp_path):
+    urls = [jetcar_url(i) for i in range(3)]
+
+    class UnsettledSite(Site):
+        def __call__(self, source, base_dir, backend):
+            result = super().__call__(source, base_dir, backend)
+            if backend == "playwright":
+                result.trace.append({"event": "observation_unsettled", "reason": "settle_timeout"})
+            return result
+
+    # The half-updated browser page shows another price; it must not count as a mismatch.
+    site = UnsettledSite(browser_price={url: "699,000" for url in urls})
+    result = collect_plan(tmp_path, plan(urls), output_dir=tmp_path / "out", max_pages=3, max_seconds=300,
+                          follow_links=False, collector=site)
+    for url in urls:
+        (verification,) = events(result, url, "browser_sample_verification")
+        assert verification["result"] == "unverified"
+    execution = result["execution"]
+    assert execution["jetcar_sample_mismatches"] == 0 and execution["jetcar_browser_fallback"] is False
+
+
 def _confirmed_jetcar(root: Path, count: int) -> dict:
     created = plans.create_plan(root, "Approved synthetic rental inventory")["plan"]
     revised = plans.revise_plan(root, created["id"], created["revision"], {
