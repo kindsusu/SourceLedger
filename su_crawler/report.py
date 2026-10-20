@@ -143,16 +143,45 @@ def _raw_price(obs: dict[str, Any]) -> Any:
     return raw.get("price") if isinstance(raw, dict) else None
 
 
+HIDDEN_PRICE_NOTE = "Price field evidence is hidden in the source display; amount left blank for review."
+HIDDEN_ESTIMATE_NOTE = "Estimate field evidence is hidden in the source display; estimate left blank for review."
+
+
+def _field_hidden(obs: dict[str, Any], name: str) -> bool:
+    """A field captured from a hidden DOM node is never shown as an amount."""
+    evidence = obs.get("evidence")
+    proof = evidence.get(name) if isinstance(evidence, dict) else None
+    return isinstance(proof, dict) and proof.get("display_state") == "hidden"
+
+
+def _hidden_notes(obs: dict[str, Any]) -> list[str]:
+    notes = []
+    if _field_hidden(obs, "price"):
+        notes.append(HIDDEN_PRICE_NOTE)
+    if obs.get("value_origin") == "calculator_estimate" and _field_hidden(obs, "derived_values.estimated_price"):
+        notes.append(HIDDEN_ESTIMATE_NOTE)
+    return notes
+
+
+def _reason(obs: dict[str, Any]) -> Any:
+    notes = _hidden_notes(obs)
+    if not notes:
+        return obs.get("reason")
+    return "; ".join(([str(obs["reason"])] if obs.get("reason") else []) + notes)
+
+
 def _observed_amount(obs: dict[str, Any], *, include_review: bool = False) -> Any:
     if ((obs.get("status") == "verified" or include_review and obs.get("status") == "review")
             and obs.get("value_origin", "observed") == "observed"
-            and obs.get("source_visibility") != "hidden"):
+            and obs.get("source_visibility") != "hidden"
+            and not _field_hidden(obs, "price")):
         return obs.get("amount")
     return None
 
 
 def _estimated_amount(obs: dict[str, Any]) -> Any:
-    if obs.get("value_origin") == "calculator_estimate" and obs.get("source_visibility") != "hidden":
+    if (obs.get("value_origin") == "calculator_estimate" and obs.get("source_visibility") != "hidden"
+            and not _field_hidden(obs, "derived_values.estimated_price")):
         return obs.get("derived_amount")
     return None
 
@@ -451,6 +480,8 @@ def _export(
                 recorded = f'Displayed price text (review required): {fields["price"]}' + ("\n" + recorded if recorded else "")
             if obs.get("price_kind") == "from":
                 recorded = "Displayed price: starting at (source uses ~); exact quote unknown" + ("\n" + recorded if recorded else "")
+            if _hidden_notes(obs):
+                recorded = "\n".join(_hidden_notes(obs)) + ("\n" + recorded if recorded else "")
             values = [fields.get("name") or obs.get("product_id"), obs.get("source_name"),
                       _observed_amount(obs, include_review=True), obs.get("currency"), obs["result_status"],
                       recorded, "\n".join(FIELD_LABELS.get(key, key) for key in obs["missing_conditions"]), len(obs["supporting_evidence"]),
@@ -542,7 +573,7 @@ def _export(
         history_headers.extend(["Evidence Mode", "Reference Price (observed)", "Advance Percent (observed)"])
         ws = wb.add_worksheet(SHEETS[3]); row = _setup_sheet(ws, history_headers, fmts, demo)
         for obs in observations:
-            values = [obs.get("id"), obs.get("task_id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), obs.get("reason"), obs.get("collected_at"), _observed_amount(obs), _raw_price(obs), obs.get("normalized_amount"), obs.get("calculation"), obs.get("currency"), obs.get("unit"), obs.get("comparable"), obs.get("freshness"), obs.get("extraction_method"), obs.get("raw_fields"), obs.get("price_profile", "unit"), obs.get("value_origin", "observed"), obs.get("source_visibility"), obs.get("verification_level"), _estimated_amount(obs), obs.get("derived_values"), obs.get("review_flags"), obs.get("rental_conditions")]
+            values = [obs.get("id"), obs.get("task_id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), _reason(obs), obs.get("collected_at"), _observed_amount(obs), _raw_price(obs), obs.get("normalized_amount"), obs.get("calculation"), obs.get("currency"), obs.get("unit"), obs.get("comparable"), obs.get("freshness"), obs.get("extraction_method"), obs.get("raw_fields"), obs.get("price_profile", "unit"), obs.get("value_origin", "observed"), obs.get("source_visibility"), obs.get("verification_level"), _estimated_amount(obs), obs.get("derived_values"), obs.get("review_flags"), obs.get("rental_conditions")]
             values.append(_observed_amount(obs, include_review=True) if obs.get('status') == 'review' else None)
             values.append(obs.get('evidence_mode', 'unknown'))
             values.extend([(obs.get("raw_fields") or {}).get("reference_price"),
@@ -586,7 +617,7 @@ def _export(
                 row += 1
         for obs in observations:
             if not (obs.get("status") == "verified" and obs.get("freshness") == "observed" and obs.get("comparable") is True):
-                values = ["Observation", obs.get("id"), obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), obs.get("reason"), _raw_price(obs), obs.get("source_url"), obs.get("collected_at")]
+                values = ["Observation", obs.get("id"), obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), _reason(obs), _raw_price(obs), obs.get("source_url"), obs.get("collected_at")]
                 for col, value in enumerate(values):
                     if col == 7: _write_link(ws, row, col, value, fmts["link"], fmts["text"])
                     elif col == 8: _write_utc(ws, row, col, value, fmts["date"], fmts["text"])
@@ -619,7 +650,7 @@ def _export(
                           terms.get("deposit_installment_amount"), terms.get("deposit_installment_months"), terms.get("deposit_percent"),
                           (obs.get("raw_fields") or {}).get("displayed_deposit"), obs.get("value_origin"), obs.get("source_visibility"),
                           obs.get("status"), obs.get("comparable"), obs.get("freshness"), obs.get("collected_at"),
-                          obs.get("source_url"), obs.get("reason"), obs.get("id")]
+                          obs.get("source_url"), _reason(obs), obs.get("id")]
                 values.extend([(obs.get("raw_fields") or {}).get("reference_price"),
                                terms.get("advance_percent", (obs.get("raw_fields") or {}).get("advance_percent"))])
                 for col, value in enumerate(values):

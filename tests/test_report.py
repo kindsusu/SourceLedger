@@ -274,6 +274,30 @@ def test_report_retains_capture_artifacts_and_excludes_unconfirmed_html(tmp_path
         wb.close()
 
 
+def test_hidden_price_field_evidence_is_left_blank_with_review_note(tmp_path):
+    from su_crawler.report import HIDDEN_PRICE_NOTE
+    cfg = _config(tmp_path)
+    row = {"id": "hidden", "task_id": "t", "product_id": "p1", "source_id": "s1", "status": "verified",
+           "value_origin": "observed", "source_visibility": "visible", "amount": "12", "currency": "USD",
+           "comparable": True, "comparison_key": "k", "freshness": "observed", "evidence_mode": "rendered_dom",
+           "collected_at": "2026-09-22T00:00:00Z", "source_url": "https://shop.example/p",
+           "raw_fields": {"name": "Item", "price": "12"}, "reason": "",
+           "evidence": {"price": {"raw": "12", "location": "span", "display_state": "hidden"}}}
+    output = export_report(cfg, {"id": "r"}, [], [row], tmp_path / "hidden.xlsx")
+    wb = load_workbook(output, read_only=True)
+    try:
+        results = list(wb["Results"].values)
+        assert results[1][2] is None and HIDDEN_PRICE_NOTE in results[1][5]
+        history = list(wb["Observation History"].values)
+        header = history[0]
+        assert history[1][header.index("Amount")] is None
+        assert history[1][header.index("Raw Amount")] == "12"  # raw evidence stays visible as text
+        assert HIDDEN_PRICE_NOTE in history[1][header.index("Reason")]
+        assert wb["Price Comparison"].max_row == 1
+    finally:
+        wb.close()
+
+
 def test_oversized_evidence_text_is_cut_with_explicit_marker(tmp_path):
     cfg = _config(tmp_path)
     card = "card text " * 5000  # 50,000 characters, beyond Excel's cell limit
