@@ -24,6 +24,14 @@ TRACKER_INIT_JS = r"""(() => {
   if (typeof window.fetch === 'function') {
     const originalFetch = window.fetch;
     window.fetch = function (...args) {
+      // keepalive fetches are fire-and-forget beacons (ads, analytics). Under
+      // Playwright request interception their promise can stay pending forever,
+      // which would block every observation on pages that load such tags.
+      const request = args[0];
+      if ((args[1] && args[1].keepalive) || (typeof Request !== 'undefined'
+          && request instanceof Request && request.keepalive)) {
+        return originalFetch.apply(this, args);
+      }
       state.pending++; changed();
       let finished = false;
       const finish = () => {

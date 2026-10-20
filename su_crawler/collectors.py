@@ -1085,8 +1085,11 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                         ready=lambda value: bool(value.get('text')),
                         timeout_seconds=min(15, remaining_ms() / 1000),
                     )
+                    network = settled.get('network') or {}
                     trace.append({'event': 'observation_settlement', 'status': settled['status'],
-                                  'duration_ms': round(settled['elapsed_seconds'] * 1000, 1), 'at': utc_now()})
+                                  'duration_ms': round(settled['elapsed_seconds'] * 1000, 1),
+                                  'pending': network.get('pending'), 'loading': network.get('loading'),
+                                  'at': utc_now()})
                     if settled['status'] != 'settled':
                         raise PlaywrightTimeoutError('Observation did not settle')
                     snapshot = _evidence_snapshot(page, listing_expectation,

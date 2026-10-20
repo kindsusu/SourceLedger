@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -33,6 +34,14 @@ class Handler(BaseHTTPRequestHandler):
             <script>setTimeout(() => {document.querySelector('#term').selectedIndex=1;
             document.querySelector('#price').textContent='125';
             document.querySelector('#loader').remove()}, 900)</script></body></html>"""
+            status = 200
+        elif self.path == "/beacon":
+            body = b"""<html><body><div id='price'>100</div>
+            <script>fetch('/hang', {keepalive: true, method: 'GET'}).catch(() => {});</script></body></html>"""
+            status = 200
+        elif self.path == "/hang":
+            time.sleep(12)
+            body = b"late"
             status = 200
         else:
             body = PAGE
@@ -183,6 +192,19 @@ def test_generic_collector_waits_for_dynamic_price_and_captures_matching_control
     controls = next(row['controls'] for row in result.trace if row['event'] == 'selected_control_states')
     assert controls[0]['selected_label'] == '24 months'
     assert any(row['event'] == 'observation_settlement' and row['status'] == 'settled' for row in result.trace)
+
+
+def test_keepalive_beacon_does_not_block_observation_settlement(tmp_path):
+    if next(item for item in doctor() if item['backend'] == 'playwright')['status'] != 'available':
+        pytest.skip('Browser unavailable')
+    with server() as url:
+        source = Source(id='beacon', name='beacon', kind='web', location=url + '/beacon',
+                        product_ids=[], allowed_domains=['127.0.0.1'], internal=True,
+                        respect_robots=False, timeout_seconds=10)
+        result = collect(source, str(tmp_path), 'playwright')
+    assert result.status == 'fetched', result.message
+    settlement = next(row for row in result.trace if row['event'] == 'observation_settlement')
+    assert settlement['status'] == 'settled' and settlement['pending'] == 0
 
 
 def test_atomic_snapshot_rejects_changed_observation():
