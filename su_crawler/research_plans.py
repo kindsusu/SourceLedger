@@ -407,7 +407,8 @@ def plan_summary(plan: dict[str, Any], *, brief: bool = False) -> dict[str, Any]
     if brief:
         value["request_excerpt"] = request[:160] + ("…" if len(request) > 160 else "")
         return value
-    value.update(request_text=request[:1000], request_text_truncated=len(request) > 1000,
+    value.update(plan_fingerprint=fingerprint(plan),
+                 request_text=request[:1000], request_text_truncated=len(request) > 1000,
                  summary=plan.get("summary", ""), categories=plan.get("categories", []),
                  conditions=plan.get("conditions", []), include_terms=plan.get("include_terms", []),
                  exclude_terms=plan.get("exclude_terms", []), note=plan.get("note", ""),

@@ -332,3 +332,17 @@ def test_claude_code_kit_is_portable_and_least_privilege():
     header = files[2].read_text(encoding="utf-8").split("---")[1]
     fields = dict(line.split(": ", 1) for line in header.strip().splitlines())
     assert fields["model"] == "haiku" and fields["tools"] == "mcp__sourceledger__*"
+
+
+def test_confirmed_summary_carries_pins_used_by_plan_jobs(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime, "start_worker", lambda root: {"status": "idle"})
+    server = build_assistant_server(tmp_path)
+    plan = _call(server, "create_research_plan", {"request_text": "Synthetic pin check"})["plan"]
+    plan = _call(server, "update_research_plan", {"plan_id": plan["id"], "expected_revision": plan["revision"], "changes": {
+        "topic": {"industry": "Retail", "product": "Items", "market": "Testland"},
+        "added_candidates": [{"url": "https://shop.example/a"}]}})["plan"]
+    plan = _call(server, "confirm_research_plan", {"plan_id": plan["id"], "expected_revision": plan["revision"],
+                                                   "user_confirmed": True})["plan"]
+    started = _call(server, "start_research_plan", {"plan_id": plan["id"], "expected_revision": plan["revision"]})
+    assert started["job"]["arguments"]["plan_fingerprint"] == plan["plan_fingerprint"]
+    assert plan["plan_fingerprint"] == plans.fingerprint(plans.get_plan(tmp_path, plan["id"])["plan"])
