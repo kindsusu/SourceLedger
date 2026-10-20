@@ -5,6 +5,16 @@ import hashlib
 import time
 from typing import Any, Callable
 
+from .browser_settlement import network_state_sync, wait_action_effects_sync
+
+# After an action, stop waiting once the tracked network and DOM have been
+# quiet this long (never longer than the recipe's progress wait).
+ACTION_QUIET_MS = 500
+ACTION_FLOOR_MS = 100
+# A pagination or scroll action may take this long to change the listing on
+# a tracked page before it is treated as a repeated or non-growing state.
+LISTING_CHANGE_WAIT_MS = 3000
+
 
 class SnapshotBudgetExceeded(Exception):
     """The collection-wide snapshot count or byte limit was reached."""
@@ -18,6 +28,52 @@ def _listing_items(items: Any) -> list[dict[str, str]]:
     # One browser evaluation observes the visible rows and their attributes.
     # Text alone would miss a changed product link, ID, or price attribute.
     return items.evaluate_all("els => els.map(el => ({text: el.innerText, html: el.outerHTML}))")
+
+
+def _after_action(page: Any, remaining_ms: Callable[[], float], wait_ms: int, *,
+                  read: Callable[[], Any] | None = None, previous: Any = None,
+                  require_change: bool = False) -> dict:
+    """Condition wait after an action, bounded by the step and page budgets."""
+    budget = max(1, remaining_ms() - 1000)
+    limit = min(max(wait_ms, LISTING_CHANGE_WAIT_MS) if require_change else wait_ms, budget)
+    return wait_action_effects_sync(page, max_ms=limit, quiet_ms=min(wait_ms, ACTION_QUIET_MS),
+                                    floor_ms=min(wait_ms, ACTION_FLOOR_MS), read=read, previous=previous,
+                                    require_change=require_change, untracked_ms=min(wait_ms, budget))
+
+
+def _confirm_last_page(page: Any, container: Any, step: dict[str, Any], items: Any,
+                       entries: list[dict[str, str]], remaining_ms: Callable[[], float],
+                       window_ms: int) -> tuple[str, str | None]:
+    """Confirm a missing or disabled next control is the end of the listing.
+
+    The control must stay absent/disabled, the captured rows unchanged, and the
+    tracked network free of pending fetch/XHR and loaders for the stable
+    window, counted from the last network activity.
+    """
+    stable_since = time.monotonic()
+    while True:
+        if remaining_ms() <= 1200:
+            return "deadline", None
+        controls = container.locator(step["next_selector"] + ":visible")
+        found = controls.count()
+        if found > 1:
+            return "ambiguous", None
+        state = "absent" if found == 0 else "disabled" if controls.is_disabled() else "enabled"
+        if state == "enabled":
+            return "next_available", state
+        if _listing_items(items) != entries:
+            return "changed", state
+        network = network_state_sync(page)
+        now = time.monotonic()
+        if network.get("tracked") is True:
+            if network.get("pending") or network.get("loading"):
+                stable_since = now
+            elif isinstance(network.get("idleMs"), (int, float)):
+                stable_since = max(stable_since, now - network["idleMs"] / 1000)
+        elapsed_ms = (now - stable_since) * 1000
+        if elapsed_ms >= window_ms:
+            return "confirmed", state
+        page.wait_for_timeout(max(1, min(100, window_ms - elapsed_ms, remaining_ms() - 1000)))
 
 
 def _capture_listing(capture: Callable[..., None], selected: dict[str, str],
@@ -142,7 +198,7 @@ def enumerate_options(
                 status, reason = ("partial" if captured else "unknown"), "deadline"
                 return
             loc.select_option(choice["value"], timeout=remaining_ms())
-            page.wait_for_timeout(min(wait_ms, max(1, remaining_ms() - 1000)))
+            _after_action(page, remaining_ms, wait_ms)
             if step.get("ready_selector"):
                 page.locator(step["ready_selector"]).wait_for(state="visible", timeout=remaining_ms())
             if loc.input_value(timeout=remaining_ms()) != choice["value"]:
@@ -208,25 +264,29 @@ def paginate(
                     break
                 count += 1
                 next_control = container.locator(step["next_selector"] + ":visible")
-                if next_control.count() == 0:
-                    page.wait_for_timeout(min(wait_ms, max(1, remaining_ms() - 1000)))
-                    if next_control.count() == 0:
-                        status, reason = (("complete", "next_absent") if _listing_items(items) == entries
-                                          else ("partial", "list_changed_after_capture"))
-                        break
-                if next_control.count() != 1:
+                found = next_control.count()
+                if found > 1:
                     status, reason = "partial", "ambiguous_next"
                     break
-                if next_control.is_disabled():
-                    status, reason = (("complete", "next_disabled") if _listing_items(items) == entries
-                                      else ("partial", "list_changed_after_capture"))
-                    break
+                if found == 0 or next_control.is_disabled():
+                    # A missing or disabled control may be transient while the
+                    # page loads; completion needs a positive stable window.
+                    outcome, state = _confirm_last_page(page, container, step, items, entries,
+                                                        remaining_ms, wait_ms)
+                    if outcome == "confirmed":
+                        status, reason = "complete", "next_absent" if state == "absent" else "next_disabled"
+                        break
+                    if outcome != "next_available":
+                        status, reason = "partial", {"changed": "list_changed_after_capture",
+                                                     "ambiguous": "ambiguous_next"}.get(outcome, "completion_unconfirmed")
+                        break
                 if index + 1 >= step.get("max_pages", 20):
                     status, reason = "partial", "page_budget"
                     break
                 old_url = page.url
                 next_control.click(timeout=remaining_ms())
-                page.wait_for_timeout(min(wait_ms, max(1, remaining_ms() - 1000)))
+                _after_action(page, remaining_ms, wait_ms, read=lambda: _listing_items(items),
+                              previous=entries, require_change=True)
                 # Caller rechecks navigated URL against source policy before
                 # accepting evidence; the route guard checks each request.
                 if page.url != old_url and not page.url.startswith("http"):
@@ -298,7 +358,8 @@ def scroll_list(
                     status, reason = "partial", "scroll_budget"
                     break
                 cards.last.scroll_into_view_if_needed(timeout=remaining_ms())
-                page.wait_for_timeout(min(wait_ms, max(1, remaining_ms() - 1000)))
+                _after_action(page, remaining_ms, wait_ms, read=lambda: _listing_items(cards),
+                              previous=previous, require_change=True)
                 if cards.count() == count and _listing_items(cards) == previous:
                     status, reason = "partial", "no_growth_unconfirmed"
                     break
@@ -352,7 +413,7 @@ def enumerate_buttons(
                     status, reason = ("partial" if count else "unknown"), "ambiguous_option"
                     break
                 matches.nth(choice_index).click(timeout=remaining_ms())
-                page.wait_for_timeout(min(int(step.get("progress_wait_seconds", 1) * 1000), max(1, remaining_ms() - 1000)))
+                _after_action(page, remaining_ms, int(step.get("progress_wait_seconds", 1) * 1000))
                 if step.get("ready_selector"):
                     page.locator(step["ready_selector"]).wait_for(state="visible", timeout=remaining_ms())
                 if matches.nth(choice_index).get_attribute("data-value") != choice["value"] or not matches.nth(choice_index).is_visible():
