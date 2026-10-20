@@ -174,6 +174,8 @@ def main(argv: list[str] | None = None) -> int:
     unattended.add_argument("--json", action="store_true", help="Print one compact JSON line.")
     assistant_mcp = sub.add_parser("serve-assistant", help="Serve workspace onboarding and queued research tools over local stdio MCP.")
     assistant_mcp.add_argument("--workspace-root", default=".sourceledger")
+    assistant_mcp.add_argument("--legacy-tools", action="store_true",
+                               help="Also expose research.json queue_* tools, which bypass research-plan confirmation.")
     web_ui = sub.add_parser("ui", help="Open the local browser workspace and MCP connection settings.")
     web_ui.add_argument("--workspace-root", default=".sourceledger")
     web_ui.add_argument("--port", type=int, default=8765, help="Local HTTP port (0 selects an available port).")
@@ -237,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
             if importlib.util.find_spec("mcp") is None:
                 raise ValueError("MCP is not installed. Run setup.cmd --mcp or bash setup.sh --mcp first")
             from .assistant_server import build_assistant_server
-            server = build_assistant_server(Path(args.workspace_root).expanduser())
+            server = build_assistant_server(Path(args.workspace_root).expanduser(), legacy_tools=args.legacy_tools)
             server.run(transport="stdio")
             return 0
         elif args.command == "init":

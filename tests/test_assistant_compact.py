@@ -130,6 +130,12 @@ def test_import_plan_urls_preserves_order_and_reports_problems(tmp_path):
     with pytest.raises(Exception, match="inside the assistant workspace"):
         _call(server, "import_plan_urls", {"plan_id": plan["id"], "expected_revision": stored["revision"],
                                            "path": "../outside.txt"})
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("secret line that must not be echoed\nhttps://x.example/1\n", encoding="utf-8")
+    with pytest.raises(Exception, match="inside the assistant workspace") as rejected:
+        _call(server, "import_plan_urls", {"plan_id": plan["id"], "expected_revision": stored["revision"],
+                                           "path": str(outside)})
+    assert "secret line" not in str(rejected.value)
 
 
 def test_import_then_confirm_matches_batch_execution_pin(tmp_path):

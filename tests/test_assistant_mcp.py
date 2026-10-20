@@ -24,7 +24,7 @@ def _call(server, name, arguments):
 
 
 def test_assistant_mcp_onboarding_and_offline_queue(tmp_path):
-    server = build_assistant_server(tmp_path)
+    server = build_assistant_server(tmp_path, legacy_tools=True)
     assert _call(server, "get_workspace_status", {})["status"] == "needs_setup"
     initialized = _call(server, "initialize_workspace", {
         "industry": "vehicle rental", "product": "compact car", "market": "KR", "locale": "ko",
@@ -44,13 +44,22 @@ def test_assistant_mcp_onboarding_and_offline_queue(tmp_path):
     assert _call(server, "list_recent_jobs", {})["jobs"][0]["id"] == queued["id"]
 
 
+LEGACY_TOOLS = {
+    "initialize_workspace", "set_product_identity", "add_source_candidate",
+    "queue_source_discovery", "queue_source_proposal", "queue_research_agent", "queue_supported_sites",
+    "queue_verification", "queue_collection", "queue_report_export",
+}
+
+
 def test_server_tool_contract_and_registered_report_resource(tmp_path):
     server = build_assistant_server(tmp_path)
     tools = {tool.name for tool in asyncio.run(server.list_tools())}
+    # Legacy queue_* tools collect without a confirmed plan: hidden unless explicitly enabled.
+    assert not tools & LEGACY_TOOLS
+    legacy = build_assistant_server(tmp_path, legacy_tools=True)
+    assert {tool.name for tool in asyncio.run(legacy.list_tools())} == tools | LEGACY_TOOLS
     assert {
-        "get_workspace_status", "initialize_workspace", "set_product_identity", "add_source_candidate",
-        "queue_source_discovery", "queue_source_proposal", "queue_research_agent", "queue_supported_sites",
-        "queue_verification", "queue_collection", "queue_report_export", "get_job_status", "get_research_progress", "wait_for_job",
+        "get_workspace_status", "get_job_status", "get_research_progress", "wait_for_job",
         "list_recent_jobs", "resume_job_execution", "get_job_observations", "get_job_report", "get_job_dashboard",
         "list_source_recommendation_requests", "request_source_recommendations", "submit_source_recommendations",
         "list_research_plans", "get_research_plan", "create_research_plan", "submit_research_preview",
@@ -133,7 +142,7 @@ def test_start_research_plan_limits_collection_to_approved_urls_by_default(tmp_p
 
 
 def test_assistant_stages_recommendations_without_registering_or_collecting(tmp_path):
-    server = build_assistant_server(tmp_path)
+    server = build_assistant_server(tmp_path, legacy_tools=True)
     _call(server, "initialize_workspace", {"industry": "Fixtures", "product": "Parts", "market": "Offline"})
     created = _call(server, "request_source_recommendations", {"query": "Parts suppliers"})["request"]
     listed = _call(server, "list_source_recommendation_requests", {})
@@ -199,7 +208,7 @@ def test_real_stdio_disconnect_does_not_cancel_independent_collection(tmp_path):
     assert worker["status"] in {"idle", "running"}
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "su_crawler", "serve-assistant", "--workspace-root", str(tmp_path)],
+        args=["-m", "su_crawler", "serve-assistant", "--workspace-root", str(tmp_path), "--legacy-tools"],
         env=dict(os.environ, PYTHONIOENCODING="utf-8"), cwd=str(root),
     )
 

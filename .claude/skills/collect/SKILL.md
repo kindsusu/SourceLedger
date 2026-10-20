@@ -30,12 +30,14 @@ Never retype or paste URL lists. Always pass the file path. A succeeded job is n
 - **Interactive through MCP:**
   1. `create_research_plan` with the full request, or reuse a plan from `list_research_plans`.
   2. `import_plan_urls(plan_id, expected_revision, path)`; report `count`, `invalid`, `duplicates`,
-     `first_urls`, `last_urls` and `url_fingerprint`. Resolve invalid lines with the user by fixing the file.
+     `first_urls`, `last_urls`, `import.file_url_fingerprint` and `plan.url_fingerprint`. Resolve invalid lines
+     with the user by fixing the file. For the MCP path the URL file must be inside the workspace; copy it
+     there first (`collect-plan --urls-file` accepts any path).
   3. `update_research_plan` for the topic only, then `get_research_batch_execution_plan`.
 
 ## 3. Approval (required)
 
-Show: plan ID and revision, URL count, `url_fingerprint`, first/last URLs, host counts, batch size,
+Show: plan ID and revision, URL count, `plan.url_fingerprint` (and `import.file_url_fingerprint`), first/last URLs, host counts, batch size,
 concurrency, browser concurrency and per-batch time limit. Ask the user to approve this exact revision.
 Permission to preview is not permission to collect.
 
