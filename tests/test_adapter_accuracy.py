@@ -125,3 +125,65 @@ def test_gongcar_quote_table_floor_price_is_flagged_not_fixed():
     assert values[0].fields["price"] == "450000"
     assert values[0].derived_values["price_kind"] == "from"
     assert "starting_price_not_fixed_quote" in values[0].review_flags
+
+
+# --- Items 2 and 4: Jetcar struck prices, ambiguous amounts and inquiry rows ---
+
+JETCAR_URL = "https://www.jetcar.kr/sub0301/987654"
+
+
+def _jetcar(rows: str):
+    from pathlib import Path
+
+    html = (Path(__file__).parent / "fixtures" / "adapters" / "jetcar_detail.html").read_text(encoding="utf-8")
+    html = html.replace("</table>\n<table hidden>", rows + "</table>\n<table hidden>", 1)
+    result = FetchResult("s", "fetched", "playwright", html.encode("utf-8"), final_url=JETCAR_URL)
+    return result, extract(result, Source("s", "jetcar", "web", JETCAR_URL, ["p"], adapter="jetcar"))
+
+
+def test_jetcar_ignores_struck_list_price_in_rent_row():
+    from su_crawler.adapters.jetcar import section_coverage
+
+    result, values = _jetcar('<tr><td>보증금 50 만원</td><td>36개월</td>'
+                             '<td><del>월 700,000 원</del> 월 650,000 원</td></tr>')
+    assert [v.fields["price"] for v in values] == ["682965", "598846", "650000"]
+    assert values[2].review_flags == []
+    assert section_coverage(result, values)[0]["status"] == "complete"
+
+
+@pytest.mark.parametrize("cell,flag", [
+    ("월 600,000원~650,000원", "price_range_not_single_amount"),
+    ("월 50~60만원", "price_range_not_single_amount"),
+    ("정가 월 700,000원 할인 월 650,000원", "multiple_amounts_unresolved"),
+    ("월 650,000원부터", "starting_price_qualifier"),
+])
+def test_jetcar_ambiguous_monthly_price_is_null_with_reason(cell, flag):
+    _, values = _jetcar(f'<tr><td>보증금 50 만원</td><td>36개월</td><td>{cell}</td></tr>')
+    assert len(values) == 3
+    row = values[2]
+    assert row.fields["term_months"] == "36"
+    assert "price" not in row.fields and "currency" not in row.fields
+    assert row.evidence["price"]["raw"] is None
+    assert row.review_flags == [flag]
+
+
+def test_jetcar_term_with_inquiry_price_is_kept_as_null_price_candidate():
+    from su_crawler.models import Product
+    from su_crawler.validation import validate
+
+    result, values = _jetcar('<tr><td>보증금 50 만원</td><td>36개월</td><td>월 문의</td></tr>')
+    assert len(values) == 3
+    row = values[2]
+    assert row.locator.endswith(":rent-row:4")
+    assert row.fields["term_months"] == "36"
+    assert row.fields["deposit_amount"] == "500000"
+    assert row.fields["availability"] == "월 문의"
+    assert "price" not in row.fields and "currency" not in row.fields and "price_basis" not in row.fields
+    assert row.review_flags == ["price_inquiry_or_unavailable"]
+    source = Source("s", "jetcar", "web", JETCAR_URL, ["p"], adapter="jetcar")
+    observation = validate(row, Product("p", "car", price_profile="rental"), source, run_id="r", task_id="t",
+                           evidence_path="e", evidence_sha256="h", collected_at="2026-10-20T00:00:00Z",
+                           source_url=JETCAR_URL)
+    assert observation.status == "review" and observation.amount is None and not observation.comparable
+    assert "review flag: price_inquiry_or_unavailable" in observation.reason
+    assert not any(part.startswith("evidence") for part in observation.reason.split("; "))
