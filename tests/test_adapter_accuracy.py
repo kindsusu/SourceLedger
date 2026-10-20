@@ -252,3 +252,45 @@ def test_gongcar_public_rows_differing_only_by_age_or_vehicle_value_stay_distinc
     values = _gongcar(_public_table(age, value), "https://gongcarrent.kr/public-quote")
     assert len(values) == 2
     assert values[0].fields["item_id"] != values[1].fields["item_id"]
+
+
+# --- Item 4: Amazoncar inquiry tariffs and inexact term labels are kept ---
+
+AMAZON_DETAIL = "https://www.amazoncar.co.kr/cars/new/000001/1"
+AMAZON_SHORT = "https://www.amazoncar.co.kr/rentPrice"
+
+
+def _amazoncar(html: str, url: str):
+    source = Source("s", "Amazoncar", "web", url, ["p"], adapter="amazoncar")
+    return extract(FetchResult("s", "fetched", "playwright", html.encode("utf-8"), final_url=url), source)
+
+
+def test_amazoncar_term_without_exact_label_is_null_price_candidate():
+    html = """<html><body><h1 class="_name_x">Synthetic Car</h1>
+    <div class="_choice-rent-lease_x"><button class="_active_x">장기렌트</button><button>리스</button></div>
+    <div class="_choice-box_x"><p class="_title_x">대여 개월을 선택하세요</p><div>
+      <button><span>48개월</span><div><span class="_price_x">400,000원</span></div></button>
+      <button>36개월 <div><span class="_price_x">450,000원</span></div></button>
+    </div></div></body></html>"""
+    values = _amazoncar(html, AMAZON_DETAIL)
+    assert [v.fields.get("term_months") for v in values] == ["48", "36"]
+    assert values[0].fields["price"] == "400000" and values[0].review_flags == []
+    assert "price" not in values[1].fields and "currency" not in values[1].fields
+    assert values[1].evidence["price"]["raw"] is None
+    assert values[1].evidence["term_months"]["raw"] == "36개월"
+    assert values[1].review_flags == ["term_label_not_exact_span"]
+
+
+def test_amazoncar_short_term_inquiry_cells_are_null_price_candidates():
+    headers = "".join(f"<td>{d}</td>" for d in ("12시간", "1~2일", "3~4일", "5~6일", "7일 이상"))
+    html = f"""<html><body><table><tbody><tr><td>구분</td><td>차종</td>{headers}</tr>
+    <tr><td>소형</td><td>Synthetic</td><td>50,000</td><td>문의</td><td>-</td><td>40,000</td><td></td></tr>
+    </tbody></table></body></html>"""
+    values = _amazoncar(html, AMAZON_SHORT)
+    assert [(v.fields["rental_duration"], v.fields.get("price"), v.fields.get("availability")) for v in values] == [
+        ("12시간", "50,000", None), ("1~2일", None, "문의"), ("3~4일", None, "-"), ("5~6일", "40,000", None),
+    ]
+    assert values[1].review_flags == ["tariff_price_not_numeric"]
+    assert values[1].evidence["price"]["raw"] is None
+    assert values[1].evidence["availability"]["raw"] == "문의"
+    assert values[0].review_flags == []
