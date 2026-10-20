@@ -45,3 +45,46 @@ def test_capture_rejects_junction_like_directory(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match='cannot be a link'):
         _store_capture(tmp_path, b'evidence', '.png')
     assert not root.exists()
+
+
+def test_identical_uncompressed_checkpoint_blob_is_linked_not_copied(tmp_path):
+    import os
+    data = b'\x89PNG\r\n\x1a\n synthetic screenshot bytes'
+    digest = hashlib.sha256(data).hexdigest()
+    blob = tmp_path / 'checkpoint_blobs' / digest[:2] / (digest + '.bin')
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(data)
+    path, recorded = _store_capture(tmp_path, data, '.png')
+    assert recorded == digest and hashlib.sha256(path.read_bytes()).hexdigest() == digest
+    if os.stat(path).st_nlink > 1:  # hard links supported on this filesystem
+        assert os.path.samefile(path, blob)
+    blob.unlink()  # retention may remove the blob name; the evidence name remains
+    assert path.read_bytes() == data
+    assert not list(path.parent.glob('.capture-*'))
+
+
+def test_damaged_checkpoint_blob_is_never_linked_as_evidence(tmp_path):
+    import os
+    data = b'\x89PNG\r\n\x1a\n correct'
+    digest = hashlib.sha256(data).hexdigest()
+    blob = tmp_path / 'checkpoint_blobs' / digest[:2] / (digest + '.bin')
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(b'\x89PNG\r\n\x1a\n damage!')  # same size, different bytes
+    path, _ = _store_capture(tmp_path, data, '.png')
+    assert path.read_bytes() == data
+    assert not os.path.samefile(path, blob)
+
+
+def test_capture_falls_back_to_copy_without_hard_links(tmp_path, monkeypatch):
+    import os
+    data = b'%PDF synthetic'
+    digest = hashlib.sha256(data).hexdigest()
+    blob = tmp_path / 'checkpoint_blobs' / digest[:2] / (digest + '.bin')
+    blob.parent.mkdir(parents=True)
+    blob.write_bytes(data)
+
+    def no_links(*_args, **_kwargs):
+        raise OSError('hard links unsupported')
+    monkeypatch.setattr(os, 'link', no_links)
+    path, _ = _store_capture(tmp_path, data, '.pdf')
+    assert path.read_bytes() == data and os.stat(path).st_nlink == 1

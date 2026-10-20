@@ -272,3 +272,114 @@ def test_report_retains_capture_artifacts_and_excludes_unconfirmed_html(tmp_path
 
     finally:
         wb.close()
+
+
+def test_hidden_price_field_evidence_is_left_blank_with_review_note(tmp_path):
+    from su_crawler.report import HIDDEN_PRICE_NOTE
+    cfg = _config(tmp_path)
+    row = {"id": "hidden", "task_id": "t", "product_id": "p1", "source_id": "s1", "status": "verified",
+           "value_origin": "observed", "source_visibility": "visible", "amount": "12", "currency": "USD",
+           "comparable": True, "comparison_key": "k", "freshness": "observed", "evidence_mode": "rendered_dom",
+           "collected_at": "2026-09-22T00:00:00Z", "source_url": "https://shop.example/p",
+           "raw_fields": {"name": "Item", "price": "12"}, "reason": "",
+           "evidence": {"price": {"raw": "12", "location": "span", "display_state": "hidden"}}}
+    output = export_report(cfg, {"id": "r"}, [], [row], tmp_path / "hidden.xlsx")
+    wb = load_workbook(output, read_only=True)
+    try:
+        results = list(wb["Results"].values)
+        assert results[1][2] is None and HIDDEN_PRICE_NOTE in results[1][5]
+        history = list(wb["Observation History"].values)
+        header = history[0]
+        assert history[1][header.index("Amount")] is None
+        assert history[1][header.index("Raw Amount")] == "12"  # raw evidence stays visible as text
+        assert HIDDEN_PRICE_NOTE in history[1][header.index("Reason")]
+        assert wb["Price Comparison"].max_row == 1
+    finally:
+        wb.close()
+
+
+def test_oversized_evidence_text_is_cut_with_explicit_marker(tmp_path):
+    cfg = _config(tmp_path)
+    card = "card text " * 5000  # 50,000 characters, beyond Excel's cell limit
+    row = {"id": "big", "task_id": "t", "product_id": "p1", "source_id": "s1", "status": "review",
+           "raw_fields": {"name": "Item", "price": "12"},
+           "evidence": {"price": {"raw": "12", "location": "span", "card_text": card}}}
+    output = export_report(cfg, {"id": "r"}, [], [row], tmp_path / "big.xlsx")
+    wb = load_workbook(output, read_only=True)
+    try:
+        sheet = list(wb["Source Evidence"].values)
+        cell = sheet[1][sheet[0].index("Field Evidence JSON")]
+        assert len(cell) <= 32767
+        assert cell.endswith("characters shown; the full value is kept in the SQLite ledger.]")
+        assert "of 50,0" in cell  # total length of the JSON text is reported
+    finally:
+        wb.close()
+
+
+def _no_openpyxl_fallback(monkeypatch):
+    from su_crawler import xlsx_sheets
+
+    def fail(*_args, **_kwargs):
+        raise AssertionError("whole workbook was reloaded")
+    monkeypatch.setattr(xlsx_sheets, "_replace_openpyxl", fail)
+
+
+def test_append_sheets_replace_in_place_without_reloading_workbook(tmp_path, monkeypatch):
+    from su_crawler.report import append_refresh_summary
+    _no_openpyxl_fallback(monkeypatch)
+    path = export_report(_config(tmp_path), {"id": "r", "demo": True}, [], [], tmp_path / "splice.xlsx")
+    coverage = [{"url": "https://example.test/x", "sections": [{"section": "s", "status": "partial"}],
+                 "collection_issues": [{"id": "i1", "reason": "=SUM(1)\x01"}]}]
+    append_section_coverage(path, coverage)
+    append_refresh_summary(path, {"inventory_completeness_verified": True, "changes": [{"url": "u", "added": 1}],
+                                  "item_changes": [{"status": "baseline", "after": {"fields": {"price": 0}}}]})
+    append_section_coverage(path, coverage)
+    wb = load_workbook(path)
+    try:
+        # Replaced sheets move to the end, as with the former delete-and-append.
+        assert wb.sheetnames[-4:] == ["Collection Changes", "Item Changes", "Catalog coverage", "Collection Issues"]
+        assert wb.sheetnames.count("Catalog coverage") == 1
+        issues = wb["Collection Issues"]
+        assert issues["F2"].value == "=SUM(1)_x0001_" and issues["F2"].data_type == "s"
+        assert issues["A1"].font.bold and issues["A1"].fill.fgColor.rgb == "001F4E78"
+        assert issues.freeze_panes == "A2" and issues.auto_filter.ref == "A1:I2"
+        assert wb["Collection Changes"]["F4"].value is True
+        assert wb["Item Changes"]["E2"].value == 0
+        assert wb["Item Changes"]["A1"].fill.fgColor.rgb == "0017365D"
+        assert wb["Item Changes"]["B2"].alignment.wrap_text
+        assert wb["Results"]["A1"].value == "Demo data — not market prices"
+    finally:
+        wb.close()
+
+
+def test_append_falls_back_to_one_openpyxl_write_for_unsupported_packages(tmp_path, monkeypatch):
+    from su_crawler import xlsx_sheets
+
+    def unsupported(*_args, **_kwargs):
+        raise xlsx_sheets.SpliceUnsupported("synthetic")
+    monkeypatch.setattr(xlsx_sheets, "_splice", unsupported)
+    path = export_report(_config(tmp_path), {"id": "r"}, [], [], tmp_path / "fallback.xlsx")
+    append_section_coverage(path, [{"url": "https://example.test/x", "sections": [{"section": "s", "observed_count": 3}],
+                                    "collection_issues": [{"id": "i1", "attempt_count": 2}]}])
+    wb = load_workbook(path, read_only=True)
+    try:
+        assert list(wb["Catalog coverage"].values)[1][:4] == ("https://example.test/x", "s", "unknown", 3)
+        assert list(wb["Collection Issues"].values)[1][7] == 2
+    finally:
+        wb.close()
+
+
+def test_export_writes_audit_sheets_in_the_same_pass(tmp_path):
+    path = export_report(_config(tmp_path), {"id": "r"}, [], [], tmp_path / "single.xlsx",
+                         section_coverage=[{"url": "https://example.test/x",
+                                            "sections": [{"section": "s", "status": "complete", "observed_count": 1}]}],
+                         collection_issues=[{"id": "i1", "status": "open", "attempt_count": 1}])
+    wb = load_workbook(path)
+    try:
+        assert wb.sheetnames[-2:] == ["Catalog coverage", "Collection Issues"]
+        assert list(wb["Catalog coverage"].values)[1][:4] == ("https://example.test/x", "s", "complete", 1)
+        assert list(wb["Collection Issues"].values)[1][:4] == ("i1", None, None, "open")
+        assert wb["Catalog coverage"].auto_filter.ref == "A1:L2" and wb["Catalog coverage"].freeze_panes == "A2"
+        assert wb["Catalog coverage"]["A1"].font.bold
+    finally:
+        wb.close()
