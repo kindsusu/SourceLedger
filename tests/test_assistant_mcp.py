@@ -51,7 +51,7 @@ def test_server_tool_contract_and_registered_report_resource(tmp_path):
         "get_workspace_status", "initialize_workspace", "set_product_identity", "add_source_candidate",
         "queue_source_discovery", "queue_source_proposal", "queue_research_agent", "queue_supported_sites",
         "queue_verification", "queue_collection", "queue_report_export", "get_job_status", "get_research_progress", "wait_for_job",
-        "list_recent_jobs", "resume_job_execution", "get_job_observations", "get_job_report",
+        "list_recent_jobs", "resume_job_execution", "get_job_observations", "get_job_report", "get_job_dashboard",
         "list_source_recommendation_requests", "request_source_recommendations", "submit_source_recommendations",
         "list_research_plans", "get_research_plan", "create_research_plan", "submit_research_preview",
         "update_research_plan", "confirm_research_plan", "start_research_plan", "generate_research_preview",
@@ -64,6 +64,24 @@ def test_server_tool_contract_and_registered_report_resource(tmp_path):
     } == tools
     resources = asyncio.run(server.list_resource_templates())
     assert any(str(item.uriTemplate) == "sourceledger://reports/{job_id}" for item in resources)
+    assert any(str(item.uriTemplate) == "sourceledger://dashboards/{job_id}" for item in resources)
+
+
+def test_registered_dashboard_tool_and_resource(tmp_path, monkeypatch):
+    report = tmp_path / "final.xlsx"
+    report.write_bytes(b"xlsx fixture")
+    dashboard = tmp_path / "final.html"
+    dashboard.write_text("<!doctype html><title>synthetic dashboard</title>", encoding="utf-8")
+    job = {"id": "job-safe", "result": {"report_path": str(report), "dashboard_path": str(dashboard)}}
+    monkeypatch.setattr("su_crawler.assistant_runtime.get_job", lambda *_: job)
+    server = build_assistant_server(tmp_path)
+    metadata = _call(server, "get_job_dashboard", {"job_id": "job-safe"})
+    assert metadata["path"] == str(dashboard)
+    assert metadata["resource_uri"] == "sourceledger://dashboards/job-safe"
+    assert metadata["size"] == dashboard.stat().st_size and len(metadata["sha256"]) == 64
+    resource = asyncio.run(server.read_resource(metadata["resource_uri"]))
+    assert resource and resource[0].mime_type == "text/html"
+    assert "synthetic dashboard" in resource[0].content
 
 
 def test_wait_for_job_returns_small_terminal_status_and_times_out(tmp_path, monkeypatch):
@@ -77,6 +95,7 @@ def test_wait_for_job_returns_small_terminal_status_and_times_out(tmp_path, monk
                 "updated_at": "2026-01-01T00:00:00+00:00", "attempt": 1,
                 "result": {"execution_status": "succeeded", "evidence_status": "needs_review",
                            "report_path": "/ignored/report.xlsx",
+                           "dashboard_path": "/ignored/report.html",
                            "result": {"observation_count": 3, "source_excerpt": "x" * 100_000}}}
 
     monkeypatch.setattr("su_crawler.assistant_runtime.get_job", fake_get_job)
@@ -84,6 +103,8 @@ def test_wait_for_job_returns_small_terminal_status_and_times_out(tmp_path, monk
     waited = _call(server, "wait_for_job", {"job_id": "a" * 32, "timeout_seconds": 2})
     assert waited["completed"] and waited["status"] == "succeeded"
     assert waited["evidence_status"] == "needs_review" and waited["has_report"]
+    assert waited["has_dashboard"]
+    assert waited["dashboard_resource_uri"] == f"sourceledger://dashboards/{'a' * 32}"
     assert waited["result_summary"] == {"observation_count": 3}
     assert len(json.dumps(waited)) < 1000
     monkeypatch.setattr("su_crawler.assistant_runtime.get_job", lambda *_: {

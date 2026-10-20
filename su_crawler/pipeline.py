@@ -239,9 +239,15 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
     if refresh:
         from .report import append_refresh_summary
         append_refresh_summary(path, refresh)
+    from .final_report import finalize_reports
+    artifacts = finalize_reports([path], path, metadata={
+        "status": run["status"], "run_id": run_id,
+        "coverage": coverage, "started_at": run.get("started_at"),
+        "finished_at": run.get("finished_at"),
+    })
     with store.db:
         store.db.execute("UPDATE runs SET report_path=? WHERE id=?", (str(path), run_id))
-    return store.run(run_id)
+    return {**store.run(run_id), "dashboard_path": artifacts["dashboard_path"]}
 
 
 def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_id: str | None = None, collector=None,
@@ -269,7 +275,10 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                 if run["config_hash"] != fingerprint:
                     raise ValueError("Configuration changed; start a new run instead of resuming")
                 if run["status"] in {"completed", "partial"} and run["report_path"] and Path(run["report_path"]).is_file():
-                    return run
+                    from .final_report import finalize_reports
+                    artifacts = finalize_reports([Path(run["report_path"])], Path(run["report_path"]),
+                                                 metadata={"status": run["status"], "coverage": store.run_coverage(run["id"])})
+                    return {**run, "dashboard_path": artifacts["dashboard_path"]}
             else:
                 with store.db:
                     store.db.execute("INSERT INTO runs(id,config_hash,status,started_at,demo) VALUES(?,?,?,?,?)",

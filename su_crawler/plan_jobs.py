@@ -193,4 +193,5 @@ def execute_plan_job(root: str | Path, operation: str, args: dict, *, job_id: st
     return {"operation": operation, "execution_status": "succeeded", "evidence_status": result.get("status", "needs_review"),
             "plan_id": clean["plan_id"], "plan_revision": clean["expected_revision"],
             "plan_fingerprint": clean["plan_fingerprint"], "run_id": result["run_id"],
-            "output_dir": str(output), "report_path": result["report_path"], "result": result}
+            "output_dir": str(output), "report_path": result["report_path"],
+            "dashboard_path": result.get("dashboard_path"), "result": result}
