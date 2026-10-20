@@ -375,3 +375,70 @@ def test_assertion_failure_retains_only_prior_option_captures(tmp_path, monkeypa
 def test_invalid_enumeration_budgets_and_selectors(step):
     with pytest.raises(ValueError):
         validate_enumeration_step(step)
+
+
+_DELAYED_NEXT = b"""<!doctype html><html><body><div id=list><article class=item>A</article></div>
+<script>fetch('/slow').then(r => r.text()).then(() => {
+  const next = document.createElement('button'); next.className = 'next'; next.textContent = 'Next';
+  next.onclick = () => { document.querySelector('.item').textContent = 'B'; next.remove(); };
+  document.querySelector('#list').append(next);
+});</script></body></html>"""
+
+
+@contextmanager
+def _delayed_next_server():
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/slow":
+                time.sleep(1.8)
+                body = b"ok"
+            else:
+                body = _DELAYED_NEXT
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    httpd.daemon_threads = True
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}/list"
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+
+def test_paginate_waits_for_pending_load_before_declaring_last_page(page):
+    from su_crawler.browser_settlement import install_tracker_sync
+    with _delayed_next_server() as url:
+        install_tracker_sync(page)
+        page.goto(url, wait_until="domcontentloaded")
+        selected, trace = [], []
+        # The next control is missing for 1.8 s while a request is pending.
+        # A fixed one-second wait used to report this as the last page.
+        paginate(page, {"action": "paginate", "selector": "#list", "item_selector": ".item",
+                        "next_selector": ".next", "progress_wait_seconds": 1}, _remaining(15),
+                 lambda labels, values, expected: selected.append(labels), trace)
+    assert [entry["page"] for entry in selected] == ["1", "2"]
+    assert (trace[-1]["status"], trace[-1]["reason"], trace[-1]["captured_count"]) == ("complete", "next_absent", 2)
+
+
+def test_paginate_disabled_next_must_stay_disabled_through_the_window(page):
+    page.set_content("""<div id=list><article class=item>A</article><button class=next disabled
+      onclick="document.querySelector('.item').textContent='B';this.remove()">Next</button></div>
+      <script>setTimeout(() => document.querySelector('.next').disabled = false, 300)</script>""")
+    selected, trace = [], []
+    paginate(page, {"action": "paginate", "selector": "#list", "item_selector": ".item",
+                    "next_selector": ".next", "progress_wait_seconds": 1}, _remaining(),
+             lambda labels, values, expected: selected.append(labels), trace)
+    assert [entry["page"] for entry in selected] == ["1", "2"]
+    assert (trace[-1]["status"], trace[-1]["reason"]) == ("complete", "next_absent")

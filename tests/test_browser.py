@@ -158,6 +158,27 @@ def test_browser_snapshot_preserves_choice_identity_and_marks_computed_hidden_wi
     assert 'id="quote" class="css-hidden" hidden="" data-sourceledger-computed-hidden="true"' in snapshot
 
 
+def test_browser_snapshot_marks_computed_line_through_prices():
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        runtime = select_browser_runtime(pw.chromium)
+        if runtime is None:
+            pytest.skip("Browser unavailable")
+        browser = pw.chromium.launch(headless=True, **runtime.launch_options())
+        try:
+            page = browser.new_page()
+            page.set_content("""<style>.was { text-decoration: line-through }</style>
+              <span id="old" class="was">500,000</span><del id="del">450,000</del>
+              <span id="now">400,000</span>""")
+            snapshot = _evidence_html_snapshot(page).decode("utf-8")
+        finally:
+            browser.close()
+    assert 'id="old" class="was" data-sourceledger-computed-line-through="true"' in snapshot
+    assert 'id="del" data-sourceledger-computed-line-through="true"' in snapshot
+    assert '<span id="now">400,000</span>' in snapshot
+
+
 def test_browser_cleanup_unroutes_with_ignored_late_errors_before_closing():
     events = []
 

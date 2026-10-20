@@ -37,3 +37,11 @@ def test_invalid_browser_limits_rejected_in_preview_and_start(extra):
         _validate(arguments(**extra), "research_plan")
     with pytest.raises(ValueError):
         build_execution_brief({"candidates": []}, **extra)
+
+
+def test_new_jobs_reuse_chromium_by_default():
+    clean = _validate(arguments(), "research_plan")
+    assert (clean["concurrency"], clean["browser_reuse"], clean["browser_concurrency"]) == (2, True, 1)
+    assert build_execution_brief({"candidates": []})["execution"]["browser_reuse"] is True
+    # Explicit opt-out remains available.
+    assert _validate(arguments(browser_reuse=False), "research_plan")["browser_reuse"] is False
