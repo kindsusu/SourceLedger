@@ -800,10 +800,13 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
             before = current
             progressed = False
             saw_request = False
+            button_hid = False
             progress_until = time.monotonic() + min(progress_wait, max(0.0, (remaining_ms() - 1500) / 1000))
             while time.monotonic() < progress_until:
                 if page.url != start_url:
                     break
+                if not button_hid and visible_count(button_selector) == 0:
+                    button_hid = True
                 state = _network_state(page)
                 saw_request = saw_request or bool(state.get("pending")) or (
                     state.get("version") is not None and before_network.get("version") is not None
@@ -838,6 +841,12 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
                     if current != before:
                         # A card changed without changing the count or last
                         # card; treat as progress and let replacement checks run.
+                        continue
+                    if button_hid:
+                        # The control hid and came back inside the progress
+                        # window (a slow load finishing early on a slow page):
+                        # that is a new state, so click again within budget.
+                        current = prior.copy()
                         continue
                     status, reason = "partial", "no_progress"
                 break

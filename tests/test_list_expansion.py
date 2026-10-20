@@ -121,6 +121,25 @@ def test_button_reappears_after_no_progress_window(page):
         "complete", "button_absent", 2, 2)
 
 
+def test_button_reappearing_inside_progress_window_is_clicked_again(page):
+    # On a slow page the button can hide and return before the progress window
+    # ends without adding a card yet. That is a new state, not "no progress".
+    page.set_content('''<div id="popular"><div class="card">A</div><button class="more"
+      onclick="if(!window.clicked){window.clicked=true;this.style.display='none';
+      setTimeout(()=>this.style.display='',300)}else{this.before(Object.assign(document.createElement('div'),
+      {className:'card',textContent:'B'}));this.remove()}">More</button></div>''')
+    result = _run(page, _step(progress_wait_seconds=1.5), max_seconds=10)
+    assert (result["status"], result["reason"], result["observed_count"], result["click_count"]) == (
+        "complete", "button_absent", 2, 2)
+
+
+def test_button_that_never_hides_or_loads_is_no_progress(page):
+    page.set_content('''<div id="popular"><div class="card">A</div><button class="more"
+      onclick="window.clicks=(window.clicks||0)+1">More</button></div>''')
+    result = _run(page, _step(progress_wait_seconds=0.5), max_seconds=8)
+    assert (result["status"], result["reason"], result["click_count"]) == ("partial", "no_progress", 1)
+
+
 def test_navigation_during_terminal_check_is_partial(page):
     page.set_content('''<div id="popular"><div class="card">A</div><button class="more"
       onclick="this.remove();setTimeout(()=>location.hash='next-page',700)">More</button></div>''')
