@@ -203,8 +203,17 @@ def _resolved_addresses(host: str, port: int) -> set[ipaddress.IPv4Address | ipa
             ipaddress.ip_address(record[4][0].split("%", 1)[0])
             for record in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         }
-    except (socket.gaierror, ValueError) as exc:
+    except socket.gaierror as exc:
+        if exc.errno in _TEMPORARY_DNS_ERRNOS:
+            raise _policy_error("dns_temporary_failure", "Temporary failure resolving host address") from exc
         raise _policy_error("dns_resolution_failed", "Unable to resolve host address") from exc
+    except ValueError as exc:
+        raise _policy_error("dns_resolution_failed", "Unable to resolve host address") from exc
+
+
+# Resolver "try again" answers (EAI_AGAIN; WSATRY_AGAIN on Windows). A name that
+# does not exist stays dns_resolution_failed and is never retried.
+_TEMPORARY_DNS_ERRNOS = {code for code in (getattr(socket, "EAI_AGAIN", None), 11002) if code is not None}
 
 
 def _embedded_ipv4(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
