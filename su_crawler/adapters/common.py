@@ -119,13 +119,75 @@ def decimal_string(raw: str | None, *, multiplier: int = 1) -> str | None:
     return format(value, "f")
 
 
-def won(raw: str | None) -> str | None:
+_WON_AMOUNT = re.compile(r"([\d,]+(?:\.\d+)?)\s*(만원|원)")
+# Two numbers joined by a range mark ("50~60만원", "500,000원 - 600,000원").
+_WON_RANGE = re.compile(r"\d\s*(?:만\s*원|만|원)?\s*[~∼〜\-–—]\s*\d")
+# A single amount qualified as a floor ("450,000원~", "45만원부터", "이상").
+_WON_FROM = re.compile(r"[~∼〜]|부터|이상")
+
+
+def won_amount(raw: str | None, *, allow_from: bool = False) -> tuple[str | None, str | None]:
+    """Parse exactly one displayed KRW amount, or return why none was chosen.
+
+    Reasons: ``no_won_amount``, ``price_range_not_single_amount``,
+    ``multiple_amounts_unresolved`` and ``starting_price_qualifier``. A
+    floor-qualified single amount is accepted only with ``allow_from`` so the
+    caller must record that the value is not a fixed quote.
+    """
     if not raw:
+        return None, "no_won_amount"
+    if _WON_RANGE.search(raw):
+        return None, "price_range_not_single_amount"
+    amounts = {decimal_string(match.group(1), multiplier=10_000 if match.group(2) == "만원" else 1)
+               for match in _WON_AMOUNT.finditer(raw)}
+    amounts.discard(None)
+    if not amounts:
+        return None, "no_won_amount"
+    if len(amounts) > 1:
+        return None, "multiple_amounts_unresolved"
+    if not allow_from and _WON_FROM.search(raw):
+        return None, "starting_price_qualifier"
+    return next(iter(amounts)), None
+
+
+def won(raw: str | None, *, allow_from: bool = False) -> str | None:
+    """Return one unambiguous KRW amount, never the first of several."""
+    return won_amount(raw, allow_from=allow_from)[0]
+
+
+STRUCK_TAGS = frozenset({"del", "s", "strike"})
+
+
+def is_struck(node: Tag | None) -> bool:
+    """True when a node or ancestor renders its text struck through.
+
+    Struck amounts are list/reference prices, not the current offer. Rendered
+    snapshots may mark computed text decoration with
+    ``data-sourceledger-computed-line-through``.
+    """
+    current = node
+    while isinstance(current, Tag):
+        if current.name in STRUCK_TAGS:
+            return True
+        classes = {str(value).lower() for value in current.get("class", [])}
+        style = re.sub(r"\s+", "", str(current.get("style", "")).lower())
+        if ("line-through" in classes or "line-through" in style
+                or current.get("data-sourceledger-computed-line-through") == "true"):
+            return True
+        current = current.parent if isinstance(current.parent, Tag) else None
+    return False
+
+
+def unstruck_text(node: Tag | None) -> str | None:
+    """Visible text of a node without struck-through (reference) descendants."""
+    if node is None or not is_visible(node) or is_struck(node):
         return None
-    match = re.search(r"([\d,]+(?:\.\d+)?)\s*(만원|원)", raw)
-    if not match:
-        return None
-    return decimal_string(match.group(1), multiplier=10_000 if match.group(2) == "만원" else 1)
+    parts = [str(value).strip() for value in node.descendants
+             if isinstance(value, NavigableString) and str(value).strip()
+             and isinstance(value.parent, Tag) and is_visible(value.parent)
+             and not is_struck(value.parent)]
+    value = re.sub(r"\s+", " ", " ".join(parts)).strip()
+    return value or None
 
 
 def evidence(location: str, value: Any, source_text: str | None = None, context: str | None = None,

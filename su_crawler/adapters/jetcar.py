@@ -8,7 +8,8 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup, Tag
 
 from ..models import Candidate, FetchResult, Source
-from .common import annotate_evidence, decimal_string, evidence, evidence_mode, html_soup, is_visible, visible_text, won
+from .common import (annotate_evidence, decimal_string, evidence, evidence_mode, html_soup, is_visible,
+                     unstruck_text, visible_text, won)
 
 
 def _table(soup: BeautifulSoup, *needles: str) -> Tag | None:
@@ -35,19 +36,49 @@ def _actual_id(result: FetchResult, source: Source, soup: BeautifulSoup) -> tupl
 
 
 def _rent_rows(table: Tag | None):
-    """Yield visible data rows, including rows the current parser cannot decode."""
+    """Yield visible data rows, including rows the current parser cannot decode.
+
+    Struck-through text (a crossed-out list price) is not part of the row.
+    """
     for index, row in enumerate(table.select("tr") if table else [], start=1):
         if not is_visible(row):
             continue
-        raw = visible_text(row) or ""
+        raw = unstruck_text(row) or ""
         if re.search(r"\d+\s*개월", raw) or re.search(r"월\s*[\d,]+\s*원", raw):
-            yield index, raw
+            yield index, raw, row
+
+
+_MONTHLY_PRICE = re.compile(r"월\s*([\d,]+)\s*원")
+_MONTHLY_QUALIFIED = re.compile(r"월\s*[\d,.]+\s*(?:만\s*)?원?\s*([~∼〜]\s*\d?|[\-–—]\s*\d|부터|이상)")
+
+
+def _row_price(raw: str) -> tuple[str | None, str | None]:
+    """Return the row's single monthly price, or why none can be recorded."""
+    qualified = _MONTHLY_QUALIFIED.search(raw)
+    if qualified:
+        ranged = re.search(r"\d$", qualified.group(1))
+        return None, "price_range_not_single_amount" if ranged else "starting_price_qualifier"
+    amounts = {decimal_string(match.group(1)) for match in _MONTHLY_PRICE.finditer(raw)}
+    amounts.discard(None)
+    if not amounts:
+        return None, "price_inquiry_or_unavailable"
+    if len(amounts) > 1:
+        return None, "multiple_amounts_unresolved"
+    return next(iter(amounts)), None
+
+
+def _availability_text(row: Tag, raw: str) -> str:
+    """The displayed non-price wording (e.g. 문의) from the row's price cell."""
+    cells = [unstruck_text(cell) for cell in row.find_all(["td", "th"], recursive=False)]
+    cells = [cell for cell in cells if cell and not re.search(r"\d+\s*개월", cell) and "보증금" not in cell
+             and not re.search(r"연\s*[\d,.]+\s*만?\s*[Kk][Mm]", cell)]
+    return cells[0] if len(cells) == 1 else raw
 
 
 def _rent_identity(index: int, raw: str) -> tuple[int, str, str, str | None, str | None] | None:
     """Use the displayed row and contract conditions, not its price alone."""
     term = re.search(r"(\d+)\s*개월", raw)
-    price = re.search(r"월\s*([\d,]+)\s*원", raw)
+    price, _ = _row_price(raw)
     if not term or not price:
         return None
     deposit_match = re.search(r"보증금\s*[\d,.]+\s*(?:만원|원)", raw)
@@ -61,7 +92,7 @@ def _rent_identity(index: int, raw: str) -> tuple[int, str, str, str | None, str
         if annual_value is None or Decimal(annual_value) != Decimal(annual_value).to_integral_value():
             return None
         annual = str(int(Decimal(annual_value)))
-    return index, term.group(1), decimal_string(price.group(1)), deposit, annual
+    return index, term.group(1), price, deposit, annual
 
 
 def section_coverage(result: FetchResult, candidates: list[Candidate]) -> list[dict[str, object]]:
@@ -75,7 +106,7 @@ def section_coverage(result: FetchResult, candidates: list[Candidate]) -> list[d
     raw_rows = list(_rent_rows(table))
     expected: dict[tuple[int, str, str, str | None, str | None], str] = {}
     unparsed = 0
-    for index, raw in raw_rows:
+    for index, raw, _ in raw_rows:
         identity = _rent_identity(index, raw)
         if identity is None:
             unparsed += 1
@@ -161,22 +192,33 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
         proofs["tax"] = evidence("css:.cap", fields["tax"], visible_text(tax_node))
 
     rows = []
-    for index, raw in _rent_rows(rent_table):
+    for index, raw, row in _rent_rows(rent_table):
         term = re.search(r"(\d+)\s*개월", raw)
-        price = re.search(r"월\s*([\d,]+)\s*원", raw)
-        if not term or not price:
+        if not term:
             continue
+        price, price_problem = _row_price(raw)
+        review_flags: list[str] = []
         row_fields, row_proofs = dict(fields), dict(proofs)
-        row_fields.update(price=decimal_string(price.group(1)), currency="KRW", price_basis="monthly", term_months=term.group(1))
-        for key in ("price", "price_basis", "term_months"):
-            row_proofs[key] = evidence(f"table:rent/tr:{index}", row_fields[key], raw)
-        row_proofs["currency"] = evidence(f"table:rent/tr:{index}", "KRW", "원", raw)
+        if price is not None:
+            row_fields.update(price=price, currency="KRW", price_basis="monthly", term_months=term.group(1))
+            for key in ("price", "price_basis", "term_months"):
+                row_proofs[key] = evidence(f"table:rent/tr:{index}", row_fields[key], raw)
+            row_proofs["currency"] = evidence(f"table:rent/tr:{index}", "KRW", "원", raw)
+        else:
+            # A displayed term without one numeric monthly price (문의, a range,
+            # several amounts) is kept with a null price, never dropped or guessed.
+            row_fields["term_months"] = term.group(1)
+            row_proofs["term_months"] = evidence(f"table:rent/tr:{index}", term.group(1), raw)
+            row_proofs["price"] = evidence(f"table:rent/tr:{index}", None, raw)
+            if price_problem == "price_inquiry_or_unavailable":
+                row_fields["availability"] = _availability_text(row, raw)
+                row_proofs["availability"] = evidence(f"table:rent/tr:{index}", row_fields["availability"], raw)
+            review_flags.append(price_problem)
         deposit = re.search(r"보증금\s*[\d,.]+\s*(?:만원|원)", raw)
         if deposit and won(deposit.group()):
             row_fields["deposit_amount"] = won(deposit.group())
             row_proofs["deposit_amount"] = evidence(f"table:rent/tr:{index}", row_fields["deposit_amount"], deposit.group(), raw)
         annual = re.search(r"연\s*([\d,.]+)\s*(만)?\s*[Kk][Mm]", raw)
-        review_flags: list[str] = []
         if annual:
             normalized = decimal_string(annual.group(1), multiplier=10_000 if annual.group(2) else 1)
             if normalized is not None and Decimal(normalized) == Decimal(normalized).to_integral_value():
