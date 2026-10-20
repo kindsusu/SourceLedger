@@ -82,6 +82,50 @@ def test_start_worker_reports_child_startup_failure(tmp_path, monkeypatch):
     assert runtime.runtime_status(tmp_path)["status"] == "stopped"
 
 
+def test_detached_worker_is_started_with_an_idle_exit(tmp_path, monkeypatch):
+    commands = []
+
+    class FailedProcess:
+        pid = 12345
+
+        @staticmethod
+        def poll():
+            return 2
+
+    def popen(command, **kwargs):
+        commands.append(command)
+        return FailedProcess()
+
+    monkeypatch.setattr(runtime.subprocess, "Popen", popen)
+    with pytest.raises(RuntimeError):
+        runtime.start_worker(tmp_path)
+    command = commands[0]
+    assert float(command[command.index("--idle-timeout") + 1]) == runtime.DEFAULT_WORKER_IDLE_SECONDS > 0
+
+
+def test_idle_worker_backs_off_polling_and_exits(tmp_path, monkeypatch):
+    token = "c" * 32
+    (tmp_path / "runtime").mkdir()
+    _atomic_write(tmp_path / "runtime" / "state.json", {
+        "status": "starting", "pid": None, "token": token, "current_job_id": None,
+        "updated_at": runtime.utc_now(),
+    })
+    clock = {"now": 0.0}
+    sleeps = []
+    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock["now"])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr(runtime.time, "sleep", sleep)
+    assert runtime._run_worker(tmp_path, token, 30) == 0
+    assert runtime._read_json(tmp_path / "runtime" / "state.json")["status"] == "stopped"
+    # About 50 fast polls in the first 5 s, then at most one scan per second.
+    assert len(sleeps) < 90
+    assert max(sleeps) == runtime.IDLE_POLL_MAX_SECONDS
+
+
 def test_start_timeout_requests_token_scoped_stop(tmp_path, monkeypatch):
     class HangingProcess:
         pid = 12345

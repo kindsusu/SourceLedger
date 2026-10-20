@@ -22,6 +22,11 @@ JOB_STATES = frozenset({"queued", "running", "succeeded", "failed", "interrupted
 MAX_ARGUMENT_BYTES = 256 * 1024
 MAX_JOBS_LIMIT = 100
 POLL_SECONDS = 0.1
+IDLE_POLL_MAX_SECONDS = 1.0
+# Detached workers exit after this long without queued work; the next job
+# start launches a new one. Without it, every MCP client session leaves an
+# idle worker polling forever.
+DEFAULT_WORKER_IDLE_SECONDS = 600.0
 HEARTBEAT_SECONDS = 2.0
 STARTUP_SECONDS = 15.0
 
@@ -334,7 +339,8 @@ def start_worker(root: str | Path) -> dict[str, Any]:
         # Keep the venv entry point itself. Resolving a POSIX venv symlink can
         # silently select the global interpreter and lose installed packages.
         interpreter = os.path.abspath(os.path.expanduser(sys.executable))
-        command = [interpreter, "-m", "su_crawler.assistant_runtime", "worker", "--root", str(workspace), "--token", token]
+        command = [interpreter, "-m", "su_crawler.assistant_runtime", "worker", "--root", str(workspace), "--token", token,
+                   "--idle-timeout", str(DEFAULT_WORKER_IDLE_SECONDS)]
         options: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": subprocess.STDOUT, "cwd": str(workspace)}
         if os.name == "nt":
             options["creationflags"] = _worker_creationflags()
@@ -527,7 +533,10 @@ def _run_worker(root: Path, token: str, idle_timeout: float) -> int:
                     last_heartbeat = now
                 if idle_timeout > 0 and now - last_work >= idle_timeout:
                     break
-                time.sleep(POLL_SECONDS)
+                # Poll quickly right after work, then back off: an idle worker
+                # scanning the job directory every 0.1 s costs a CPU core share.
+                idle_for = now - last_work
+                time.sleep(POLL_SECONDS if idle_for < 5 else min(IDLE_POLL_MAX_SECONDS, POLL_SECONDS * idle_for))
                 continue
             job = _claim_job(root, job["id"], token)
             if job is None:
@@ -551,7 +560,7 @@ def _run_worker(root: Path, token: str, idle_timeout: float) -> int:
             _finish_job(root, job, token, result=result, error=error)
             state.update(status="idle", current_job_id=None, updated_at=utc_now())
             _write_json(state_path, state)
-            last_heartbeat = time.monotonic()
+            last_heartbeat = last_work = time.monotonic()
         state.update(status="stopped", current_job_id=None, updated_at=utc_now())
         _write_json(state_path, state)
         stop = _read_json(runtime / "stop.json")
