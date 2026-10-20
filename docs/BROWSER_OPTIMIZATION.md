@@ -44,12 +44,12 @@ connections can be shared across batches with `collection_job_scope()`.
 ## Jetcar: HTTP acceptance with sampled browser verification
 
 Jetcar detail pages expose the same rental table in static HTML as in the
-rendered page. In an internal benchmark of about 500 Jetcar detail pages, the
-browser stage cost roughly 1.5 times the run's wall time in page-seconds
-(median 3.3 s per page: navigation 1.0 s, settlement 0.8 s, evidence 1.4 s),
-and an offline comparison of the retained HTTP extraction with the kept
-browser rows found identical commercial rows on all but two pages; both were
-removed listings whose pages now redirect.
+rendered page, and the browser stage (navigation, settlement and evidence
+capture) dominates collection time for large Jetcar inventories. Before
+enabling this mode, compare the retained HTTP extraction
+(`raw_http_candidates` in each checkpoint page record) with the kept browser
+rows for a full inventory; differences should be limited to listings that no
+longer exist. Sampling then keeps checking this on every job.
 
 Catalog collection (`collect_plan`, research plan and research batch jobs)
 therefore handles Jetcar pages as follows:
