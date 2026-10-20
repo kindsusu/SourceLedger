@@ -174,7 +174,8 @@ def _save_evidence(directory: Path, result: FetchResult, source: Source) -> tupl
     receipt = dest / f"{digest}.{stable_id(result.fetched_at, source.id)}.json"
     artifacts = {"content": {"path": str(path), "sha256": digest}}
     if result.screenshot:
-        screenshot, screenshot_digest = _store_capture(directory, result.screenshot, '.png')
+        suffix = '.jpg' if result.screenshot.startswith(b'\xff\xd8\xff') else '.png'
+        screenshot, screenshot_digest = _store_capture(directory, result.screenshot, suffix)
         artifacts["screenshot"] = {"path": str(screenshot), "sha256": screenshot_digest}
     receipt.write_text(json.dumps({"source_id": source.id, "url": result.final_url, "at": result.fetched_at,
         "backend": result.backend, "hash": digest, "recipe_version": source.recipe_version, "account_scope": source.account_scope,

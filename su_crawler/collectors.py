@@ -33,6 +33,7 @@ from .access_challenges import detect_challenge
 
 USER_AGENT = "source-ledger/0.3 (+authorized price research)"
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
+SCREENSHOT_JPEG_QUALITY = 70
 MAX_VARIANT_SNAPSHOTS = 200
 MAX_VARIANT_BYTES = 32 * 1024 * 1024
 MAX_REDIRECTS = 10
@@ -1474,7 +1475,10 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 return _result(source, "playwright", "needs_auth", final_url=page.url,
                                message="Login page detected", trace=trace, variant_snapshots=variant_snapshots)
             try:
-                screenshot = page.screenshot(full_page=True, timeout=remaining_ms())
+                # Supplementary visual evidence; the DOM snapshot is the price record.
+                # Full-page JPEG is about a fifth of a PNG's size and encodes ~3x faster.
+                screenshot = page.screenshot(full_page=True, type="jpeg", quality=SCREENSHOT_JPEG_QUALITY,
+                                             timeout=remaining_ms())
                 trace.append({'event': 'screenshot_context', 'role': 'supplementary_after_dom_capture',
                               'dom_captured_at': snapshot['captured_at'], 'at': utc_now()})
             except PlaywrightTimeoutError:
