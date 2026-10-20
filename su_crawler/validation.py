@@ -237,6 +237,13 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
     if source_visibility == "hidden":
         status = "review"
         reasons.append("source price is hidden")
+    price_proof = candidate.evidence.get("price")
+    if (candidate.fields.get("price") is not None and isinstance(price_proof, dict)
+            and price_proof.get("display_state") == "hidden"):
+        # A field-level hidden price is never a verified observation, even when
+        # the candidate as a whole was captured from a visible block.
+        status = "review"
+        reasons.append("price evidence is hidden")
     if review_flags:
         status = "review"
         reasons.extend(f"review flag: {flag}" for flag in review_flags)

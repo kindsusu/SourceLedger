@@ -161,3 +161,20 @@ def test_unproven_present_optional_condition_blocks_comparison():
     observation = check(value)
     assert observation.status == "verified" and not observation.comparable
     assert "optional comparison condition unproven: shipping" in observation.reason
+
+
+def test_hidden_price_field_evidence_is_review_even_when_candidate_is_visible():
+    fields = {"price": "10", "currency": "USD"}
+    evidence = {key: {"location": "x", "raw": value, "display_state": "visible", "proof_kind": "rendered_text"}
+                for key, value in fields.items()}
+    visible = Candidate(dict(fields), {key: dict(value) for key, value in evidence.items()}, "x", "test",
+                        source_visibility="visible", evidence_mode="rendered_dom")
+    assert check(visible).status == "verified"
+    evidence["price"].update(display_state="hidden", hidden_by=[{"depth": 0, "tag": "span", "reasons": ["hidden_attribute"]}])
+    hidden = Candidate(dict(fields), evidence, "x", "test", source_visibility="visible", evidence_mode="rendered_dom")
+    observation = check(hidden)
+    assert observation.status == "review"
+    assert "price evidence is hidden" in observation.reason
+    assert not observation.comparable
+    rental = check(hidden, Product("p", "P", price_profile="rental"))
+    assert rental.status == "review" and "price evidence is hidden" in rental.reason
