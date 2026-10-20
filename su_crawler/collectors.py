@@ -155,6 +155,11 @@ def http_client_scope(pool: HttpClientPool | None = None) -> Any:
             shared.close()
 
 
+def active_job_resources() -> tuple[RobotsPolicyCache | None, HttpClientPool | None]:
+    """Return the robots cache and HTTP pool of an enclosing job scope, if any."""
+    return _robots_cache.get(), _http_pool.get()
+
+
 @contextmanager
 def collection_job_scope() -> Any:
     """Share robots decisions and HTTP connections across a job's batches.

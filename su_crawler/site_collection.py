@@ -31,6 +31,20 @@ HOST_ADAPTERS = {
 }
 
 
+# Adapters whose sections can be complete only from a rendered browser capture
+# (every Gongcar coverage rule requires backend == "playwright"; its rendered
+# DOM also outranks static HTML). For these, the browser runs first and HTTP
+# is only a fallback when the browser fails, times out, is unavailable, or
+# extracts nothing. Jetcar sections can be complete from static HTML, so it
+# keeps HTTP first and stops early only with complete, sufficient evidence.
+BROWSER_FIRST_ADAPTERS = frozenset({'gongcar'})
+
+
+def browser_first(source) -> bool:
+    return (source.adapter in BROWSER_FIRST_ADAPTERS and bool(source.recipe) and not source.profile_dir
+            and 'playwright' in source.backends and 'http' in source.backends)
+
+
 def _ready_recipe(adapter: str, url: str = '') -> list[dict]:
     path = urlsplit(url).path.rstrip('/')
     if adapter == 'amazoncar':
@@ -269,7 +283,9 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                 best: tuple[FetchResult, list] | None = None
                 best_score: tuple = (-1,)
                 attempts = []
-                for backend in source.backends:
+                order = (['playwright', *[b for b in source.backends if b != 'playwright']]
+                         if browser_first(source) else list(source.backends))
+                for backend in order:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
@@ -322,6 +338,10 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                                 [candidate for candidate in identified
                                  if str(candidate.fields['item_id']) == identity], source.decimal_separator)
                                 for identity in per_identity):
+                            break
+                        if backend == 'playwright' and browser_first(source) and current_candidates:
+                            # Static HTML cannot complete these sections or
+                            # outrank the rendered capture; skip the request.
                             break
                     if result.status == 'policy_denied':
                         break

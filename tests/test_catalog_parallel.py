@@ -196,13 +196,15 @@ def test_parallel_interruption_charges_reserved_pages_and_resumes_queue(tmp_path
     with pytest.raises(KeyboardInterrupt):
         collect_plan(tmp_path, _plan(urls), **options)
     state = read_checkpoint(output, "resume")
-    assert state["dispatched"] == 2
+    # The sliding window may already have leased the third page when the
+    # second page's worker died; a leased page is spent, never refetched.
+    assert state["dispatched"] == len(state["visited"]) in {2, 3}
     assert state["transient_retries"] == 1
     assert urls[1] in state["parallel_leases"]
     fail = False
     calls.clear()
     result = collect_plan(tmp_path, _plan(urls), **options)
-    assert {url for url, _ in calls} == {urls[2]}
+    assert {url for url, _ in calls} == {urls[2]} - set(state["visited"])
     assert result["budget"]["pages_used"] == 3
     assert result["budget"]["seconds_used"] >= 60
     assert result["execution"]["transient_retries"] == 1
@@ -436,3 +438,106 @@ def test_slow_browser_session_cleanup_finishes_before_final_checkpoint(tmp_path,
     assert checkpoint['result'] == result
     assert not checkpoint['parallel_leases']
     assert len(_observations(output, result['run_id'])) == 1
+
+
+def _recording_session(entered):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def session(reuse=True):
+        entered.append((threading.current_thread().name, reuse))
+        yield
+
+    return session
+
+
+def test_one_browser_slot_starts_one_browser_thread(tmp_path, monkeypatch):
+    entered = []
+    browser_threads = set()
+    monkeypatch.setattr("su_crawler.catalog_collection.browser_session", _recording_session(entered))
+
+    def fetch(source, base, backend):
+        if backend == "playwright":
+            browser_threads.add(threading.current_thread().name)
+            return _result(source, backend)
+        return FetchResult(source.id, "fetched", backend, content=b"<html></html>", final_url=source.location)
+
+    urls = [f"https://shop.example/{i}" for i in range(4)]
+    result = collect_plan(tmp_path, _plan(urls), output_dir=tmp_path / "out", max_pages=4,
+                          max_seconds=20, concurrency=2, browser_concurrency=1, browser_reuse=True,
+                          follow_links=False, collector=fetch)
+    # browser_concurrency=1 owns exactly one browser session (one Chromium),
+    # even though two page workers fetch HTTP concurrently.
+    assert len(entered) == 1 and len(browser_threads) == 1
+    assert browser_threads == {entered[0][0]}
+    assert len(_observations(tmp_path / "out", result["run_id"])) == 4
+
+
+def test_sequential_path_reuses_one_browser_session_on_main_thread(tmp_path, monkeypatch):
+    entered = []
+    monkeypatch.setattr("su_crawler.catalog_collection.browser_session", _recording_session(entered))
+    monkeypatch.setattr("su_crawler.catalog_collection.collect",
+                        lambda source, base, backend: _result(source, backend))
+    urls = [f"https://shop.example/{i}" for i in range(3)]
+    collect_plan(tmp_path, _plan(urls), output_dir=tmp_path / "out", max_pages=3, follow_links=False)
+    assert entered == [(threading.main_thread().name, True)]
+
+
+def test_worker_past_deadline_is_interrupted_and_batch_finishes(tmp_path, monkeypatch):
+    monkeypatch.setattr("su_crawler.catalog_collection.RESULT_GRACE_SECONDS", 0.2)
+    urls = ["https://a.example/slow", "https://b.example/fast"]
+
+    def fetch(source, base, backend):
+        if source.location == urls[0] and backend == "playwright":
+            time.sleep(3)  # ignores its own timeout
+        return _result(source, backend) if backend == "playwright" else FetchResult(
+            source.id, "fetched", backend, content=b"<html></html>", final_url=source.location)
+
+    result = collect_plan(tmp_path, _plan(urls), output_dir=tmp_path / "out", max_pages=2,
+                          max_seconds=1, concurrency=2, browser_concurrency=2, browser_reuse=True,
+                          follow_links=False, collector=fetch, checkpoint_id="late")
+    statuses = {row["url"]: row["status"] for row in result["coverage"]}
+    assert statuses == {urls[0]: "interrupted", urls[1]: "visited"}
+    assert result["status"] == "partial"
+    assert len(_observations(tmp_path / "out", result["run_id"])) == 1
+    assert read_checkpoint(tmp_path / "out", "late")["parallel_leases"] == []
+
+
+def test_prefetch_window_refills_without_waiting_for_slow_page(tmp_path):
+    urls = ["https://a.example/slow", "https://b.example/fast", "https://c.example/next"]
+    started, finished = {}, {}
+
+    def fetch(source, base, backend):
+        if backend == "http":
+            started[source.location] = time.monotonic()
+            time.sleep(1.0 if source.location == urls[0] else 0.05)
+            finished[source.location] = time.monotonic()
+        return _result(source, backend)
+
+    collect_plan(tmp_path, _plan(urls), output_dir=tmp_path / "out", max_pages=3, max_seconds=30,
+                 concurrency=2, follow_links=False, collector=fetch, checkpoint_id="window")
+    # The third page starts as soon as the fast page frees its slot.
+    assert started[urls[2]] < finished[urls[0]]
+
+
+def test_coverage_trace_keeps_card_digest_not_card_html(tmp_path):
+    cards = [{"index": i, "text": f"Car {i}", "html": "<div>" + "x" * 4000 + "</div>"} for i in range(50)]
+
+    def fetch(source, base, backend):
+        result = _result(source, backend)
+        result.trace.append({"event": "list_expansion", "section": "popular", "status": "complete",
+                             "observed_count": 50, "observed_cards": cards})
+        return result
+
+    output = tmp_path / "out"
+    result = collect_plan(tmp_path, _plan(["https://shop.example/a"]), output_dir=output, max_pages=1,
+                          follow_links=False, collector=fetch, checkpoint_id="compact")
+    for page in (result["coverage"][0], read_checkpoint(output, "compact")["coverage"][0]):
+        event = next(e for e in page["trace"] if e.get("event") == "list_expansion")
+        assert "observed_cards" not in event
+        assert event["observed_cards_count"] == 50 and len(event["observed_cards_sha256"]) == 64
+    # The page blob still retains the full cards for audit.
+    captures = read_checkpoint(output, "compact")["captures"]["https://shop.example/a"]
+    retained = [e for response, _ in captures["responses"] for e in response["trace"]
+                if e.get("event") == "list_expansion"]
+    assert retained and retained[0]["observed_cards"] == cards
