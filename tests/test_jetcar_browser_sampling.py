@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from su_crawler import research_batch as batch, research_plans as plans
 from su_crawler.browser_sampling import BrowserSamplingPolicy, rows_match, validate_sample_ratio
 from su_crawler.catalog_collection import collect_plan
 from su_crawler.models import Candidate, FetchResult
@@ -193,3 +194,100 @@ def test_sampled_browser_failure_is_unverified_and_keeps_http_rows(tmp_path):
     assert execution["jetcar_browser_fallback"] is False
     rows = observations(tmp_path / "out", result["run_id"])
     assert len(rows) == 6 and {row.get("evidence_mode") for row in rows} == {"static_html"}
+
+
+def _confirmed_jetcar(root: Path, count: int) -> dict:
+    created = plans.create_plan(root, "Approved synthetic rental inventory")["plan"]
+    revised = plans.revise_plan(root, created["id"], created["revision"], {
+        "topic": {"industry": "Vehicle rental", "product": "Passenger vehicle", "market": "South Korea"},
+        "added_candidates": [{"url": jetcar_url(i), "name": f"Vehicle {i}"} for i in range(count)],
+    })["plan"]
+    return plans.confirm_plan(root, revised["id"], revised["revision"], True)["plan"]
+
+
+def _predictable_sample(monkeypatch):
+    # The lowest vehicle numbers form the sample, so the test knows its order.
+    monkeypatch.setattr("su_crawler.browser_sampling._rank", lambda _fingerprint, url: int(url.rsplit("/", 1)[1]))
+
+
+def _batch_args(plan_data):
+    return {"plan_id": plan_data["id"], "expected_revision": plan_data["revision"], "batch_size": 4,
+            "max_seconds": 300, "concurrency": 1, "browser_reuse": False, "browser_concurrency": 1}
+
+
+def test_sample_mismatch_switches_the_rest_of_the_job_to_the_browser(tmp_path, monkeypatch):
+    _predictable_sample(monkeypatch)
+    plan_data = _confirmed_jetcar(tmp_path, 12)
+    urls = [item["url"] for item in plan_data["candidates"]]
+    site = Site(browser_price={urls[0]: "699,000"})
+    monkeypatch.setattr("su_crawler.catalog_collection.collect", site)
+    job = batch.queue_batch_run(tmp_path, _batch_args(plan_data))
+    assert job["arguments"]["browser_sample_ratio"] == 0.1
+    result = batch.execute_batch_run(tmp_path, job["arguments"], job_id=job["id"])
+    assert site.browser_urls() == urls  # every later page, including later batches
+    journal = batch.read_batch_journal(tmp_path, plan_data["id"], job["id"])
+    executions = [entry["execution"] for entry in journal["batches"]]
+    assert executions[0]["jetcar_sample_mismatches"] == 1
+    assert all(execution["jetcar_browser_fallback"] for execution in executions)
+    assert [execution["jetcar_http_accepted"] for execution in executions] == [0, 0, 0]
+    sampling = result["result"]["jetcar_sampling"]
+    assert sampling == {"jetcar_http_accepted": 0, "jetcar_browser_sampled": 1, "jetcar_sample_mismatches": 1,
+                        "jetcar_sample_unverified": 0, "jetcar_browser_fallback": True,
+                        "browser_sample_ratio": 0.1}
+    assert batch.compact_batch_progress(tmp_path, job["id"])["jetcar_sampling"] == sampling
+    assert batch.collection_summary(tmp_path, job["id"])["jetcar_sampling"] == sampling
+
+
+def test_resumed_job_keeps_a_recorded_fallback(tmp_path, monkeypatch):
+    _predictable_sample(monkeypatch)
+    plan_data = _confirmed_jetcar(tmp_path, 12)
+    urls = [item["url"] for item in plan_data["candidates"]]
+    site = Site(browser_price={urls[0]: "699,000"})
+    monkeypatch.setattr("su_crawler.catalog_collection.collect", site)
+    job = batch.queue_batch_run(tmp_path, _batch_args(plan_data))
+    counts = batch._observation_counts
+    calls = []
+
+    def interrupt_second_batch(output, run_id):
+        calls.append(run_id)
+        if len(calls) == 2:
+            raise RuntimeError("simulated interruption")
+        return counts(output, run_id)
+    monkeypatch.setattr(batch, "_observation_counts", interrupt_second_batch)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        batch.execute_batch_run(tmp_path, job["arguments"], job_id=job["id"])
+    site.calls.clear()
+    batch.execute_batch_run(tmp_path, job["arguments"], job_id=job["id"])
+    # Batch 1 replays its finished checkpoint; batch 2 is collected after the
+    # resume and still uses the browser because batch 0 recorded a mismatch.
+    assert site.browser_urls() == urls[8:]
+    assert site.calls.count((urls[8], "http")) == 1
+
+
+def test_resume_without_a_recorded_fallback_samples_again(tmp_path, monkeypatch):
+    _predictable_sample(monkeypatch)
+    plan_data = _confirmed_jetcar(tmp_path, 12)
+    urls = [item["url"] for item in plan_data["candidates"]]
+    site = Site()
+    monkeypatch.setattr("su_crawler.catalog_collection.collect", site)
+    job = batch.queue_batch_run(tmp_path, _batch_args(plan_data))
+    counts = batch._observation_counts
+    calls = []
+
+    def interrupt_first_batch(output, run_id):
+        calls.append(run_id)
+        if len(calls) == 1:
+            raise RuntimeError("simulated interruption")
+        return counts(output, run_id)
+    monkeypatch.setattr(batch, "_observation_counts", interrupt_first_batch)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        batch.execute_batch_run(tmp_path, job["arguments"], job_id=job["id"])
+    site.calls.clear()
+    batch.execute_batch_run(tmp_path, job["arguments"], job_id=job["id"])
+    # Batch 0 replays its finished checkpoint (its samples matched). The
+    # resumed policy samples again instead of assuming a pass: url 4 is in
+    # the new sample and the remaining pages accept complete HTTP.
+    assert site.browser_urls() == [urls[4]]
+    journal = batch.read_batch_journal(tmp_path, plan_data["id"], job["id"])
+    assert [entry["execution"]["jetcar_browser_sampled"] for entry in journal["batches"]] == [4, 1, 0]
+    assert [entry["execution"]["jetcar_http_accepted"] for entry in journal["batches"]] == [0, 3, 4]

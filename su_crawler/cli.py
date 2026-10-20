@@ -166,6 +166,9 @@ def main(argv: list[str] | None = None) -> int:
     unattended.add_argument("--browser-reuse", action=argparse.BooleanOptionalAction, default=True,
                             help="Reuse one browser per slot with a fresh context per URL (default: on).")
     unattended.add_argument("--max-seconds", type=float, default=600, help="Time budget per batch (1-600).")
+    unattended.add_argument("--browser-sample-ratio", type=float, default=0.1,
+                            help="Share of Jetcar pages with complete static HTML that are still verified in the "
+                                 "browser (0 < ratio <= 1; minimum 5 pages; 1 = always use the browser).")
     unattended.add_argument("--timeout", type=float, default=7200,
                             help="Seconds to wait when another worker owns the job (default 7200).")
     unattended.add_argument("--json", action="store_true", help="Print one compact JSON line.")
@@ -202,7 +205,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.workspace_root, urls_file=args.urls_file, industry=args.industry, product=args.product,
                 market=args.market, approved=args.yes, plan_id=args.plan_id, batch_size=args.batch_size,
                 max_seconds=args.max_seconds, concurrency=args.concurrency,
-                browser_concurrency=args.browser_concurrency, browser_reuse=args.browser_reuse, timeout=args.timeout)
+                browser_concurrency=args.browser_concurrency, browser_reuse=args.browser_reuse,
+                browser_sample_ratio=args.browser_sample_ratio, timeout=args.timeout)
             _print(result, compact=args.json)
             return exit_code(result)
         elif args.command == "assistant" and args.action == "wait":
