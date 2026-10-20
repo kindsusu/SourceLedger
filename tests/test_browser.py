@@ -39,6 +39,13 @@ class Handler(BaseHTTPRequestHandler):
             body = b"""<html><body><div id='price'>100</div>
             <script>fetch('/hang', {keepalive: true, method: 'GET'}).catch(() => {});</script></body></html>"""
             status = 200
+        elif self.path == "/promo":
+            body = b"""<html><body><div id='price'>100</div>
+            <div id='promo' style='position:fixed;inset:0;background:#fff'><button id='close'
+              onclick="document.getElementById('promo').remove()">close</button></div>
+            <div id='shield' style='position:fixed;inset:0;z-index:9'></div>
+            <script>setTimeout(() => document.getElementById('shield').remove(), 1500)</script></body></html>"""
+            status = 200
         elif self.path == "/hang":
             time.sleep(12)
             body = b"late"
@@ -226,6 +233,21 @@ def test_keepalive_beacon_does_not_block_observation_settlement(tmp_path):
     assert result.status == 'fetched', result.message
     settlement = next(row for row in result.trace if row['event'] == 'observation_settlement')
     assert settlement['status'] == 'settled' and settlement['pending'] == 0
+
+
+def test_optional_click_that_is_briefly_unclickable_is_retried(tmp_path):
+    if next(item for item in doctor() if item['backend'] == 'playwright')['status'] != 'available':
+        pytest.skip('Browser unavailable')
+    with server() as url:
+        source = Source(id='promo', name='promo', kind='web', location=url + '/promo',
+                        product_ids=[], allowed_domains=['127.0.0.1'], internal=True,
+                        respect_robots=False, timeout_seconds=20, row_selector='#price',
+                        recipe=[{'action': 'click', 'selector': '#close', 'if_visible': True,
+                                 'timeout_seconds': 1}])
+        result = collect(source, str(tmp_path), 'playwright')
+    assert result.status == 'fetched', result.message
+    assert any(row['event'] == 'recipe_step_retried' and row['still_visible'] is False for row in result.trace)
+    assert b'id="promo"' not in result.content
 
 
 def test_atomic_snapshot_rejects_changed_observation():

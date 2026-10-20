@@ -76,6 +76,17 @@ def test_challenge_not_retried_as_rate_limit():
     assert _classify('blocked', 'access_challenge')[0] == 'browser_handoff'
 
 
+def test_dns_failure_is_transient_but_other_policy_denials_are_not():
+    from su_crawler.catalog_scheduler import _transient
+    from su_crawler.models import FetchResult
+    dns = FetchResult('s', 'policy_denied', 'http', message='Request denied by policy (dns_resolution_failed)',
+                      trace=[{'event': 'policy_denied', 'code': 'dns_resolution_failed'}])
+    robots = FetchResult('s', 'policy_denied', 'http', message='Request denied by policy (robots_disallowed)',
+                         trace=[{'event': 'policy_denied', 'code': 'robots_disallowed'}])
+    assert _transient(dns)
+    assert not _transient(robots)
+
+
 def test_catalog_challenge_stops_backend_fallback(tmp_path):
     from su_crawler.catalog_collection import collect_plan
     from su_crawler.models import FetchResult

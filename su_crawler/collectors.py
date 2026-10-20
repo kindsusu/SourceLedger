@@ -1368,6 +1368,25 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                         locator = visible
                     try:
                         locator.click(timeout=timeout_ms)
+                    except PlaywrightTimeoutError:
+                        if pending_redirect:
+                            pass
+                        elif step.get('if_visible'):
+                            # Optional targets such as promo pop-ups can fade in on a
+                            # slow page and not be clickable within their short step
+                            # timeout. Retry once; skip when the target went away.
+                            # A target that still blocks the page fails later steps.
+                            optional = page.locator(f':is({selector}):visible')
+                            if optional.count() == 1:
+                                try:
+                                    optional.click(timeout=min(max(requested_ms, 5000), remaining_ms()))
+                                except PlaywrightTimeoutError:
+                                    if optional.count():
+                                        raise
+                            trace.append({'event': 'recipe_step_retried', 'index': index, 'action': action,
+                                          'still_visible': bool(optional.count()), 'at': utc_now()})
+                        else:
+                            raise
                     except Exception:
                         if not pending_redirect:
                             raise
