@@ -8,7 +8,11 @@
     "ask": [
       "mcp__sourceledger__confirm_*",
       "mcp__sourceledger__start_*",
-      "mcp__sourceledger__retry_*"
+      "mcp__sourceledger__retry_*",
+      "mcp__sourceledger__resume_*",
+      "mcp__sourceledger__queue_*",
+      "mcp__sourceledger__generate_*",
+      "mcp__sourceledger__begin_*"
     ]
   }
 }

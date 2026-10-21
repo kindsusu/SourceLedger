@@ -72,7 +72,7 @@ source-ledger.cmd assistant status --workspace-root .sourceledger
 source-ledger.cmd assistant jobs --workspace-root .sourceledger
 ```
 
-기존 MCP `queue_*` 작업은 범위가 정해진 작업만 대기열에 넣고 worker를 자동으로 시작하지 않습니다. 새 `start_research_plan`은 승인한 계획의 worker를 시작합니다. 그 밖의 작업은 worker가 멈춘 상태에서도 받을 수 있으며, worker를 시작할 때까지 `queued` 상태로 남습니다. 작업은 워크스페이스에 저장되어 한 번에 하나씩 실행됩니다. 반환된 작업 ID로 상태를 보거나, 중단된 작업만 명시적으로 재개할 수 있습니다.
+MCP 작업은 범위가 정해진 작업만 대기열에 넣고 worker를 자동으로 시작하지 않습니다(기존 `queue_*` 도구는 기본으로 숨겨져 있습니다. 아래 기존 도구 설명을 참고하세요). 새 `start_research_plan`은 승인한 계획의 worker를 시작합니다. 그 밖의 작업은 worker가 멈춘 상태에서도 받을 수 있으며, worker를 시작할 때까지 `queued` 상태로 남습니다. 작업은 워크스페이스에 저장되어 한 번에 하나씩 실행됩니다. 반환된 작업 ID로 상태를 보거나, 중단된 작업만 명시적으로 재개할 수 있습니다.
 
 ```bat
 source-ledger.cmd assistant job --workspace-root .sourceledger --job-id <작업_ID>
@@ -84,7 +84,7 @@ source-ledger.cmd assistant stop --workspace-root .sourceledger
 
 ## 로컬 MCP 서버의 범위
 
-assistant MCP 서버의 도구는 총 46개입니다. 기본 연구 계획 경로는 `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, `generate_research_preview`의 8개 도구를 사용합니다. 짧거나 여러 줄의 상세 요청을 그대로 저장합니다. 연결된 AI 앱은 자체 검색·브라우저 도구로 실제 근거를 살펴본 뒤 `submit_research_preview`로 URL과 이유를 제출할 수 있으며, 모델은 호스트 앱이 관리합니다. 또는 Codex CLI·Claude Code CLI 공급자와 모델을 명시적으로 선택해 `generate_research_preview`를 실행할 수 있습니다. 두 경로의 결과는 제한된 미검증 출처 근거이며 가격 관측이 아닙니다. 사용자는 후보를 추가·제거·선택하고 산업군·상품·시장과 표시된 수정본을 승인한 뒤 `start_research_plan`으로 수집을 시작합니다. 정확한 상품 식별자는 이 흐름에서 고급 선택 사항입니다.
+assistant MCP 서버는 기본으로 36개의 도구를 제공합니다. 기존 `research.json` 도구 10개는 서버를 `--legacy-tools`로 시작할 때만 노출되며, 이 경우 총 46개가 됩니다(아래 기존 도구 설명 참고). 기본 연구 계획 경로는 `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, `generate_research_preview`의 8개 도구를 사용합니다. 짧거나 여러 줄의 상세 요청을 그대로 저장합니다. 연결된 AI 앱은 자체 검색·브라우저 도구로 실제 근거를 살펴본 뒤 `submit_research_preview`로 URL과 이유를 제출할 수 있으며, 모델은 호스트 앱이 관리합니다. 또는 Codex CLI·Claude Code CLI 공급자와 모델을 명시적으로 선택해 `generate_research_preview`를 실행할 수 있습니다. 두 경로의 결과는 제한된 미검증 출처 근거이며 가격 관측이 아닙니다. 사용자는 후보를 추가·제거·선택하고 산업군·상품·시장과 표시된 수정본을 승인한 뒤 `start_research_plan`으로 수집을 시작합니다. 정확한 상품 식별자는 이 흐름에서 고급 선택 사항입니다.
 
 ### 간결한 응답
 
@@ -101,7 +101,7 @@ assistant MCP 서버의 도구는 총 46개입니다. 기본 연구 계획 경�
 
 ### URL 목록과 배치 후속 작업
 
-`import_plan_urls(plan_id, expected_revision, path, replace=false)`는 워크스페이스 기준 상대 경로 또는 절대 경로의 `.txt`(한 줄에 URL 하나, `#` 주석), `.csv`(`url` 열), `.json`(목록 또는 `{"urls": [...]}`) 파일을 읽어 파일 순서대로 선택된 후보로 추가합니다. 개수, 두 지문(fingerprint), 중복, 잘못된 줄, 처음·마지막 URL 3개를 반환합니다. 잘못된 줄은 보고만 하고 고치지 않습니다. 호스트는 URL 목록을 `update_research_plan`에 다시 입력하지 마세요. 다른 편집과 마찬가지로 가져오기는 승인되지 않은 새 수정본을 만듭니다.
+`import_plan_urls(plan_id, expected_revision, path, replace=false)`는 `.txt`(한 줄에 URL 하나, `#` 주석), `.csv`(`url` 열), `.json`(목록 또는 `{"urls": [...]}`) 파일을 읽어 파일 순서대로 선택된 후보로 추가합니다. 파일은 assistant 워크스페이스 안에 있어야 하며, 워크스페이스 기준 상대 경로 또는 워크스페이스 루트 아래의 절대 경로만 받습니다. 그 밖의 위치에 있는 파일은 거절하므로 운영자가 URL 목록을 먼저 워크스페이스로 복사해야 합니다(`collect-plan` CLI의 `--urls-file`은 여전히 운영자가 지정한 어떤 경로든 받습니다). 개수, `import.file_url_fingerprint`(파일 URL의 지문), 중복, 잘못된 줄, 처음·마지막 URL 3개를 반환합니다. 계획 요약의 `plan.url_fingerprint`는 계획에서 선택된 URL의 지문이며, `replace=true` 뒤에는 두 값이 일치합니다. 잘못된 줄은 보고만 하고 고치지 않습니다. 호스트는 URL 목록을 `update_research_plan`에 다시 입력하지 마세요. 다른 편집과 마찬가지로 가져오기는 승인되지 않은 새 수정본을 만듭니다.
 
 `get_research_gaps`, `get_job_observations`, `retry_research_pages`는 단일 계획 작업뿐 아니라 배치 작업에서도 동작합니다. `urls` 없이 `retry_research_pages`를 호출하면 작업 자체가 재시도 가능하다고 보고한 페이지만 다시 시도합니다(접근·정책·근거 검토가 필요한 페이지는 제외). 배치 재시도는 같은 계획 수정본과 URL 목록에 고정된 새 `research_batch` 작업이며, 저널에서 재시도한 배치를 부모 결과에 합쳐 새 최종 통합 문서를 만듭니다.
 
@@ -123,7 +123,7 @@ UI에서 회사·사이트 URL을 입력하면 바로 출처로 등록합니다.
 
 요청 생성과 추천 제출에는 수집 worker가 필요하지 않습니다. 제출한 후보는 등록된 출처·확인된 관측과 별도이며 AI가 제공한 이유와 근거 URL은 미검증입니다. 후보 선택만으로 수집하지 않습니다. 기존 안내형 연구는 UI에서 등록된 출처를 선택하고 worker를 시작해 대기열에 넣습니다(명시적 출처 최대 50개, 120초). 기존 워크스페이스는 하나의 상품을 출발점으로 삼습니다. 새 연구 계획은 상품 범위를 기술할 수 있으나 수집은 페이지 한도로 제한되며 상품 목록 전체를 자동 수집하지 않습니다.
 
-기존 도구는 워크스페이스 범위의 첫 설정·출처 관리를 제공하고, `discover`, `propose`, `agent`, `collect_sites`, `verify`, `run`, `export` 작업을 대기열에 넣습니다. 작업 상태·관측·XLSX 보고서 메타데이터와 완료된 보고서의 등록된 로컬 XLSX resource도 반환합니다. 입력은 정해진 한도 안에서 워크스페이스 내부에만 남습니다. 임의 명령과 워크스페이스 밖 경로는 거절합니다. 기존 `queue_*` 도구는 공급자를 설정하거나 모델을 호출하지 않습니다. 새 `generate_research_preview`는 명시적으로 선택한 로컬 Codex CLI·Claude Code CLI 모델 미리보기를 위한 별도 MCP 경로이며, 브라우저 UI에도 선택형 CLI 추천 실행이 있습니다. 출처 후보나 규칙 제안은 확인된 가격 관측이 아닙니다.
+기존 `research.json` 도구 10개(`initialize_workspace`, `set_product_identity`, `add_source_candidate`, `queue_source_discovery`, `queue_source_proposal`, `queue_research_agent`, `queue_supported_sites`, `queue_verification`, `queue_collection`, `queue_report_export`)는 기본으로 숨겨져 있습니다. `queue_*` 도구는 확정된 연구 계획 없이 네트워크 수집을 대기열에 넣기 때문에 기본 서버는 노출하지 않습니다. `serve-assistant --legacy-tools`로 서버를 시작하면 노출되며 도구는 36개 대신 총 46개가 됩니다. 노출했을 때 기존 도구는 워크스페이스 범위의 첫 설정·출처 관리를 제공하고, `discover`, `propose`, `agent`, `collect_sites`, `verify`, `run`, `export` 작업을 대기열에 넣습니다. 작업 상태·관측·XLSX 보고서 메타데이터와 완료된 보고서의 등록된 로컬 XLSX resource도 반환합니다. 입력은 정해진 한도 안에서 워크스페이스 내부에만 남습니다. 임의 명령과 워크스페이스 밖 경로는 거절합니다. 기존 `queue_*` 도구는 공급자를 설정하거나 모델을 호출하지 않습니다. 새 `generate_research_preview`는 명시적으로 선택한 로컬 Codex CLI·Claude Code CLI 모델 미리보기를 위한 별도 MCP 경로이며, 브라우저 UI에도 선택형 CLI 추천 실행이 있습니다. 출처 후보나 규칙 제안은 확인된 가격 관측이 아닙니다.
 
 생성되는 서버 명령은 다음과 같습니다.
 

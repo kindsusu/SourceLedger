@@ -127,6 +127,12 @@ def decide(policy: dict, baseline: dict | None, rules_version: str, *, manual_fu
             'checked_at': now.isoformat()}
 
 
+# Offer conditions that identify a row only when one product lists several
+# offers for the same term and basis (see item_changes).
+VARIANT_FIELDS = ('rental_duration', 'deposit_amount', 'deposit_percent', 'advance_amount',
+                  'advance_percent', 'annual_mileage_km', 'driver_age_condition', 'vehicle_value')
+
+
 def _canonical(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str)
 
@@ -178,8 +184,22 @@ def item_changes(previous: list[dict], current: list[dict], *, url='', inventory
         return (observed, _canonical(item.get('specs', {})), _canonical(term),
                 _canonical(offer_kind)) if observed else None
 
-    old_keys = [key(item) for item in previous]
-    new_keys = [key(item) for item in current]
+    old_base = [key(item) for item in previous]
+    new_base = [key(item) for item in current]
+    old_base_counts, new_base_counts = Counter(old_base), Counter(new_base)
+
+    def refined(item, base):
+        # Some pages list several offers per product and term that differ only
+        # in deposit, advance, mileage, age or rental duration. Only for such a
+        # shared key do those conditions identify the row; a unique product
+        # keeps reporting a deposit change as a condition change.
+        if base is None or (old_base_counts[base] <= 1 and new_base_counts[base] <= 1):
+            return base
+        fields = item.get('fields', {})
+        return base + (_canonical({name: fields.get(name) for name in VARIANT_FIELDS}),)
+
+    old_keys = [refined(item, base) for item, base in zip(previous, old_base)]
+    new_keys = [refined(item, base) for item, base in zip(current, new_base)]
     old_counts, new_counts = Counter(old_keys), Counter(new_keys)
     exact_indices = defaultdict(deque)
     identity_indices = {}

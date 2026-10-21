@@ -99,7 +99,7 @@ source-ledger.cmd assistant status --workspace-root .sourceledger
 source-ledger.cmd assistant jobs --workspace-root .sourceledger
 ```
 
-Legacy MCP `queue_*` operations only queue bounded work; they do not auto-start a worker. `start_research_plan` starts the worker for the confirmed plan. Other jobs can
+MCP jobs only queue bounded work; they do not auto-start a worker (the legacy `queue_*` tools are hidden by default; see the legacy tools paragraph below). `start_research_plan` starts the worker for the confirmed plan. Other jobs can
 accept a job while the worker is stopped, leaving that job `queued` until you
 start the worker. Jobs are stored in the workspace and run one at a time. Use
 the returned job ID to inspect or explicitly requeue an interrupted job:
@@ -116,7 +116,7 @@ dead worker marks its running job `interrupted`; it is never silently rerun.
 
 ## What the local MCP server can do
 
-The assistant MCP server has 46 tools. The primary research-plan path uses these eight: `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, and `generate_research_preview`. Create a plan with the complete short or multiline request. For a preview, use the connected AI app's own search/browser tools to inspect actual references, then submit URLs and reasons through `submit_research_preview`; the host app controls its model. Alternatively, explicitly opt in to `generate_research_preview` with a local Codex CLI or Claude Code CLI provider/model. Both routes produce bounded, unverified references and never price observations. The user can add, remove, or select candidates and must confirm the displayed revision, including industry, product, and market, before `start_research_plan` collects selected pages. Exact product identifiers are optional advanced inputs for this flow.
+The assistant MCP server exposes 36 tools by default. Ten legacy `research.json` tools are hidden unless the server is started with `--legacy-tools`, which brings the total to 46 (see the legacy tools paragraph below). The primary research-plan path uses these eight: `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, and `generate_research_preview`. Create a plan with the complete short or multiline request. For a preview, use the connected AI app's own search/browser tools to inspect actual references, then submit URLs and reasons through `submit_research_preview`; the host app controls its model. Alternatively, explicitly opt in to `generate_research_preview` with a local Codex CLI or Claude Code CLI provider/model. Both routes produce bounded, unverified references and never price observations. The user can add, remove, or select candidates and must confirm the displayed revision, including industry, product, and market, before `start_research_plan` collects selected pages. Exact product identifiers are optional advanced inputs for this flow.
 
 ### Compact responses
 
@@ -149,10 +149,16 @@ plan responses each stay below 3,000 characters (tests enforce this).
 ### URL lists and batch follow-up
 
 `import_plan_urls(plan_id, expected_revision, path, replace=false)` reads a
-workspace-relative or absolute `.txt` (one URL per line, `#` comments), `.csv`
+`.txt` (one URL per line, `#` comments), `.csv`
 (a `url` column) or `.json` (a list, or `{"urls": [...]}`) file and adds the
-URLs as selected candidates in file order. It returns the count, both
-fingerprints, duplicates, invalid lines and the first/last three URLs. Invalid
+URLs as selected candidates in file order. The file must be inside the assistant
+workspace: pass a workspace-relative path, or an absolute path under the workspace
+root. Files elsewhere are rejected, so the operator copies the URL list into the
+workspace first (the `collect-plan` CLI still accepts any operator path through
+`--urls-file`). It returns the count, `import.file_url_fingerprint` (the
+fingerprint of the file's URLs), duplicates, invalid lines and the first/last
+three URLs. The plan summary reports `plan.url_fingerprint` (the fingerprint of
+the plan's selected URLs); after `replace=true` the two match. Invalid
 lines are reported, never corrected. Hosts should never retype URL lists into
 `update_research_plan`. Like any edit, the import creates a new unconfirmed
 revision.
@@ -212,9 +218,16 @@ The older guided-research workspace begins with one product lead. Research plans
 can describe a range of products, but collection remains page-bounded and does
 not claim whole-catalog coverage.
 
-The legacy connector tools provide workspace-scoped onboarding and source management, queue
+Ten legacy `research.json` tools are hidden by default: `initialize_workspace`,
+`set_product_identity`, `add_source_candidate`, `queue_source_discovery`,
+`queue_source_proposal`, `queue_research_agent`, `queue_supported_sites`,
+`queue_verification`, `queue_collection`, and `queue_report_export`. The `queue_*`
+tools queue network collection without a confirmed research plan, so the default
+server does not expose them. Start the server with `serve-assistant
+--legacy-tools` to expose them (46 tools in total instead of 36). When enabled,
+the legacy connector tools provide workspace-scoped onboarding and source management, queue
 `discover`, `propose`, `agent`, `collect_sites`, `verify`, `run`, and `export`,
-and returns job status, observations, report metadata, and a registered local
+and return job status, observations, report metadata, and a registered local
 XLSX resource for a completed report. Job inputs are bounded and remain inside
 the chosen workspace. Arbitrary commands and paths outside the workspace are
 rejected. Legacy `queue_*` tools do not configure providers or call a model.

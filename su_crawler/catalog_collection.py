@@ -30,7 +30,7 @@ from .models import Candidate, CollectionConfig, FetchResult, Product, Source, s
 from .pipeline import execute, _candidate_quality, _has_sufficient_evidence
 from .research import _atomic_write
 from .research_plans import canonical_url
-from .site_collection import HOST_ADAPTERS, _ready_recipe, _sections, _save_coverage, browser_first
+from .site_collection import HOST_ADAPTERS, _ready_recipe, _sections, _save_coverage, _unsettled, browser_first
 from .browser_sampling import (DEFAULT_BROWSER_SAMPLE_RATIO, SAMPLED_ADAPTERS, BrowserSamplingPolicy,
                                active_sampling_policy, execution_counters, rows_match, validate_sample_ratio)
 from .scope_conditions import assess_conditions, normalize_conditions, normalize_text
@@ -90,7 +90,9 @@ def _links(result: FetchResult, page_url: str, host: str, excluded: set[str]):
 
 # Optimized workers get this long after the deadline to return a capture
 # before their pages are recorded as interrupted and the batch finishes.
-RESULT_GRACE_SECONDS = 10.0
+# A browser capture can still be snapshotting, closing its context or
+# extracting a large expanded list when the deadline passes.
+RESULT_GRACE_SECONDS = 30.0
 # Browser-first pages keep this much of the batch budget for an HTTP fallback.
 HTTP_FALLBACK_RESERVE_SECONDS = 10.0
 
@@ -642,7 +644,9 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 break
         if sample_decision == 'sample':
             browser_result = next((r for r, _ in responses if r.backend == 'playwright'), None)
-            if browser_result is None or browser_result.status != 'fetched':
+            # An unsettled capture may show a half-updated page; comparing it
+            # would turn one slow page into a job-wide browser fallback.
+            if browser_result is None or browser_result.status != 'fetched' or _unsettled(browser_result):
                 outcome = 'unverified'
             else:
                 outcome = 'match' if rows_match(http_rows, browser_rows) else 'mismatch'

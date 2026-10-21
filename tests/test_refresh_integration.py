@@ -161,6 +161,24 @@ def test_contract_terms_identify_distinct_offers_without_matching_mutable_condit
     assert [row['status'] for row in ambiguous] == ['added', 'added', 'unavailable']
 
 
+def test_rows_sharing_product_and_term_are_paired_by_their_offer_conditions():
+    # One product and term offered with two deposits: a price change on one
+    # row is a price change, not an added row plus a removal candidate.
+    old = [candidate(term_months='36', deposit_amount='0'), candidate(term_months='36', deposit_amount='3000000', price='90')]
+    new = [candidate(term_months='36', deposit_amount='0', price='110'), candidate(term_months='36', deposit_amount='3000000', price='90')]
+    rows = item_changes(old, new, inventory_complete=True)
+    assert sorted(row['status'] for row in rows) == ['price_changed', 'unchanged']
+    changed = next(row for row in rows if row['status'] == 'price_changed')
+    assert changed['before']['fields']['deposit_amount'] == changed['after']['fields']['deposit_amount'] == '0'
+    # Short-term tariffs: the same vehicle per rental duration.
+    old = [candidate(rental_duration=d, price=p) for d, p in (('1일', '50'), ('3일', '140'))]
+    new = [candidate(rental_duration=d, price=p) for d, p in (('1일', '55'), ('3일', '140'))]
+    assert sorted(row['status'] for row in item_changes(old, new, inventory_complete=True)) == ['price_changed', 'unchanged']
+    # A unique product still reports a deposit change as a condition change.
+    unique = item_changes([candidate(deposit_amount='0')], [candidate(deposit_amount='100')])[0]
+    assert unique['status'] == 'conditions_changed'
+
+
 def test_contract_mode_and_price_basis_do_not_pair_different_offers():
     old = candidate(term_months='36', contract_mode='rent', price_basis='monthly')
     daily = candidate(term_months='36', contract_mode='rent', price_basis='daily', price='120')

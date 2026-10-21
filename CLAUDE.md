@@ -33,6 +33,7 @@ Through the `sourceledger` MCP server, use this fixed sequence:
 1. `create_research_plan` with the user's full request (or reuse a plan from `list_research_plans`).
 2. `import_plan_urls` with the URL list file path. **Never retype or paste URL lists** into
    `update_research_plan`; a single mistyped character silently changes the collected scope.
+   `import_plan_urls` reads only files inside the workspace; copy the URL list there first.
 3. Set the topic with `update_research_plan` if needed, then `get_research_batch_execution_plan`.
 4. Show the URL count, `url_fingerprint`, first/last URLs, hosts and limits, and wait for the user's explicit approval.
 5. `confirm_research_plan(user_confirmed=true)` only after that approval, then `start_research_batch_run`.

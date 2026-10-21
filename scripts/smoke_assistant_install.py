@@ -52,8 +52,10 @@ def main() -> int:
         entry = json.loads(Path(connection["snippet_path"]).read_text(encoding="utf-8"))["mcpServers"]["sourceledger"]
 
         @asynccontextmanager
-        async def session():
-            parameters = StdioServerParameters(command=entry["command"], args=entry["args"],
+        async def session(extra_args=("--legacy-tools",)):
+            # This smoke exercises the legacy queue_* flow, which the server
+            # hides unless it is started with --legacy-tools.
+            parameters = StdioServerParameters(command=entry["command"], args=[*entry["args"], *extra_args],
                 cwd=folder, env={**os.environ, **entry["env"]})
             async with stdio_client(parameters) as (read, write):
                 async with ClientSession(read, write) as client:
@@ -65,6 +67,12 @@ def main() -> int:
             if result.isError:
                 raise RuntimeError(f"{name}: {result.content}")
             return json.loads(result.content[0].text)
+
+        async def default_tools():
+            async with session(extra_args=()) as client:
+                return {tool.name for tool in (await client.list_tools()).tools}
+
+        assert not {"initialize_workspace", "queue_collection"} & asyncio.run(default_tools())
 
         async def enqueue():
             async with session() as client:
