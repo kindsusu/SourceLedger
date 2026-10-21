@@ -954,6 +954,15 @@ def _evidence_html_snapshot(page: Any, listing_expectation: dict[str, Any] | Non
     return str(_evidence_snapshot(page, listing_expectation)["html"]).encode("utf-8")
 
 
+def _challenge_markup(page: Any) -> bytes:
+    """Markup for detect_challenge, which reads tags and text only.
+
+    The evidence snapshot clones the DOM and computes styles for every element;
+    that cost is only needed for saved evidence, not for challenge checks.
+    """
+    return page.content().encode("utf-8")
+
+
 def _close_browser_resources(context: Any, browser: Any) -> None:
     """Drain route callbacks before closing their context and browser."""
     if context is not None:
@@ -1274,14 +1283,14 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             if status == 401:
                 return _result(source, "playwright", "needs_auth", final_url=page.url, message="HTTP 401 authentication required", trace=trace)
             if status in {403, 429}:
-                challenge = detect_challenge(_evidence_html_snapshot(page), status)
+                challenge = detect_challenge(_challenge_markup(page), status)
                 if challenge:
                     return challenge_result(challenge, page.url)
                 return _result(source, "playwright", "blocked", final_url=page.url, message=f"HTTP {status} access restricted", trace=trace)
             if status >= 400:
                 return _result(source, "playwright", "failed", final_url=page.url, message=f"HTTP {status}", trace=trace)
 
-            initial_challenge = detect_challenge(_evidence_html_snapshot(page), status)
+            initial_challenge = detect_challenge(_challenge_markup(page), status)
             if initial_challenge:
                 return challenge_result(initial_challenge, page.url)
 
@@ -1452,13 +1461,13 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 if latest_status == 401:
                     return _result(source, "playwright", "needs_auth", final_url=page.url, message="HTTP 401 authentication required", trace=trace, variant_snapshots=variant_snapshots)
                 if latest_status in {403, 429}:
-                    challenge = detect_challenge(_evidence_html_snapshot(page), latest_status)
+                    challenge = detect_challenge(_challenge_markup(page), latest_status)
                     if challenge:
                         return challenge_result(challenge, page.url)
                     return _result(source, "playwright", "blocked", final_url=page.url, message=f"HTTP {latest_status} access restricted", trace=trace, variant_snapshots=variant_snapshots)
                 if latest_status >= 400:
                     return _result(source, "playwright", "failed", final_url=page.url, message=f"HTTP {latest_status}", trace=trace, variant_snapshots=variant_snapshots)
-                challenge = detect_challenge(_evidence_html_snapshot(page), latest_status or 200)
+                challenge = detect_challenge(_challenge_markup(page), latest_status or 200)
                 if challenge:
                     return challenge_result(challenge, page.url)
 
