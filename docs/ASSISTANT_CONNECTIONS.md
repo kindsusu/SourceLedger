@@ -143,7 +143,7 @@ to files (Claude Code does this for very large results) still see status:
 - `wait_for_job` accepts `timeout_seconds` up to 120 (default 20) and returns
   compact status only.
 
-For a 525-URL synthetic batch job, the default batch progress, batch reports and
+For a synthetic batch job of several hundred URLs, the default batch progress, batch reports and
 plan responses each stay below 3,000 characters (tests enforce this).
 
 ### URL lists and batch follow-up

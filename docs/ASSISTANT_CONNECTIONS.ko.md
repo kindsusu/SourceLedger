@@ -97,7 +97,7 @@ assistant MCP 서버의 도구는 총 46개입니다. 기본 연구 계획 경�
 - `get_job_observations`는 범위(coverage) 개수만 알려 주며, `include_coverage=true`와 `coverage_offset`/`coverage_limit`으로 범위와 섹션 누락을 페이지 조회합니다.
 - `wait_for_job`의 `timeout_seconds`는 최대 120초(기본 20초)이며 간결한 상태만 반환합니다.
 
-525개 URL의 합성 배치 작업에서도 기본 배치 진행·배치 보고서·계획 응답은 각각 3,000자 미만이며 테스트로 확인합니다.
+수백 개 URL의 합성 배치 작업에서도 기본 배치 진행·배치 보고서·계획 응답은 각각 3,000자 미만이며 테스트로 확인합니다.
 
 ### URL 목록과 배치 후속 작업
 

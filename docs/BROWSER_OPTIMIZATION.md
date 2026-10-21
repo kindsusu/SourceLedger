@@ -22,7 +22,7 @@ connections can be shared across batches with `collection_job_scope()`.
 
 ## Backend order and waits
 
-- Gongcar sections are complete only from a rendered capture, so catalog
+- For an adapter whose sections are complete only from a rendered capture, catalog
   collection tries the browser first and fetches HTTP only when the browser
   fails, times out, is unavailable, or extracts nothing. Other adapter pages
   keep HTTP first and stop after it only with complete sections and sufficient
@@ -36,7 +36,7 @@ connections can be shared across batches with `collection_job_scope()`.
   fetch/XHR or loader. A list whose every load was network-driven may confirm
   its end after 2.5 s of such quiet instead of the full progress window.
   Pages without the network tracker keep the previous fixed waits.
-- The optional promotion pop-up wait on Gongcar landing pages is unchanged:
+- The optional promotion pop-up wait on landing pages is unchanged:
   its absence cannot be confirmed positively, and a late pop-up could block
   the price-sheet click.
 
