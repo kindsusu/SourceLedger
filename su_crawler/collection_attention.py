@@ -82,6 +82,31 @@ def _issue_statuses(db: sqlite3.Connection, run_ids: list[str]) -> dict[tuple[st
     return result
 
 
+def attention_marker(root: str | Path, job: dict) -> tuple:
+    """Cheap change marker for the plan database that backs a job's attention.
+
+    Issue triage/resolution rewrites ``collection_issues`` without touching the
+    job receipt, so callers caching attention results must also key on this.
+    It only stats the SQLite file and its non-empty WAL (no connection, no
+    query), and it changes for writes from any process (web UI or MCP triage).
+    """
+    plan_id = (job.get("arguments") or {}).get("plan_id")
+    if not isinstance(plan_id, str) or not _PLAN.fullmatch(plan_id):
+        return ()
+    database = workspace_root(root) / "catalog-prices" / plan_id / "prices.sqlite3"
+    marker = []
+    for path in (database, database.with_name(database.name + "-wal")):
+        try:
+            info = path.stat()
+        except OSError:
+            marker.append(None)
+        else:
+            # Our own read-only open creates an empty -wal; it holds no data,
+            # so it must not look like a change.
+            marker.append((info.st_mtime_ns, info.st_size) if info.st_size or path is database else None)
+    return tuple(marker)
+
+
 def attention_for_job(root: str | Path, job_id: str, *, _job: dict | None = None) -> dict:
     """Return bounded action prompts without changing collection or issue state."""
     base = workspace_root(root)

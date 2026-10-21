@@ -1,6 +1,7 @@
 """Loopback-only HTTP interface for the SourceLedger local web application."""
 from __future__ import annotations
 
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ import mimetypes
 import os
 import secrets
 import socket
+import threading
 import time
 import webbrowser
 
@@ -32,6 +34,7 @@ from .plan_jobs import confirm_research, latest_plan_jobs, preview_execution, st
 
 
 MAX_BODY_BYTES = 256 * 1024
+ATTENTION_CACHE_MAX = 64
 REQUEST_TIMEOUT_SECONDS = 15
 STATIC_FILES = {
     "/i18n.js": "i18n.js",
@@ -58,9 +61,37 @@ class WebHTTPServer(ThreadingHTTPServer):
     def __init__(self, root: Path, port: int):
         self.workspace = root
         self.csrf_token = secrets.token_urlsafe(32)
+        # Bounded per-job attention cache for the 3 s /api/bootstrap poll.
+        self._attention_cache: OrderedDict[tuple, dict] = OrderedDict()
+        self._attention_lock = threading.Lock()
         self.static_root = Path(__file__).with_name("web")
         super().__init__(("127.0.0.1", port), SourceLedgerHandler)
         self.url = f"http://127.0.0.1:{self.server_port}"
+
+    def attention_for(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Return attention for a job, recomputing only when its inputs changed.
+
+        Key: (job id, updated_at, status) covers running/queued progress. Issue
+        triage/resolution changes attention without touching the job receipt, so
+        the key also carries attention_marker (stat of the plan database + WAL):
+        one cheap, correct signal for web triage and for triage done in another
+        process (MCP), instead of clearing entries in each web handler.
+        """
+        from .collection_attention import attention_for_job, attention_marker
+        key = (job["id"], job.get("updated_at"), job.get("status"),
+               attention_marker(self.workspace, job))
+        with self._attention_lock:
+            cached = self._attention_cache.get(key)
+        if cached is not None:
+            return cached
+        value = attention_for_job(self.workspace, job["id"])
+        with self._attention_lock:
+            for old in [k for k in self._attention_cache if k[0] == key[0]]:
+                del self._attention_cache[old]  # superseded states of this job
+            self._attention_cache[key] = value
+            while len(self._attention_cache) > ATTENTION_CACHE_MAX:
+                self._attention_cache.popitem(last=False)
+        return value
 
     def server_bind(self) -> None:
         if os.name == "nt":
@@ -234,14 +265,13 @@ class SourceLedgerHandler(BaseHTTPRequestHandler):
         configured = path.is_file()
         workspace = load_workspace(path) if configured else None
         recent_jobs = list_jobs(self.server.workspace, limit=20)
-        from .collection_attention import attention_for_job
         attention_items = []
         attention_total = 0
         collection_continues = False
         for job in recent_jobs:
             if job.get('operation') not in {'research_plan', 'research_batch'}:
                 continue
-            attention = attention_for_job(self.server.workspace, job['id'])
+            attention = self.server.attention_for(job)
             attention_items.extend(attention['items'])
             attention_total += attention['total']
             collection_continues = collection_continues or attention['collection_continues']
