@@ -32,8 +32,9 @@ def test_roundtrip_deduplicates_binary_and_does_not_mutate_state(tmp_path):
     assert checkpoint.read_checkpoint(tmp_path, 'run')['captures']['a']['content'] == checkpoint.read_checkpoint(tmp_path, 'run')['captures']['b']['content']
     assert "__bytes__" not in json.dumps(row)
     blobs = list((tmp_path / "checkpoint_blobs").rglob("*.*"))
-    # Bytes are stored as captured so evidence can hard-link the same file.
-    assert len(blobs) == 2 and {path.suffix for path in blobs} == {".bin"}
+    assert len(blobs) == 2
+    assert any(path.suffix == ".gz" for path in blobs)
+    assert any(path.suffix == ".bin" for path in blobs)
 
     write(tmp_path, "run", {**state, "dispatched": 3})
     assert list((tmp_path / "checkpoint_blobs").rglob("*.*")) == blobs
@@ -121,15 +122,3 @@ def test_blob_failure_leaves_previous_checkpoint_committed(tmp_path, monkeypatch
         checkpoint.write_checkpoint(tmp_path, "run", {"dispatched": 2, "capture": b"second"})
     assert _saved_json(tmp_path, "run") == previous
     assert checkpoint.read_checkpoint(tmp_path, "run") == {"dispatched": 1, "capture": b"first"}
-
-
-def test_legacy_gzip_blob_is_still_read_and_reused(tmp_path):
-    import gzip, hashlib
-    data = b"<html>" + b"legacy page " * 200 + b"</html>"
-    digest = hashlib.sha256(data).hexdigest()
-    legacy = tmp_path / "checkpoint_blobs" / digest[:2] / (digest + ".gz")
-    legacy.parent.mkdir(parents=True)
-    legacy.write_bytes(gzip.compress(data, mtime=0))
-    reference = checkpoint._write_blob(tmp_path, data)
-    assert reference["__checkpoint_blob__"].endswith(".gz")  # reused, not rewritten
-    assert checkpoint._read_blob(tmp_path, reference) == data

@@ -22,6 +22,7 @@ from .storage import Store, workspace_lock
 
 _BLOB_ROOT = "checkpoint_blobs"
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_COMPRESSED_SIGNATURES = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"RIFF", b"PK\x03\x04", b"%PDF")
 
 
 def _is_linklike(path: Path) -> bool:
@@ -71,12 +72,11 @@ def _write_blob(output: Path, data: bytes) -> dict:
             return {"__checkpoint_blob__": f"{_BLOB_ROOT}/{digest[:2]}/{digest}{suffix}",
                     "sha256": digest, "size": len(data)}
 
-    # Store bytes as captured. Source evidence must stay a plain file whose
-    # SHA-256 is the file's own hash, and an identical uncompressed blob is
-    # hard-linked into evidence, so the page is kept once instead of as a
-    # compressed checkpoint copy plus a raw evidence copy. Older ``.gz`` blobs
-    # are still read and reused.
-    payload, suffix = data, ".bin"
+    if len(data) > 512 and not data.startswith(_COMPRESSED_SIGNATURES):
+        compressed = gzip.compress(data, compresslevel=6, mtime=0)
+        payload, suffix = (compressed, ".gz") if len(compressed) < len(data) else (data, ".bin")
+    else:
+        payload, suffix = data, ".bin"
     path = _blob_path(output, digest, suffix)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None

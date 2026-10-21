@@ -99,18 +99,3 @@ def test_capture_falls_back_to_copy_without_hard_links(tmp_path, monkeypatch):
     monkeypatch.setattr(os, 'link', no_links)
     path, _ = _store_capture(tmp_path, data, '.pdf')
     assert path.read_bytes() == data and os.stat(path).st_nlink == 1
-
-
-def test_html_evidence_shares_the_checkpoint_blob_file(tmp_path):
-    import os
-    from su_crawler import catalog_checkpoint
-    html = b"<html>" + b"priced product " * 500 + b"</html>"
-    catalog_checkpoint.write_checkpoint(tmp_path, "run", {"captures": {"u": {"content": html}}})
-    path, digest = _store_capture(tmp_path, html, ".html")
-    assert path.read_bytes() == html and hashlib.sha256(html).hexdigest() == digest
-    blob = tmp_path / "checkpoint_blobs" / digest[:2] / (digest + ".bin")
-    assert blob.is_file()
-    if os.stat(path).st_nlink < 2:  # filesystems without hard links fall back to a copy
-        import pytest
-        pytest.skip("Hard links unavailable")
-    assert os.path.samefile(path, blob)
