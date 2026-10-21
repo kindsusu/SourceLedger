@@ -510,7 +510,8 @@ def test_prefetch_window_refills_without_waiting_for_slow_page(tmp_path):
     def fetch(source, base, backend):
         if backend == "http":
             started[source.location] = time.monotonic()
-            time.sleep(1.0 if source.location == urls[0] else 0.05)
+            # The slow page must outlast slow-runner dispatch overhead by a wide margin.
+            time.sleep(3.0 if source.location == urls[0] else 0.05)
             finished[source.location] = time.monotonic()
         return _result(source, backend)
 
