@@ -6,6 +6,17 @@ from su_crawler.models import FetchResult, Source
 from su_crawler.pipeline import _save_evidence, _store_capture
 
 
+def test_jpeg_screenshot_is_stored_with_a_jpeg_suffix(tmp_path):
+    source = Source('s', 'shop', 'web', 'https://example.org', [])
+    jpeg = b'\xff\xd8\xff\xe0' + b'synthetic jpeg'
+    result = FetchResult('s', 'fetched', 'playwright', content=b'<p>100</p>', screenshot=jpeg,
+                         media_type='text/html', fetched_at='2026-10-20T00:00:00+00:00')
+    _save_evidence(tmp_path, result, source)
+    receipt = json.loads(next((tmp_path/'evidence').rglob('*.json')).read_text('utf-8'))
+    path = Path(receipt['artifacts']['screenshot']['path'])
+    assert path.suffix == '.jpg' and path.read_bytes() == jpeg
+
+
 def test_identical_screenshots_share_bytes_but_keep_capture_receipts(tmp_path):
     source = Source('s', 'shop', 'web', 'https://example.org', [])
     for index in range(2):

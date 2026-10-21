@@ -331,7 +331,7 @@ def test_claude_code_kit_is_portable_and_least_privilege():
                    for rule in settings["permissions"]["allow"])
     header = files[2].read_text(encoding="utf-8").split("---")[1]
     fields = dict(line.split(": ", 1) for line in header.strip().splitlines())
-    assert fields["model"] == "haiku" and fields["tools"] == "mcp__sourceledger__*"
+    assert fields["model"] == "sonnet" and fields["tools"] == "mcp__sourceledger__*"
 
 
 def test_confirmed_summary_carries_pins_used_by_plan_jobs(tmp_path, monkeypatch):

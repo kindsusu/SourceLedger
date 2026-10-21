@@ -100,7 +100,7 @@ def test_visible_browser_applies_recipe_and_saves_evidence(tmp_path):
 
     assert result.status == "fetched", result.message
     assert b'<div id="price">200</div>' in result.content
-    assert result.screenshot and result.screenshot.startswith(b"\x89PNG")
+    assert result.screenshot and result.screenshot.startswith(b"\xff\xd8\xff")  # JPEG
     assert not (tmp_path / ".su_crawler").exists()
     assert [step["action"] for step in result.trace if step["event"] == "recipe_step"] == ["select", "click", "assert_text"]
     assert all("value" not in step and "text" not in step for step in result.trace)

@@ -13,6 +13,8 @@ import sqlite3
 from . import assistant_runtime as runtime
 from . import research_plans as plans
 from .assistant_workspace import _managed_output, workspace_root
+from .browser_sampling import (COUNTER_KEYS as _SAMPLING_COUNTERS, DEFAULT_BROWSER_SAMPLE_RATIO,
+                               BrowserSamplingPolicy, browser_sampling_scope, validate_sample_ratio)
 from .models import utc_now
 from .research import _atomic_write, _locked
 
@@ -40,7 +42,7 @@ def _selected(plan: dict) -> list[dict]:
 
 def _validate(args: dict, *, prepared: bool = False) -> dict:
     allowed = {"plan_id", "expected_revision", "batch_size", "max_seconds", "concurrency",
-               "browser_reuse", "browser_concurrency", "retry_of", "retry_urls"}
+               "browser_reuse", "browser_concurrency", "browser_sample_ratio", "retry_of", "retry_urls"}
     if prepared:
         allowed |= {"plan_fingerprint", "url_fingerprint", "_resume", "_attempt"}
     if not isinstance(args, dict) or set(args) - allowed:
@@ -68,7 +70,9 @@ def _validate(args: dict, *, prepared: bool = False) -> dict:
         raise ValueError("browser_concurrency must be 1 or 2 and no greater than concurrency")
     clean = {"plan_id": plan_id, "expected_revision": revision, "batch_size": size,
              "max_seconds": seconds, "concurrency": concurrency,
-             "browser_reuse": browser_reuse, "browser_concurrency": browser_concurrency}
+             "browser_reuse": browser_reuse, "browser_concurrency": browser_concurrency,
+             "browser_sample_ratio": validate_sample_ratio(args.get("browser_sample_ratio",
+                                                                    DEFAULT_BROWSER_SAMPLE_RATIO))}
     if "retry_of" in args or "retry_urls" in args:
         parent, urls = args.get("retry_of"), args.get("retry_urls")
         if not isinstance(parent, str) or not re.fullmatch(r"[0-9a-f]{32}", parent):
@@ -142,6 +146,7 @@ def _initial_journal(job_id: str, clean: dict, selected: list[dict]) -> dict:
             "batch_count": math.ceil(len(selected) / clean["batch_size"]),
             "max_seconds_per_batch": clean["max_seconds"], "concurrency": clean["concurrency"],
             "browser_reuse": clean["browser_reuse"], "browser_concurrency": clean["browser_concurrency"],
+            "browser_sample_ratio": clean["browser_sample_ratio"],
             "started_at": utc_now(), "finished_at": None, "batches": []}
 
 
@@ -152,6 +157,8 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
     timings = Counter()
     browser_counts = Counter()
     peak_browser = 0
+    sampling = Counter({key: 0 for key in _SAMPLING_COUNTERS})
+    sampling_fallback = False
     coverage_summary = Counter()
     refresh_counts = Counter()
     refresh_modes = Counter()
@@ -189,6 +196,8 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
         browser_counts.update({key: execution.get(key, 0) for key in
                                ("browser_pages", "browser_launches", "browser_reused_contexts")})
         peak_browser = max(peak_browser, execution.get("peak_browser_concurrency", 0))
+        sampling.update({key: execution.get(key, 0) for key in _SAMPLING_COUNTERS})
+        sampling_fallback = sampling_fallback or bool(execution.get("jetcar_browser_fallback"))
     complete = len(batches) == journal["batch_count"]
     partial = bool(coverage_summary['partial']) or any(batch["status"] == "partial" for batch in batches)
     return {"status": ("running" if not complete else "partial" if partial else
@@ -199,6 +208,8 @@ def _summary(journal: dict, *, output: Path) -> dict[str, Any]:
             "browser_concurrency": journal.get("browser_concurrency", 1),
             "measured_peak_browser_concurrency": peak_browser,
             "browser_counts": dict(browser_counts),
+            "jetcar_sampling": {**dict(sampling), "jetcar_browser_fallback": sampling_fallback,
+                                "browser_sample_ratio": journal.get("browser_sample_ratio")},
             "timings": {key: round(value, 3) for key, value in timings.items()},
             "completed_batches": len(batches), "coverage_counts": dict(coverage),
             "observation_counts": dict(observations),
@@ -324,6 +335,8 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
         raise ValueError("Batch journal scope or budget changed")
     if len(journal["batches"]) > journal["batch_count"]:
         raise ValueError("Batch journal exceeds approved scope")
+    # Journals written before sampling existed record the ratio now in force.
+    journal.setdefault("browser_sample_ratio", clean["browser_sample_ratio"])
     rules_version = collection_rules_version()
     if journal.get('rules_version') != rules_version:
         if journal['batches']:
@@ -337,8 +350,16 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
         _atomic_write(path, journal)
     from .collectors import collection_job_scope
 
+    # Jetcar browser verification is sampled across the whole job, not per
+    # batch. A resumed job keeps a recorded mismatch fallback and samples its
+    # remaining pages again; it never assumes an unrecorded prior pass.
+    done = len(journal["batches"])
+    sampling = BrowserSamplingPolicy(
+        clean["browser_sample_ratio"], f"{job_id}:{clean['plan_fingerprint']}",
+        [item["url"] for item in selected[done * clean["batch_size"]:]],
+        fallback=any((batch.get("execution") or {}).get("jetcar_browser_fallback") for batch in journal["batches"]))
     # One robots cache and pooled HTTP client for the whole job, not per batch.
-    with collection_job_scope():
+    with collection_job_scope(), browser_sampling_scope(sampling):
         for index in range(len(journal["batches"]), journal["batch_count"]):
             owner = runtime._read_json(runtime._job_path(base, job_id)) or {}
             token = owner.get("worker_token")
@@ -354,7 +375,10 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
             result = collect_plan(base, snapshot, output_dir=output, max_pages=len(subset),
                                   max_seconds=clean["max_seconds"], checkpoint_id=checkpoint_id,
                                   follow_links=False, concurrency=clean["concurrency"],
-                                  browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"])
+                                  browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"],
+                                  browser_sample_ratio=clean["browser_sample_ratio"])
+            if (result.get("execution") or {}).get("jetcar_browser_fallback"):
+                sampling.mark_fallback()  # A replayed finished batch may have recorded it.
             counts = Counter(item.get("status", "unknown") for item in result.get("coverage", []))
             observations = _observation_counts(output, result["run_id"])
             incomplete_sections = sum(1 for page in result.get("coverage", [])
@@ -439,7 +463,8 @@ def queue_batch_retry(root: str | Path, parent_id: str, urls: list[str] | None =
             raise ValueError("Retry only unresolved pages reported by this job; review-only prices need evidence, not blind retries")
         chosen = [url for url in allowed if url in requested]
     args = {key: parent["arguments"][key] for key in ("plan_id", "expected_revision", "batch_size", "max_seconds",
-                                                       "concurrency", "browser_reuse", "browser_concurrency")
+                                                       "concurrency", "browser_reuse", "browser_concurrency",
+                                                       "browser_sample_ratio")
             if key in parent["arguments"]}
     if max_seconds is not None:
         args["max_seconds"] = max_seconds
@@ -501,6 +526,8 @@ def execute_batch_retry(root: str | Path, clean: dict, *, job_id: str) -> dict:
                    "batches": [{**item, "inherited_from": item.get("inherited_from", clean["retry_of"])}
                                for item in parent_journal["batches"]]}
         _atomic_write(path, journal)
+    sampling = BrowserSamplingPolicy(clean["browser_sample_ratio"], f"{job_id}:{clean['plan_fingerprint']}",
+                                     clean["retry_urls"])
     for index in sorted(groups):
         if journal["batches"][index].get("retry_job") == job_id:
             continue  # Finished before an interruption; its checkpoint is final.
@@ -511,11 +538,13 @@ def execute_batch_retry(root: str | Path, clean: dict, *, job_id: str) -> dict:
                                          if url in {item["url"] for item in subset}}}
         checkpoint_id = _retry_checkpoint(job_id, index)
         started_at = utc_now()
-        result = collect_plan(base, snapshot, output_dir=output, max_pages=len(groups[index]),
-                              max_seconds=clean["max_seconds"], checkpoint_id=checkpoint_id,
-                              retry_urls=groups[index], parent_checkpoint_id=parent_entry["checkpoint_id"],
-                              follow_links=False, concurrency=clean["concurrency"],
-                              browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"])
+        with browser_sampling_scope(sampling):
+            result = collect_plan(base, snapshot, output_dir=output, max_pages=len(groups[index]),
+                                  max_seconds=clean["max_seconds"], checkpoint_id=checkpoint_id,
+                                  retry_urls=groups[index], parent_checkpoint_id=parent_entry["checkpoint_id"],
+                                  follow_links=False, concurrency=clean["concurrency"],
+                                  browser_reuse=clean["browser_reuse"], browser_concurrency=clean["browser_concurrency"],
+                                  browser_sample_ratio=clean["browser_sample_ratio"])
         coverage = result.get("coverage", [])
         journal["batches"][index] = {
             "index": index, "target_count": len(subset), "checkpoint_id": checkpoint_id,
@@ -607,7 +636,7 @@ def compact_batch_progress(root: str | Path, job_id: str, *, include_changes: bo
     for key in ("status", "target_count", "batch_count", "completed_batches", "pending_targets", "reports_ready",
                 "coverage_counts", "coverage_summary", "observation_counts", "incomplete_sections",
                 "unknown_sections", "total_collection_seconds", "started_at", "finished_at",
-                "current_batch_index", "final_report_path", "dashboard_path"):
+                "current_batch_index", "final_report_path", "dashboard_path", "jetcar_sampling"):
         if key in full:
             value[key] = full[key]
     pages = full.get("current_batch_pages")
@@ -672,7 +701,7 @@ def collection_summary(root: str | Path, job_id: str) -> dict:
             summary = _summary(journal, output=_output(workspace_root(root), args["plan_id"]))
             for key in ("target_count", "batch_count", "completed_batches", "pending_targets", "coverage_counts",
                         "coverage_summary", "observation_counts", "incomplete_sections", "unknown_sections",
-                        "total_collection_seconds", "final_report_path", "dashboard_path"):
+                        "total_collection_seconds", "final_report_path", "dashboard_path", "jetcar_sampling"):
                 value[key] = summary[key]
             value["changes"] = _refresh_counts(summary["refresh"])
     else:

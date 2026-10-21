@@ -31,6 +31,8 @@ from .pipeline import execute, _candidate_quality, _has_sufficient_evidence
 from .research import _atomic_write
 from .research_plans import canonical_url
 from .site_collection import HOST_ADAPTERS, _ready_recipe, _sections, _save_coverage, browser_first
+from .browser_sampling import (DEFAULT_BROWSER_SAMPLE_RATIO, SAMPLED_ADAPTERS, BrowserSamplingPolicy,
+                               active_sampling_policy, execution_counters, rows_match, validate_sample_ratio)
 from .scope_conditions import assess_conditions, normalize_conditions, normalize_text
 from .catalog_checkpoint import read_checkpoint, write_checkpoint
 from .catalog_scheduler import HostGate, PageLedger, fetch_http
@@ -123,7 +125,8 @@ def collection_rules_version():
     digest = hashlib.sha256(extraction_version().encode())
     for name in ('catalog_collection.py', 'site_collection.py', 'coverage.py', 'validation.py',
                  'pipeline.py', 'report.py', 'result_view.py', 'collection_rules.py', 'collection_issues.py',
-                 'browser_enumeration.py', 'browser_workers.py', 'catalog_refresh.py', 'incremental.py', 'collectors.py'):
+                 'browser_enumeration.py', 'browser_workers.py', 'browser_sampling.py', 'catalog_refresh.py',
+                 'incremental.py', 'collectors.py'):
         digest.update((root / name).read_bytes())
     return digest.hexdigest()
 
@@ -251,10 +254,15 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                  checkpoint_id: str | None = None, retry_urls: list[str] | None = None,
                  parent_checkpoint_id: str | None = None, follow_links: bool = True,
                  concurrency: int = 1, browser_reuse: bool = False,
-                 browser_concurrency: int = 1) -> dict:
+                 browser_concurrency: int = 1,
+                 browser_sample_ratio: float = DEFAULT_BROWSER_SAMPLE_RATIO) -> dict:
     """Collect selected pages and at most ``max_pages`` same-host pages total.
 
     The returned coverage is page-scoped, never a claim about whole-site coverage.
+    ``browser_sample_ratio`` (0 < ratio <= 1) is the share of Jetcar pages whose
+    complete static HTML is still verified in the browser; 1.0 always runs the
+    browser. An enclosing ``browser_sampling_scope`` (a research batch job)
+    supplies one job-wide policy instead.
     """
     if not isinstance(snapshot, dict) or snapshot.get("state") != "confirmed":
         raise ValueError("A confirmed plan snapshot is required")
@@ -273,6 +281,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         raise ValueError("browser_concurrency must be 1 or 2 and no greater than concurrency")
     if not isinstance(max_seconds, (int, float)) or isinstance(max_seconds, bool) or not math.isfinite(max_seconds) or max_seconds <= 0:
         raise ValueError("max_seconds must be a positive finite number")
+    browser_sample_ratio = validate_sample_ratio(browser_sample_ratio)
     includes = snapshot.get("include_terms", [])
     excludes = snapshot.get("exclude_terms", [])
     if any(not isinstance(terms, list) or any(not isinstance(x, str) for x in terms) for terms in (includes, excludes)):
@@ -421,6 +430,14 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         products.extend(Product(**item) for item in data["products"])
         prefetched[data["source"]["id"]] = [(FetchResult(**result), [Candidate(**c) for c in candidates])
                                             for result, candidates in data["responses"]]
+    # Jetcar HTTP acceptance with sampled browser verification. A job scope
+    # shares one policy (and its mismatch fallback) across batches; otherwise
+    # this call samples its own remaining pages. A persisted fallback is kept;
+    # an unknown prior outcome is never treated as a pass.
+    sampling = active_sampling_policy() or BrowserSamplingPolicy(
+        browser_sample_ratio, checkpoint_id or binding, [url for url, _ in queue if url not in visited])
+    if state and (state.get('browser_sampling') or {}).get('fallback'):
+        sampling.mark_fallback()
     started = time.monotonic()
     deadline = started + max(0, max_seconds - elapsed)
     collection_finished = bool(state and state.get("collection_finished"))
@@ -459,6 +476,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 "dispatched": dispatched, "inflight": inflight, "result": result,
                 "transient_retries": retry_total,
                 "parallel_leases": list(parallel_leases),
+                "browser_sampling": sampling.state(),
                 "collection_finished": collection_finished}, page_cache=checkpoint_pages)
             checkpoint_seconds += time.monotonic() - checkpoint_started
 
@@ -482,6 +500,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         backends = (["playwright", *[b for b in source.backends if b != "playwright"]]
                     if prefer_browser else list(source.backends))
         fallback_reason = None
+        sample_decision, http_rows, browser_rows = None, [], []
         for backend in backends:
             backend_started = time.monotonic()
             remaining = deadline - time.monotonic()
@@ -554,6 +573,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             candidates = []
             assessments = []
             sections = []
+            unscoped = []
             if backend == "playwright" and bounded.recipe:
                 result.trace.append({"event": "collection_recipe", "recipe": bounded.recipe})
             if result.status == "fetched":
@@ -578,7 +598,10 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 # Section discovery describes the public page. Scope exclusions
                 # affect retained observations, never the observed card count.
                 sections = _sections(result, candidates, adapter) if result.status == 'fetched' else []
+                unscoped = list(candidates)
                 candidates, assessments = _scope_candidates(candidates, includes, excludes, conditions)
+                if backend == 'playwright' and result.status == 'fetched':
+                    browser_rows = unscoped
             responses.append((result, candidates))
             sections = sections if result.status == 'fetched' else []
             score = (result.status == 'fetched', bool(candidates), sum(s['status'] == 'complete' for s in sections), max((_candidate_quality(c) for c in candidates), default=(-1,)), len(candidates))
@@ -597,6 +620,19 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                     break
                 fallback_reason = result.status if result.status != "fetched" else "no_browser_candidates"
                 continue
+            if (backend == "http" and adapter in SAMPLED_ADAPTERS and sampling.enabled and not prefer_browser
+                    and result.status == "fetched" and unscoped
+                    and not (source.recipe or source.selectors or source.profile_dir)
+                    and sections and all(s['status'] == 'complete' for s in sections)):
+                # Complete static HTML: accept it unless this page verifies the
+                # job's sample or a sample already mismatched. Accepted rows
+                # stay static_html/unconfirmed review evidence.
+                sample_decision, http_rows = sampling.decide(url), unscoped
+                if sample_decision == 'accept':
+                    result.trace.append({"event": "browser_skipped", "reason": "http_complete_jetcar"})
+                    break
+                if sample_decision == 'browser':
+                    result.trace.append({"event": "browser_required", "reason": "jetcar_sample_mismatch_fallback"})
             # Adapter pages may stop after HTTP only when every section is
             # complete and the evidence is sufficient (static HTML is not).
             if (candidates and not (source.recipe or source.selectors or source.profile_dir)
@@ -604,6 +640,19 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                     and (not sections or all(s['status'] == 'complete' for s in sections))
                     and _has_sufficient_evidence(candidates)):
                 break
+        if sample_decision == 'sample':
+            browser_result = next((r for r, _ in responses if r.backend == 'playwright'), None)
+            if browser_result is None or browser_result.status != 'fetched':
+                outcome = 'unverified'
+            else:
+                outcome = 'match' if rows_match(http_rows, browser_rows) else 'mismatch'
+            sampling.record(outcome)
+            verification = {"event": "browser_sample_verification", "result": outcome,
+                            "http_rows": len(http_rows),
+                            "browser_rows": len(browser_rows) if outcome != 'unverified' else None}
+            if outcome == 'unverified':
+                verification["reason"] = browser_result.status if browser_result is not None else "browser_not_run"
+            (browser_result or responses[0][0]).trace.append(verification)
         if not responses:
             responses = [(FetchResult(source_id, "budget_exhausted", "none", message="Collection time limit reached"), [])]
         result = chosen_result or responses[-1][0]
@@ -894,9 +943,12 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                      "evidence_seconds_sum": 0.0}
     browser_launches = browser_reused_contexts = browser_pages = 0
     http_not_modified_responses = extraction_reused_responses = 0
+    sampling_events = []
     for capture in captures.values():
         for response, _ in capture["responses"]:
             for event in response.get("trace", []):
+                if event.get("event") in {"browser_skipped", "browser_sample_verification"}:
+                    sampling_events.append(event)
                 http_not_modified_responses += event.get('code') == 'http_not_modified'
                 extraction_reused_responses += event.get('code') == 'extraction_reused'
                 kind = event.get("event")
@@ -980,7 +1032,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                                        **{key: round(value, 3) for key, value in timing_totals.items()}},
                            "min_host_interval_seconds": 0.25 if concurrency > 1 else 0,
                            "max_transient_attempts": 2 if concurrency > 1 else 1,
-                           "transient_retries": retry_total}
+                           "transient_retries": retry_total,
+                           **execution_counters(sampling_events, sampling)}
     # Compare only this run's captured observations. A failed page never borrows
     # the previous values as if they had just been observed.
     counts = {key: 0 for key in ('added', 'changed', 'unchanged', 'unavailable', 'removed_candidate')}

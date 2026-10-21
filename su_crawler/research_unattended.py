@@ -76,7 +76,7 @@ def exit_code(summary: dict[str, Any]) -> int:
 def collect_url_file(root: str | Path, *, urls_file: str | Path, industry: str, product: str, market: str,
                      approved: bool, plan_id: str | None = None, batch_size: int = 20, max_seconds: float = 600,
                      concurrency: int = 2, browser_concurrency: int = 1, browser_reuse: bool = False,
-                     timeout: float = DEFAULT_WAIT_SECONDS) -> dict[str, Any]:
+                     timeout: float = DEFAULT_WAIT_SECONDS, browser_sample_ratio: float = 0.1) -> dict[str, Any]:
     """Create or reuse a plan, import the file, confirm, run one batch job and summarize it."""
     if approved is not True:
         raise ValueError("Refusing to collect without --yes. The URL file and --yes are the operator approval.")
@@ -110,7 +110,8 @@ def collect_url_file(root: str | Path, *, urls_file: str | Path, industry: str, 
     job = queue_batch_run(base, {"plan_id": plan["id"], "expected_revision": plan["revision"],
                                  "batch_size": batch_size, "max_seconds": max_seconds,
                                  "concurrency": concurrency, "browser_reuse": browser_reuse,
-                                 "browser_concurrency": browser_concurrency})
+                                 "browser_concurrency": browser_concurrency,
+                                 "browser_sample_ratio": browser_sample_ratio})
     _, state = wait_for_completion(base, job["id"], timeout=timeout, inline=True)
     summary = summary_for(base, job["id"], wait_state=state)
     summary["plan"] = {"id": plan["id"], "revision": plan["revision"], "created": created,

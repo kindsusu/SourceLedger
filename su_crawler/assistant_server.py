@@ -300,7 +300,8 @@ def build_assistant_server(root: str | Path):
     def get_research_batch_execution_plan(plan_id: str, expected_revision: int,
                                           batch_size: int = 20, max_seconds: float = 600,
                                           concurrency: int = 2, browser_reuse: bool = True,
-                                          browser_concurrency: int = 1) -> dict[str, Any]:
+                                          browser_concurrency: int = 1,
+                                          browser_sample_ratio: float = 0.1) -> dict[str, Any]:
         """Show the selected inventory, exact URL count and server batch settings before approval.
 
         Read only. The plan must be confirmed before start_research_batch_run; no model is invoked.
@@ -311,7 +312,8 @@ def build_assistant_server(root: str | Path):
         clean = _validate({"plan_id": plan_id, "expected_revision": expected_revision,
                            "batch_size": batch_size, "max_seconds": max_seconds,
                            "concurrency": concurrency, "browser_reuse": browser_reuse,
-                           "browser_concurrency": browser_concurrency})
+                           "browser_concurrency": browser_concurrency,
+                           "browser_sample_ratio": browser_sample_ratio})
         plan = plans.get_plan(base, plan_id)["plan"]
         if plan["revision"] != expected_revision:
             raise ValueError("Research plan changed; review the latest revision")
@@ -322,7 +324,7 @@ def build_assistant_server(root: str | Path):
                 "selected_hosts": plans.host_counts([item["url"] for item in selected])["host_counts"],
                 "first_urls": [item["url"] for item in selected[:3]],
                 "last_urls": [item["url"] for item in selected[-3:]] if len(selected) > 3 else [],
-                "batch_count": ceil(len(selected) / batch_size), **{key: clean[key] for key in ("batch_size", "max_seconds", "concurrency", "browser_reuse", "browser_concurrency")},
+                "batch_count": ceil(len(selected) / batch_size), **{key: clean[key] for key in ("batch_size", "max_seconds", "concurrency", "browser_reuse", "browser_concurrency", "browser_sample_ratio")},
                 "follow_links": False,
                 "refresh_policy": plan.get("refresh_policy", {"mode": "full", "full_interval_days": 7}),
                 "refresh_note": "Due-on-run full comparison within each approved batch scope. New URLs require review; no background scheduling or automatic deletion inference.",
@@ -332,18 +334,23 @@ def build_assistant_server(root: str | Path):
     def start_research_batch_run(plan_id: str, expected_revision: int,
                                  batch_size: int = 20, max_seconds: float = 600,
                                  concurrency: int = 2, browser_reuse: bool = True,
-                                 browser_concurrency: int = 1) -> dict[str, Any]:
+                                 browser_concurrency: int = 1,
+                                 browser_sample_ratio: float = 0.1) -> dict[str, Any]:
         """Collect every selected URL in a confirmed plan with one durable server job.
 
         Show get_research_batch_execution_plan before the user approves. Confirmation
         applies to the full frozen inventory once. Each batch stays within the usual
         50 page/600 second limit; same-host link expansion is disabled. Missing prices,
         incomplete sections and failures remain review items, not invented values.
+        browser_sample_ratio (0 < r <= 1, default 0.1, minimum 5 pages) is the share of
+        Jetcar pages with complete static HTML still verified in the browser; 1 always
+        uses the browser. Accepted static rows stay review-only evidence.
         """
         started = start_batch_run(base, {"plan_id": plan_id, "expected_revision": expected_revision,
                                          "batch_size": batch_size, "max_seconds": max_seconds,
                                          "concurrency": concurrency, "browser_reuse": browser_reuse,
-                                         "browser_concurrency": browser_concurrency})
+                                         "browser_concurrency": browser_concurrency,
+                                         "browser_sample_ratio": browser_sample_ratio})
         return {**started, "job": compact_job(started["job"]),
                 "next_action": "Call wait_for_job(job_id, timeout_seconds=120) until completed, then get_research_batch_progress."}
 
