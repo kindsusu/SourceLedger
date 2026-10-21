@@ -450,3 +450,27 @@ def test_adapter_pages_are_recollected_in_full_even_in_incremental_mode(tmp_path
     # page again and never sends conditional request headers.
     assert calls == [('playwright', None), ('playwright', None)]
     assert not any(item.get('code') == 'http_not_modified' for item in result['coverage'][0]['trace'])
+
+
+def test_shifted_batch_still_compares_each_page_with_its_last_check(tmp_path):
+    """A new URL shifts batch membership; pages keep their own baselines."""
+    prices = {'https://shop.example/a': '10', 'https://shop.example/b': '20', 'https://shop.example/c': '30'}
+
+    def fetch(source, _base, backend, *, validators=None):
+        if backend != 'http':
+            return FetchResult(source.id, 'tool_unavailable', backend)
+        return FetchResult(source.id, 'fetched', backend, content=_html(prices[source.location]),
+                           final_url=source.location)
+
+    def batch(urls):
+        plan = {**_plan(urls[0], normalize_refresh_policy(None)),
+                'candidates': [{'id': url[-1], 'name': 'item', 'url': url, 'selected': True} for url in urls]}
+        return collect_plan(tmp_path, plan, output_dir=tmp_path / 'out', collector=fetch,
+                            max_pages=len(urls), follow_links=False)
+
+    batch(['https://shop.example/a', 'https://shop.example/b'])
+    prices['https://shop.example/b'] = '21'
+    shifted = batch(['https://shop.example/b', 'https://shop.example/c'])
+    statuses = {item['url']: item['status'] for item in shifted['refresh']['item_changes']}
+    assert statuses == {'https://shop.example/b': 'price_changed', 'https://shop.example/c': 'baseline'}
+    assert shifted['refresh']['reason'] == 'manual_full'

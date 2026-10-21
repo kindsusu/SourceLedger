@@ -988,7 +988,7 @@ function renderItemChanges(target, result) {
       if (safe) product.append(node("a", { text: item.url, attrs: { href: safe, target: "_blank", rel: "noopener noreferrer" } }));
       else if (item.url) product.append(node("p", { text: item.url }));
       const changedFields = Array.isArray(item.changed_fields) ? item.changed_fields : [];
-      const repeatedIdentityFields = ["name", "sku", "item_id", "mpn", "gtin"];
+      const repeatedIdentityFields = ["name", "sku", "item_id", "mpn", "gtin", "url_id", "product_url"];
       const keys = [...new Set([...changedFields, ...Object.keys(item.before?.fields || {}), ...Object.keys(item.after?.fields || {})])]
         .filter(key => !["price", "currency"].includes(key) && (!repeatedIdentityFields.includes(key) || changedFields.includes(key)));
       if ((item.before?.specs && Object.keys(item.before.specs).length || item.after?.specs && Object.keys(item.after.specs).length) && !keys.includes("specs")) keys.push("specs");

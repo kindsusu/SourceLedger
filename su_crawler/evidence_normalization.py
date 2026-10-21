@@ -21,6 +21,12 @@ _FIELD_RULES = {
     "korean_vat_included": frozenset({"tax"}),
     "korean_vat_excluded": frozenset({"tax"}),
     "kilometers": frozenset({"annual_mileage_km"}),
+    # Generic shop pages: one whole displayed amount token in any supported
+    # notation, one unambiguous currency marker, or one contract-term token.
+    "displayed_amount": _MONEY_FIELDS | {"reference_price"},
+    "currency_marker": frozenset({"currency"}),
+    "contract_term": _MONTH_FIELDS,
+    "recurring_marker": frozenset({"price_basis"}),
 }
 
 
@@ -57,6 +63,20 @@ def normalized_evidence(name: str, raw: Any, metadata: Any) -> str | None:
         return "included" if text == "부가세 포함" else None
     if rule == "korean_vat_excluded":
         return "excluded" if text == "부가세 별도" else None
+    if rule == "displayed_amount":
+        from .amounts import amount_from_token
+        return amount_from_token(text)
+    if rule == "currency_marker":
+        from .amounts import currency_codes
+        codes = currency_codes(text)
+        return next(iter(codes)) if len(codes) == 1 else None
+    if rule == "contract_term":
+        from .amounts import term_from_token
+        return term_from_token(text)
+    if rule == "recurring_marker":
+        from .amounts import price_basis
+        basis, marker = price_basis(text)
+        return basis if marker is not None and marker == text else None
     if rule == "kilometers":
         match = re.fullmatch(r"((?:\d{1,3}(?:,\d{3})+|\d+))\s*km", text, flags=re.IGNORECASE)
         return match.group(1).replace(",", "") if match else None

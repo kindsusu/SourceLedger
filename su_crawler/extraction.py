@@ -123,6 +123,7 @@ def _extract_html(result: FetchResult, source: Source) -> list[Candidate]:
                     proof_kind="dom_attribute" if is_attribute else "rendered_text",
                     hidden_by=hidden_by,
                 )
+            _price_marker_currency(fields, evidence)
             if fields or specs:
                 price_state = (evidence.get("price") or {}).get("display_state")
                 visibility = price_state if price_state in {"visible", "hidden", "unconfirmed"} else (
@@ -132,10 +133,32 @@ def _extract_html(result: FetchResult, source: Source) -> list[Candidate]:
                                             source_visibility=visibility, evidence_mode=mode))
         return candidates
 
-    # Share the same bounded parser and review semantics as catalog collection.
-    from .structured_data import extract_jsonld
+    # Share the same bounded structured-data parser, visible-price checks and
+    # review semantics as catalog collection.
+    from .generic_extraction import extract_generic
 
-    return extract_jsonld(result)
+    return extract_generic(result, source)
+
+
+def _price_marker_currency(fields: dict[str, Any], evidence: dict[str, dict[str, Any]]) -> None:
+    """A selected price such as ``12,900원`` also proves its currency.
+
+    Only a marker that names exactly one currency qualifies; ``$`` or ``¥``
+    alone leaves currency missing for review.
+    """
+    from .amounts import currency_codes, displayed_amount
+
+    if "currency" in fields or not isinstance(fields.get("price"), str) or "price" not in evidence:
+        return
+    amount, _ = displayed_amount(fields["price"])
+    codes = currency_codes(amount["marker"]) if amount else frozenset()
+    if len(codes) != 1:
+        return
+    proof = evidence["price"]
+    fields["currency"] = next(iter(codes))
+    evidence["currency"] = {**{key: value for key, value in proof.items() if key != "raw"},
+                            "raw": amount["marker"], "source_text": fields["price"],
+                            "normalization": {"rule": "currency_marker"}}
 
 
 def _extract_csv(result: FetchResult, source: Source) -> list[Candidate]:

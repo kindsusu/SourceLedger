@@ -59,9 +59,71 @@ def scope_key(snapshot: dict, chosen: list[str], *, follow_links: bool) -> str:
     return stable_id('catalog-refresh-scope-v1', scope, sorted(chosen), follow_links)
 
 
+def plan_scope_key(snapshot: dict, *, follow_links: bool) -> str:
+    """The reviewed plan scope without its URL set.
+
+    Batches slice the approved URL list, so one added or removed URL shifts
+    every later batch and changes its ``scope_key``. Per-URL baselines kept
+    under this key let a shifted batch still compare each page with its last
+    trustworthy check.
+    """
+    scope = {key: snapshot.get(key) for key in ('id', 'topic', 'include_terms', 'exclude_terms',
+                                                'conditions', 'excluded_urls')}
+    return stable_id('catalog-refresh-plan-pages-v1', scope, follow_links)
+
+
+def read_page_baselines(directory: Path, key: str, urls) -> dict:
+    urls = list(dict.fromkeys(urls))
+    if not urls:
+        return {}
+    store = Store(directory)
+    try:
+        _table(store)
+        pages = {}
+        for start in range(0, len(urls), 500):
+            chunk = urls[start:start + 500]
+            rows = store.db.execute('SELECT url, data FROM catalog_refresh_pages WHERE plan_key=? AND url IN (%s)'
+                                    % ','.join('?' * len(chunk)), (key, *chunk))
+            pages.update({url: json.loads(data) for url, data in rows})
+        return pages
+    finally:
+        store.close()
+
+
+def write_page_baselines(directory: Path, key: str, pages: dict):
+    if not pages:
+        return
+    store = Store(directory)
+    try:
+        _table(store)
+        with store.db:
+            store.db.executemany('INSERT OR REPLACE INTO catalog_refresh_pages(plan_key,url,data) VALUES(?,?,?)',
+                                 [(key, url, json.dumps(page, ensure_ascii=False, sort_keys=True))
+                                  for url, page in pages.items()])
+    finally:
+        store.close()
+
+
+def merge_page_baselines(baseline: dict | None, pages: dict) -> dict | None:
+    """Add newer per-URL baselines; a missing batch baseline is never valid."""
+    if not pages:
+        return baseline
+    merged = dict(baseline) if baseline else {'rules_version': None, 'last_full_at': None, 'valid': False,
+                                              'pages_only': True}
+    current = dict(merged.get('pages') or {})
+    for url, page in pages.items():
+        known = current.get(url)
+        if known is None or str(page.get('checked_at') or '') > str(known.get('checked_at') or ''):
+            current[url] = page
+    merged['pages'] = current
+    return merged
+
+
 def _table(store: Store):
     store.db.execute('''CREATE TABLE IF NOT EXISTS catalog_refresh_baselines (
         scope_key TEXT PRIMARY KEY, data TEXT NOT NULL)''')
+    store.db.execute('''CREATE TABLE IF NOT EXISTS catalog_refresh_pages (
+        plan_key TEXT NOT NULL, url TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (plan_key, url))''')
     store.db.execute('''CREATE TABLE IF NOT EXISTS catalog_refresh_runs (
         run_id TEXT PRIMARY KEY, data TEXT NOT NULL)''')
     store.db.commit()
@@ -117,7 +179,7 @@ def decide(policy: dict, baseline: dict | None, rules_version: str, *, manual_fu
     last = _parse((baseline or {}).get('last_full_at'))
     due = last + timedelta(days=policy['full_interval_days']) if last else None
     reason = ('manual_full' if manual_full or policy['mode'] == 'full' else
-              'first_run' if not baseline else
+              'first_run' if not baseline or baseline.get('pages_only') else
               'rules_changed' if baseline.get('rules_version') != rules_version else
               'no_valid_baseline' if not baseline.get('valid') else
               'interval_elapsed' if due is None or now >= due else 'scheduled_incremental')
@@ -168,7 +230,9 @@ def item_changes(previous: list[dict], current: list[dict], *, url='', inventory
     price_fields = {'price', 'currency'}
     def identity(item):
         fields = item.get('fields', {})
-        return next((f'{key}:{fields[key]}' for key in ('sku', 'item_id', 'mpn', 'gtin')
+        # url_id is the product page's own URL identity (generic extraction);
+        # it ranks after identifiers the site states itself.
+        return next((f'{key}:{fields[key]}' for key in ('sku', 'item_id', 'mpn', 'gtin', 'url_id')
                      if fields.get(key) is not None and str(fields[key]).strip()), None)
 
     def key(item):
@@ -218,7 +282,7 @@ def item_changes(previous: list[dict], current: list[dict], *, url='', inventory
         if before and after and before.get('specs', {}) != after.get('specs', {}):
             changed.append('specs')
         condition_fields = sorted((set(old_fields) | set(new_fields)) -
-                                  (price_fields | {'name', 'sku', 'item_id', 'mpn', 'gtin'})) if before and after else []
+                                  (price_fields | {'name', 'sku', 'item_id', 'mpn', 'gtin', 'url_id', 'product_url'})) if before and after else []
         if before and after and (before.get('specs') or after.get('specs')):
             condition_fields.append('specs')
         incomplete_conditions = any(old_fields.get(name) in (None, '') or new_fields.get(name) in (None, '')
@@ -259,7 +323,7 @@ def item_changes(previous: list[dict], current: list[dict], *, url='', inventory
             # A renamed product title is recorded in changed_fields, but it
             # does not establish that its commercial offer terms changed.
             condition_keys = (set(old_fields) | set(new_fields)) - (price_fields | {
-                'name', 'sku', 'item_id', 'mpn', 'gtin'})
+                'name', 'sku', 'item_id', 'mpn', 'gtin', 'url_id', 'product_url'})
             other_changed = any(old_fields.get(name) != new_fields.get(name)
                                 for name in condition_keys)
             other_changed |= old.get('specs', {}) != item.get('specs', {})

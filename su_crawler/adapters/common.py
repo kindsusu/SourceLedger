@@ -13,10 +13,15 @@ EVIDENCE_MODES = frozenset({"rendered_dom", "static_html", "structured_record", 
 
 
 def html_soup(content: bytes):
-    """Decode captured HTML using declarations/detection before parsing."""
+    """Decode captured HTML (valid UTF-8 first, else declarations/detection) before parsing."""
     from bs4 import BeautifulSoup
 
-    decoded = UnicodeDammit(content, is_html=True).unicode_markup
+    try:
+        # Bytes that are valid UTF-8 are UTF-8; charset detection alone can
+        # misread pages that lack an early charset declaration.
+        decoded = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        decoded = UnicodeDammit(content, is_html=True).unicode_markup
     return BeautifulSoup(decoded if decoded is not None else content, "html.parser")
 
 

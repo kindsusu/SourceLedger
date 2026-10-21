@@ -17,6 +17,27 @@ RENTAL_COMPARISON_FIELDS = (
     "currency", "price_basis", "term_months", "deposit_amount", "advance_amount",
     "annual_mileage_km", "trim", "options", "condition", "insurance", "tax", "availability",
 )
+RECURRING_BASES = frozenset({"monthly", "yearly", "weekly", "daily"})
+# Explicit offer conditions that keep otherwise identical sale or recurring
+# offers in separate comparison groups (present only when the page shows them).
+OFFER_CONDITION_FIELDS = (
+    "price_basis", "term_months", "deposit_amount", "option", "options", "offer_sku", "quantity_tier",
+    "min_order", "member_condition", "membership", "shipping", "delivery", "tax", "price_type", "unit",
+    "pack_quantity", "condition", "availability",
+)
+
+
+def required_comparison_fields(profile: str) -> tuple[str, ...]:
+    """Fields an observation must prove before its amount can be compared."""
+    if profile == "rental":
+        return RENTAL_COMPARISON_FIELDS
+    if profile == "sale":
+        return ("currency",)
+    if profile == "recurring":
+        return ("currency", "price_basis")
+    return ("currency", "unit", "pack_quantity", "tax", "price_type", "price_basis")
+
+
 RENTAL_CONDITION_FIELDS = frozenset({
     *RENTAL_COMPARISON_FIELDS, "upfront_deposit_amount", "deposit_installment_amount",
     "deposit_installment_months", "deposit_percent", "deposit_percent_basis", "vehicle_value",
@@ -387,6 +408,49 @@ def validate(candidate: Candidate, product: Product, source: Source, *, run_id: 
             value_origin=value_origin, source_visibility=source_visibility, derived_values=dict(candidate.derived_values),
             review_flags=list(dict.fromkeys(review_flags)), derived_amount=derived_amount, price_profile=product.price_profile,
             verification_level="evidence_validated" if status == "verified" else "review", rental_conditions=rental_conditions or None,
+            evidence_mode=evidence_mode,
+        )
+    if product.price_profile in {"sale", "recurring"}:
+        offer_key: dict[str, object] = {"product_id": product.id, "account_scope": source.account_scope,
+                                        "price_profile": product.price_profile}
+        for name in required_comparison_fields(product.price_profile):
+            value = candidate.fields.get(name)
+            valid = name != "price_basis" or value in RECURRING_BASES
+            if value in (None, "") or not valid or not _comparison_evidence(candidate, name, value):
+                comparable = False
+                reasons.append(f"comparison condition missing, invalid, or unproven: {name}")
+            else:
+                offer_key[name] = value
+        for name in OFFER_CONDITION_FIELDS:
+            value = candidate.fields.get(name)
+            if name in offer_key or value in (None, ""):
+                continue
+            if _comparison_evidence(candidate, name, value):
+                offer_key[name] = value
+            else:
+                comparable = False
+                reasons.append(f"optional comparison condition unproven: {name}")
+        for key, value in sorted(candidate.specs.items()):
+            if _comparison_evidence(candidate, f"spec:{key}", value):
+                offer_key[f"spec:{key}"] = value
+        if expired or _out_of_stock(candidate.fields.get("availability")):
+            comparable = False
+            reasons.append("expired or unavailable inventory")
+        basis = offer_key.get("price_basis")
+        return Observation(
+            id=stable_id(run_id, task_id, product.id, source.id, candidate.locator), run_id=run_id, task_id=task_id,
+            product_id=product.id, source_id=source.id, source_name=source.name, source_url=source_url, collected_at=collected_at,
+            status=status, reason="; ".join(dict.fromkeys(reasons)) or "source values verified", raw_fields=raw,
+            evidence=candidate.evidence, evidence_path=evidence_path, evidence_sha256=evidence_sha256, locator=candidate.locator,
+            extraction_method=candidate.extraction_method, amount=str(amount) if amount is not None else None,
+            currency=str(currency) if currency is not None else None,
+            normalized_amount=str(amount) if comparable and amount is not None else None,
+            calculation=(f"amount per {basis} period" if basis else "amount (single sale)") if comparable else None,
+            comparable=comparable,
+            comparison_key=json.dumps(offer_key, ensure_ascii=False, sort_keys=True, separators=(",", ":")) if comparable else None,
+            value_origin=value_origin, source_visibility=source_visibility, derived_values=dict(candidate.derived_values),
+            review_flags=list(dict.fromkeys(review_flags)), derived_amount=derived_amount, price_profile=product.price_profile,
+            verification_level="evidence_validated" if status == "verified" else "review",
             evidence_mode=evidence_mode,
         )
     price_basis = candidate.fields.get("price_basis")

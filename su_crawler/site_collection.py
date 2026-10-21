@@ -134,6 +134,9 @@ def _adapter_sections(result, candidates, adapter):
     elif adapter == 'jetcar':
         from .adapters.jetcar import section_coverage
         sections = section_coverage(result, candidates)
+    elif not adapter:
+        from .generic_extraction import generic_sections
+        sections = generic_sections(result)
     else:
         sections = []
     if not sections:
