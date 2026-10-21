@@ -112,13 +112,14 @@ def test_idle_worker_backs_off_polling_and_exits(tmp_path, monkeypatch):
     })
     clock = {"now": 0.0}
     sleeps = []
-    monkeypatch.setattr(runtime.time, "monotonic", lambda: clock["now"])
 
     def sleep(seconds):
         sleeps.append(seconds)
         clock["now"] += seconds
 
-    monkeypatch.setattr(runtime.time, "sleep", sleep)
+    # Replace the clock seen by assistant_runtime only. Patching the shared
+    # time module would also fake time for threads left by other tests.
+    monkeypatch.setattr(runtime, "time", types.SimpleNamespace(monotonic=lambda: clock["now"], sleep=sleep))
     assert runtime._run_worker(tmp_path, token, 30) == 0
     assert runtime._read_json(tmp_path / "runtime" / "state.json")["status"] == "stopped"
     # About 50 fast polls in the first 5 s, then at most one scan per second.
@@ -160,8 +161,10 @@ def test_worker_executes_one_job_and_persists_result(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "su_crawler.assistant_workspace", module)
     thread = threading.Thread(target=runtime._run_worker, args=(tmp_path, token, 0.3), daemon=True)
     thread.start()
-    completed = wait_for(lambda: runtime.get_job(tmp_path, job["id"]) if runtime.get_job(tmp_path, job["id"])["status"] == "succeeded" else None)
-    thread.join(timeout=2)
+    # Generous bound: shared CI runners can stall a worker thread for seconds.
+    completed = wait_for(lambda: runtime.get_job(tmp_path, job["id"]) if runtime.get_job(tmp_path, job["id"])["status"] == "succeeded" else None,
+                         timeout=30)
+    thread.join(timeout=5)
     assert not thread.is_alive()
     assert completed["attempt"] == 1
     assert completed["result"] == {"job_id": job["id"], "operation": "export", "format": "json",

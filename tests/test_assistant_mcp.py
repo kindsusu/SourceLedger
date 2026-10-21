@@ -93,6 +93,21 @@ def test_registered_dashboard_tool_and_resource(tmp_path, monkeypatch):
     assert "synthetic dashboard" in resource[0].content
 
 
+def test_oversized_resource_is_refused_but_metadata_still_returned(tmp_path, monkeypatch):
+    report = tmp_path / "final.xlsx"
+    report.write_bytes(b"xlsx fixture")
+    dashboard = tmp_path / "final.html"
+    dashboard.write_text("<!doctype html><title>" + "x" * 200 + "</title>", encoding="utf-8")
+    job = {"id": "job-big", "result": {"report_path": str(report), "dashboard_path": str(dashboard)}}
+    monkeypatch.setattr("su_crawler.assistant_runtime.get_job", lambda *_: job)
+    monkeypatch.setattr("su_crawler.assistant_workspace.MAX_RESOURCE_BYTES", 100)
+    server = build_assistant_server(tmp_path)
+    metadata = _call(server, "get_job_dashboard", {"job_id": "job-big"})
+    assert metadata["path"] == str(dashboard) and len(metadata["sha256"]) == 64
+    with pytest.raises(Exception, match="resource limit"):
+        asyncio.run(server.read_resource(metadata["resource_uri"]))
+
+
 def test_wait_for_job_returns_small_terminal_status_and_times_out(tmp_path, monkeypatch):
     calls = 0
 
