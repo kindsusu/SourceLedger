@@ -169,6 +169,11 @@ def _transient(result: FetchResult) -> bool:
     if result.status == "failed":
         return ("HTTP 5" in result.message or
                 any(x.get("code") == "network_or_response_error" for x in result.trace))
+    if result.status == "policy_denied":
+        # A resolver "try again" answer is reported through the address policy
+        # but is not a policy decision; a brief outage otherwise drops whole
+        # hosts. Names that do not exist (dns_resolution_failed) are not retried.
+        return any(x.get("code") == "dns_temporary_failure" for x in result.trace)
     return False
 
 

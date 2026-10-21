@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
+from contextlib import ExitStack
 from queue import Queue, Empty
-from threading import Event, Lock, Semaphore, Thread
+from threading import Event, Lock, Thread
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
@@ -22,13 +23,14 @@ from bs4 import BeautifulSoup
 
 from .collectors import collect
 from .collectors import browser_session
-from .collectors import RobotsPolicyCache, robots_policy_scope
+from .collectors import (HttpClientPool, RobotsPolicyCache, active_job_resources, http_client_scope,
+                         robots_policy_scope, _cards_digest)
 from .extraction import extract
 from .models import Candidate, CollectionConfig, FetchResult, Product, Source, stable_id
 from .pipeline import execute, _candidate_quality, _has_sufficient_evidence
 from .research import _atomic_write
 from .research_plans import canonical_url
-from .site_collection import HOST_ADAPTERS, _ready_recipe, _sections, _save_coverage
+from .site_collection import HOST_ADAPTERS, _ready_recipe, _sections, _save_coverage, browser_first
 from .scope_conditions import assess_conditions, normalize_conditions, normalize_text
 from .catalog_checkpoint import read_checkpoint, write_checkpoint
 from .catalog_scheduler import HostGate, PageLedger, fetch_http
@@ -82,6 +84,36 @@ def _links(result: FetchResult, page_url: str, host: str, excluded: set[str]):
         result.trace.append({"event": "discovery_truncated", "reason": "Link discovery limit reached",
                              "observed_count": len(links), "retained_count": 1000})
     return links[:1000]
+
+
+# Optimized workers get this long after the deadline to return a capture
+# before their pages are recorded as interrupted and the batch finishes.
+RESULT_GRACE_SECONDS = 10.0
+# Browser-first pages keep this much of the batch budget for an HTTP fallback.
+HTTP_FALLBACK_RESERVE_SECONDS = 10.0
+
+
+def _coverage_trace(events):
+    """Checkpointed coverage keeps counts and digests, not full card HTML.
+
+    Each page's retained responses (an immutable checkpoint page blob) keep
+    the full observed cards for audit; coverage is re-serialized on every
+    checkpoint save and must stay small.
+    """
+    compact = []
+    for event in events:
+        if isinstance(event, dict) and isinstance(event.get('observed_cards'), list):
+            cards = event['observed_cards']
+            event = {key: value for key, value in event.items() if key != 'observed_cards'}
+            event['observed_cards_count'] = len(cards)
+            if 'observed_cards_sha256' not in event:
+                event['observed_cards_sha256'] = _cards_digest(cards)
+        compact.append(event)
+    return compact
+
+
+class _WorkerStopped(Exception):
+    """A page worker abandoned a queued browser task during shutdown."""
 
 
 def collection_rules_version():
@@ -177,7 +209,7 @@ def _reanalyse(captures, coverage, includes, excludes, conditions):
                          reason=coverage_message or
                                 ('No supported structured product data or no products satisfying the explicit scope'
                                  if not candidates and coverage_status == 'fetched' else ''),
-                         trace=[event for response, _ in responses for event in response.get('trace', [])],
+                         trace=_coverage_trace(event for response, _ in responses for event in response.get('trace', [])),
                         scope_counts={key: sum(a['status'] == key for a in assessments)
                                       for key in ('matched', 'unknown', 'excluded', 'not_checked')},
                         scope_assessments=assessments[:100], scope_assessments_truncated=max(0, len(assessments)-100),
@@ -399,7 +431,12 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     browser_active_lock = Lock()
     pending = deque()
     gate = HostGate(concurrency=concurrency)
-    policy_cache = RobotsPolicyCache()
+    # A research batch job may wrap several batches in collection_job_scope();
+    # reuse its robots decisions and HTTP connections across batches.
+    ambient_robots, ambient_pool = active_job_resources()
+    policy_cache = ambient_robots or RobotsPolicyCache()
+    http_pool = ambient_pool or HttpClientPool()
+    owns_http_pool = ambient_pool is None
     optimized = (browser_reuse or browser_concurrency > 1 or bool(collection_rules)) and not collection_finished
     executor = ThreadPoolExecutor(max_workers=concurrency) if concurrency > 1 and not optimized and not collection_finished else None
     ledger = PageLedger(destination, checkpoint_id) if concurrency > 1 and checkpoint_id else None
@@ -441,13 +478,55 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         responses = []
         raw_http_candidates = None
         chosen_result, chosen_candidates, chosen_assessments, chosen_sections, best_score = None, [], [], [], (-1,)
-        for backend in source.backends:
+        prefer_browser = browser_first(source)
+        backends = (["playwright", *[b for b in source.backends if b != "playwright"]]
+                    if prefer_browser else list(source.backends))
+        fallback_reason = None
+        for backend in backends:
             backend_started = time.monotonic()
             remaining = deadline - time.monotonic()
             if remaining <= 0 and not (backend == "http" and prefetched_http is not None):
                 break
-            bounded = replace(source, timeout_seconds=max(0.001, min(120 if adapter == 'gongcar' else 30, remaining)),
+            page_limit = 120 if adapter == 'gongcar' else 30
+            if prefer_browser and backend == "playwright" and remaining > 3 * HTTP_FALLBACK_RESERVE_SECONDS:
+                # Leave the HTTP fallback a chance near the end of the budget.
+                page_limit = min(page_limit, remaining - HTTP_FALLBACK_RESERVE_SECONDS)
+            bounded = replace(source, timeout_seconds=max(0.001, min(page_limit, remaining)),
                               recipe=source.recipe if backend == "playwright" else [])
+
+            def fetch_once(backend=backend, bounded=bounded):
+                nonlocal browser_active, browser_peak
+                if optimized and backend == "playwright" and time.monotonic() >= deadline:
+                    return FetchResult(source_id, "budget_exhausted", backend,
+                                       message="Collection time limit reached while waiting for browser slot")
+                try:
+                    permit = gate.enter(host, deadline) if executor is not None or optimized else None
+                    counted_browser = False
+                    try:
+                        if (executor is not None or optimized) and permit is None:
+                            return FetchResult(source_id, "budget_exhausted", backend,
+                                               message="Collection time limit reached while waiting for host slot")
+                        if permit is not None:
+                            left = deadline - time.monotonic()
+                            if left <= 0:
+                                return FetchResult(source_id, "budget_exhausted", backend,
+                                                   message="Collection time limit reached before browser fetch")
+                            bounded = replace(bounded, timeout_seconds=min(bounded.timeout_seconds, left))
+                        if backend == "playwright":
+                            with browser_active_lock:
+                                browser_active += 1
+                                browser_peak = max(browser_peak, browser_active)
+                            counted_browser = True
+                        return current_fetch(bounded, base_dir, backend)
+                    finally:
+                        if counted_browser:
+                            with browser_active_lock:
+                                browser_active -= 1
+                        if permit is not None:
+                            permit.release()
+                except Exception as exc:
+                    return FetchResult(source_id, "failed", backend, message=f"Collector error: {type(exc).__name__}")
+
             if backend == "http" and optimized:
                 result, attempts = fetch_http(url, source=source, fetch=current_fetch,
                                               base_dir=base_dir, deadline=deadline, gate=gate)
@@ -455,52 +534,14 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             elif backend == "http" and prefetched_http is not None:
                 result = prefetched_http
                 backend_started = time.monotonic() - prefetched_http_seconds
+            elif optimized and backend == "playwright":
+                # Chromium lives on a dedicated browser thread; this page
+                # worker keeps HTTP and extraction work off that thread.
+                result = run_on_browser(fetch_once)
             else:
-                browser_slot = False
-                if optimized and backend == "playwright":
-                    browser_slot = browser_slots.acquire(timeout=max(0, deadline - time.monotonic()))
-                try:
-                    if optimized and backend == "playwright" and not browser_slot:
-                        result = FetchResult(source_id, "budget_exhausted", backend,
-                                             message="Collection time limit reached while waiting for browser slot")
-                    else:
-                        permit = gate.enter(host, deadline) if executor is not None or optimized else None
-                        counted_browser = False
-                        try:
-                            if (executor is not None or optimized) and permit is None:
-                                result = FetchResult(source_id, "budget_exhausted", backend,
-                                                     message="Collection time limit reached while waiting for host slot")
-                            elif permit is not None:
-                                remaining = deadline - time.monotonic()
-                                if remaining <= 0:
-                                    result = FetchResult(source_id, "budget_exhausted", backend,
-                                                         message="Collection time limit reached before browser fetch")
-                                else:
-                                    if backend == "playwright":
-                                        with browser_active_lock:
-                                            browser_active += 1
-                                            browser_peak = max(browser_peak, browser_active)
-                                        counted_browser = True
-                                    result = current_fetch(replace(bounded, timeout_seconds=min(bounded.timeout_seconds, remaining)),
-                                                   base_dir, backend)
-                            else:
-                                if backend == "playwright":
-                                    with browser_active_lock:
-                                        browser_active += 1
-                                        browser_peak = max(browser_peak, browser_active)
-                                    counted_browser = True
-                                result = current_fetch(bounded, base_dir, backend)
-                        finally:
-                            if counted_browser:
-                                with browser_active_lock:
-                                    browser_active -= 1
-                            if permit is not None:
-                                permit.release()
-                except Exception as exc:
-                    result = FetchResult(source_id, "failed", backend, message=f"Collector error: {type(exc).__name__}")
-                finally:
-                    if browser_slot:
-                        browser_slots.release()
+                result = fetch_once()
+            if backend == "http" and fallback_reason:
+                result.trace.append({"event": "http_fallback", "reason": fallback_reason})
             fetch_seconds += time.monotonic() - backend_started
             extraction_started = time.monotonic()
             if result.status == "fetched":
@@ -548,7 +589,18 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             if any(event.get('event') == 'access_challenge' for event in result.trace):
                 break  # Explicit host-browser recovery owns further challenge attempts.
             extraction_seconds += time.monotonic() - extraction_started
-            if (candidates and not (source.recipe or source.adapter or source.selectors or source.profile_dir)
+            if prefer_browser and backend == "playwright":
+                if result.status == "fetched" and assessments:
+                    # Static HTML cannot complete these sections or outrank
+                    # the rendered capture, so the HTTP request is skipped.
+                    result.trace.append({"event": "http_fallback_skipped", "reason": "browser_capture_usable"})
+                    break
+                fallback_reason = result.status if result.status != "fetched" else "no_browser_candidates"
+                continue
+            # Adapter pages may stop after HTTP only when every section is
+            # complete and the evidence is sufficient (static HTML is not).
+            if (candidates and not (source.recipe or source.selectors or source.profile_dir)
+                    and (not source.adapter or (sections and all(s['status'] == 'complete' for s in sections)))
                     and (not sections or all(s['status'] == 'complete' for s in sections))
                     and _has_sufficient_evidence(candidates)):
                 break
@@ -563,48 +615,93 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         return source, responses, candidates, chosen_assessments, chosen_sections, result, raw_http_candidates
 
     def capture_page(url, prefetched_http=None, prefetched_http_seconds=0.0):
-        with robots_policy_scope(policy_cache):
+        with robots_policy_scope(policy_cache), http_client_scope(http_pool):
             return _capture_page(url, prefetched_http, prefetched_http_seconds)
 
     retry_counts: dict[str, int] = {}
-    browser_slots = Semaphore(browser_concurrency)
     tasks: Queue = Queue()
     completed: Queue = Queue()
     workers: list[Thread] = []
+    browser_tasks: Queue = Queue()
+    browser_workers: list[Thread] = []
+    browser_failure: list[BaseException] = []
     stop_workers = Event()
 
     def prefetch_http(page_url, pre_source):
+        if browser_first(pre_source):
+            # The browser runs first; HTTP is fetched later only as fallback.
+            return None, 0, 0.0
         fetch_started = time.monotonic()
-        with robots_policy_scope(policy_cache):
+        with robots_policy_scope(policy_cache), http_client_scope(http_pool):
             response, attempts = fetch_http(page_url, source=pre_source, fetch=current_fetch,
                                             base_dir=base_dir, deadline=deadline, gate=gate)
         return response, attempts, time.monotonic() - fetch_started
 
-    def worker():
-        # Playwright's sync runtime and Chromium remain on the owning thread.
+    def run_on_browser(fetch_once):
+        """Run one browser fetch on a dedicated browser thread and wait for it."""
+        future: Future = Future()
+        browser_tasks.put((fetch_once, future))
+        while True:
+            done, _ = wait([future], timeout=0.25)
+            if done:
+                return future.result()
+            if browser_failure and future.cancel():
+                raise browser_failure[0]
+            if stop_workers.is_set() and future.cancel():
+                raise _WorkerStopped("Collection stopped before this browser capture started")
+
+    def browser_worker():
+        # Playwright's sync runtime and Chromium remain on this owning thread.
+        # One thread per browser slot: browser_concurrency=1 starts one Chromium.
         try:
-            with browser_session(reuse=browser_reuse and fetch is collect):
+            # Context variables do not cross threads; share the job's robots
+            # decisions and HTTP connections with this browser thread too.
+            with robots_policy_scope(policy_cache), http_client_scope(http_pool), \
+                    browser_session(reuse=browser_reuse and fetch is collect):
                 while True:
-                    task = tasks.get()
-                    if task is None or stop_workers.is_set():
+                    item = browser_tasks.get()
+                    if item is None:
                         return
-                    page_url, page_origin = task
+                    fetch_once, future = item
+                    if not future.set_running_or_notify_cancel():
+                        continue
                     try:
-                        payload = capture_page(page_url)
-                        completed.put((page_url, page_origin, payload, None))
+                        future.set_result(fetch_once())
                     except BaseException as exc:
-                        completed.put((page_url, page_origin, None, exc))
+                        future.set_exception(exc)
         except BaseException as exc:
+            browser_failure.append(exc)
             completed.put((None, None, None, exc))
 
+    def page_worker():
+        while True:
+            task = tasks.get()
+            if task is None or stop_workers.is_set():
+                return
+            page_url, page_origin = task
+            try:
+                payload = capture_page(page_url)
+                completed.put((page_url, page_origin, payload, None))
+            except BaseException as exc:
+                completed.put((page_url, page_origin, None, exc))
+
     if optimized:
+        for index in range(browser_concurrency):
+            thread = Thread(target=browser_worker, name=f"catalog-browser-{index}", daemon=True)
+            thread.start()
+            browser_workers.append(thread)
         for index in range(concurrency):
-            thread = Thread(target=worker, name=f"catalog-browser-{index}", daemon=True)
+            thread = Thread(target=page_worker, name=f"catalog-page-{index}", daemon=True)
             thread.start()
             workers.append(thread)
 
+    main_browser = ExitStack()
     save()
     try:
+      if not optimized and not collection_finished:
+        # Sequential and HTTP-prefetch paths capture on this thread. Reuse
+        # one Chromium for the batch; every URL still gets a fresh context.
+        main_browser.enter_context(browser_session(reuse=fetch is collect))
       while not collection_finished and (queue or pending or (optimized and parallel_leases)) and (pending or parallel_leases or (dispatched < max_pages and time.monotonic() < deadline)):
         prefetched_http = None
         prefetched_http_seconds = 0.0
@@ -626,9 +723,22 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             if not parallel_leases:
                 break
             try:
-                url, origin, captured, error = completed.get(timeout=max(0.001, deadline - time.monotonic()) + 2)
-            except Empty as exc:
-                raise TimeoutError("Browser worker exceeded the collection deadline; leased pages remain interrupted") from exc
+                url, origin, captured, error = completed.get(
+                    timeout=max(0.001, deadline - time.monotonic()) + RESULT_GRACE_SECONDS)
+            except Empty:
+                # Keep every capture that did return. Pages still in flight
+                # are interrupted (their reserved time stays charged) and the
+                # batch is reported normally instead of failing as a whole.
+                stop_workers.set()
+                for leased_url in list(parallel_leases):
+                    coverage.append({"url": leased_url, "status": "interrupted",
+                                     "reason": "Page capture did not return before the collection deadline; "
+                                               "reserved time was charged. Retry explicitly."})
+                    if ledger:
+                        ledger.set(leased_url, "interrupted", detail="deadline")
+                parallel_leases.clear()
+                save()
+                break
             if error is not None:
                 raise error
             retry_count = retry_counts.pop(url, 0)
@@ -637,9 +747,12 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 ledger.set(url, "leased", attempts=retry_count,
                            lease_seconds=max(0, deadline - time.monotonic()))
         elif executor is not None:
-            if not pending:
+            # Sliding window: refill each free slot instead of waiting for the
+            # whole previous batch to drain.
+            if len(pending) < concurrency:
                 batch = []
-                while queue and dispatched < max_pages and len(batch) < concurrency and time.monotonic() < deadline:
+                while (queue and dispatched < max_pages and len(pending) + len(batch) < concurrency
+                       and time.monotonic() < deadline):
                     page_url, page_origin = queue.popleft()
                     if page_url in visited:
                         continue
@@ -650,7 +763,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 if batch:
                     # Reserve the longest simultaneous page budget. On crash,
                     # every leased URL is spent and this time remains charged.
-                    reserve = max(240 if HOST_ADAPTERS.get(urlsplit(u).hostname) == 'gongcar' else 60 for u, _ in batch)
+                    reserve = max(240 if HOST_ADAPTERS.get(urlsplit(u).hostname) == 'gongcar' else 60
+                                  for u in parallel_leases)
                     save(reserve=min(reserve, max(0, deadline - time.monotonic())))
                     for page_url, page_origin in batch:
                         host = urlsplit(page_url).hostname
@@ -709,7 +823,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                          "adapter": source.adapter, "recipe_fingerprint": stable_id(source.recipe, source.selectors, source.row_selector),
                          "plan_fingerprint": stable_id(snapshot.get('conditions', []), includes, excludes),
                          "attempts": len(responses) + max(0, retry_count - 1),
-                          "trace": [event for response, _ in responses for event in response.trace],
+                         "trace": _coverage_trace(event for response, _ in responses for event in response.trace),
                          "sections": chosen_sections,
                          "products": len(candidates), "products_extracted": len(chosen_assessments),
                          "observation_candidates": len(candidates),
@@ -734,13 +848,16 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                                                  'section': 'discovery_limits', 'status': 'partial', 'limits': gaps})
                 # Persist the limit evidence, including across rule reanalysis.
                 captures[url]['responses'] = [(asdict(r), [asdict(c) for c in cs]) for r, cs in responses]
-        if prefetched_http is not None or optimized:
+        if url in parallel_leases:
             parallel_leases.remove(url)
         save()
     finally:
-        if workers:
+        main_browser.close()
+        if workers or browser_workers:
             from .browser_workers import stop_and_join_workers
-            if not stop_and_join_workers(workers, tasks, stop_workers, timeout=15.0):
+            stopped = stop_and_join_workers(workers, tasks, stop_workers, timeout=15.0)
+            stopped = stop_and_join_workers(browser_workers, browser_tasks, stop_workers, timeout=15.0) and stopped
+            if not stopped:
                 if ledger is not None:
                     ledger.close()
                 raise RuntimeError("Browser worker cleanup did not finish; stop this worker process before retrying")
@@ -748,6 +865,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             executor.shutdown(wait=True, cancel_futures=True)
         if ledger is not None:
             ledger.close()
+        if owns_http_pool:
+            http_pool.close()
     if not collection_finished:
         for url, origin in queue:
             if url not in visited:

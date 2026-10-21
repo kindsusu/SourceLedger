@@ -51,11 +51,86 @@ def completed(root, job_id):
     return job, result, output
 
 
+def batch_coverage(output, entry):
+    """Page coverage of one batch run: the persisted run coverage, else its checkpoint result."""
+    store = Store(output)
+    try:
+        coverage = store.run_coverage(entry["run_id"]) if entry.get("run_id") else []
+    finally:
+        store.close()
+    if coverage:
+        return coverage
+    from .catalog_checkpoint import read_checkpoint
+    state = read_checkpoint(output, entry["checkpoint_id"]) if entry.get("checkpoint_id") else None
+    result = (state or {}).get("result") or {}
+    return result["coverage"] if isinstance(result.get("coverage"), list) else []
+
+
+def _batch_ledger(root, job):
+    from .research_batch import read_batch_journal, _output
+    plan_id = job["arguments"]["plan_id"]
+    journal = read_batch_journal(root, plan_id, job["id"])
+    if not journal or not journal.get("batches"):
+        raise ValueError("Batch job has no completed batches yet")
+    return _output(workspace_root(root), plan_id), journal
+
+
+def _blocking(issues, url):
+    return [issue for issue in issues if issue['page_url'] == url and issue['status'] != 'resolved'
+            and issue['reason_code'] not in RETRYABLE_CODES]
+
+
+def retryable_urls(root, job_id):
+    """Approved pages this plan or batch job may retry without review, in job order."""
+    job = runtime.get_job(root, job_id)
+    if job.get("operation") == "research_batch":
+        output, journal = _batch_ledger(root, job)
+        runs = [(entry["run_id"], batch_coverage(output, entry)) for entry in journal["batches"]]
+    else:
+        _, result, output = completed(root, job_id)
+        runs = [(result["run_id"], result["result"]["coverage"])]
+    urls = []
+    store = Store(output)
+    try:
+        for run_id, coverage in runs:
+            issues = _all_issues(store, run_id)
+            urls.extend(page["url"] for page in coverage if _retryable_page(page) and not _blocking(issues, page["url"]))
+    finally:
+        store.close()
+    return list(dict.fromkeys(urls))
+
+
+def retryable_batch_urls(root, job_id):
+    return retryable_urls(root, job_id)
+
+
 def research_gaps(root, job_id, *, offset=0, limit=50):
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("offset must be non-negative")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
         raise ValueError("limit must be between 1 and 200")
+    job = runtime.get_job(root, job_id)
+    if job.get("operation") == "research_batch":
+        output, journal = _batch_ledger(root, job)
+        items = []
+        for entry in journal["batches"]:
+            coverage = batch_coverage(output, entry)
+            store = Store(output)
+            try:
+                rows = store.observations(entry["run_id"])
+                issue_rows = _all_issues(store, entry["run_id"])
+            finally:
+                store.close()
+            for item in _gap_items(coverage, rows, issue_rows):
+                items.append({**item, "batch_index": entry.get("index"), "run_id": entry["run_id"]})
+        from collections import Counter
+        return {"job_id": job_id, "total": len(items), "offset": offset, "limit": limit,
+                "items": items[offset:offset + limit],
+                "status_counts": dict(Counter(item["status"] for item in items)),
+                "retryable_count": sum(item["retryable"] for item in items),
+                "budget": {"total_collection_seconds": round(sum(entry.get("budget_seconds_used", 0)
+                                                                 for entry in journal["batches"]), 3)},
+                "note": "Browser submissions remain review-only. A page visit is not proof of every option or contract condition."}
     job, result, output = completed(root, job_id)
     store = Store(output)
     try:
@@ -63,11 +138,21 @@ def research_gaps(root, job_id, *, offset=0, limit=50):
         issue_rows = _all_issues(store, result["run_id"])
     finally:
         store.close()
+    items = _gap_items(result["result"]["coverage"], rows, issue_rows)
+    return {"job_id": job_id, "total": len(items), "offset": offset, "limit": limit,
+            "items": items[offset:offset + limit], "budget": result["result"].get("budget"),
+            "note": "Browser submissions remain review-only. A page visit is not proof of every option or contract condition."}
+
+
+def _gap_items(coverage, rows, issue_rows):
     items = []
     from .result_view import build_result_view
-    for page in result["result"]["coverage"]:
+    by_url = {}
+    for row in rows:
+        by_url.setdefault(row["source_url"], []).append(row)
+    for page in coverage:
         page_issues = [issue for issue in issue_rows if issue['page_url'] == page['url'] and issue['status'] != 'resolved']
-        page_rows = [row for row in rows if row["source_url"] == page["url"]]
+        page_rows = by_url.get(page["url"], [])
         displayed = build_result_view(page_rows)
         unresolved = [row for row in displayed["rows"] if row["status"] != "verified" or not row.get("comparable")]
         incomplete = _incomplete_sections(page)
@@ -86,9 +171,22 @@ def research_gaps(root, job_id, *, offset=0, limit=50):
                       "unlinked_evidence_count": displayed["unlinked_evidence_count"],
                       "review_reasons": list(dict.fromkeys(row["reason"] for row in unresolved))[:10],
                       "browser_submissions": sum(row.get("extraction_method") == "host_browser_submission" for row in page_rows)})
-    return {"job_id": job_id, "total": len(items), "offset": offset, "limit": limit,
-            "items": items[offset:offset + limit], "budget": result["result"].get("budget"),
-            "note": "Browser submissions remain review-only. A page visit is not proof of every option or contract condition."}
+    return items
+
+
+def compact_gap_item(item):
+    """MCP projection: issue identifiers and actions, not issue evidence payloads."""
+    issues = item.get("collection_issues") or []
+    value = {key: item[key] for key in ("url", "status", "reason", "retryable", "next_action", "review_count",
+                                         "unlinked_evidence_count", "browser_submissions", "batch_index", "run_id")
+             if key in item}
+    value["review_reasons"] = [str(reason)[:200] for reason in item.get("review_reasons", [])[:3]]
+    value["sections"] = [{key: section.get(key) for key in ("section", "status", "reason") if key in section}
+                         for section in (item.get("sections") or [])[:5] if isinstance(section, dict)]
+    value["collection_issues"] = [{key: issue.get(key) for key in ("id", "category", "reason_code", "status", "next_action")
+                                   if key in issue} for issue in issues[:5]]
+    value["collection_issue_count"] = len(issues)
+    return value
 
 
 def validate_retry(root, args):

@@ -101,8 +101,43 @@ def _has_sufficient_evidence(candidates: list[Candidate], decimal_separator: str
     return bool(commercial) and all(quality[0] or quality[1] for quality in commercial)
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _link_checkpoint_blob(root: Path, digest: str, size: int, dest: Path) -> Path | None:
+    """Hard-link an identical uncompressed checkpoint capture as pending evidence.
+
+    Catalog checkpoints keep incompressible captures (screenshots, PDFs, small
+    pages) as ``checkpoint_blobs/<xx>/<sha256>.bin``. Linking shares those bytes
+    instead of writing a second copy. Only a verified, link-free regular file
+    inside the output directory qualifies; otherwise the caller writes bytes.
+    """
+    shard = root / 'checkpoint_blobs' / digest[:2]
+    blob = shard / (digest + '.bin')
+    try:
+        if any(_is_linklike(part) for part in (shard.parent, shard, blob)) or not blob.is_file():
+            return None
+        if not blob.resolve().is_relative_to(root) or blob.stat().st_size != size or _file_sha256(blob) != digest:
+            return None
+        pending = dest / f'.capture-{uuid.uuid4().hex}'
+        os.link(blob, pending)
+    except (OSError, ValueError):
+        return None  # e.g. a filesystem without hard links: fall back to a copy.
+    return pending
+
+
 def _store_capture(directory: Path, data: bytes, suffix: str) -> tuple[Path, str]:
-    """Keep identical capture bytes once; replace repairs atomically."""
+    """Keep identical capture bytes once; replace repairs atomically.
+
+    The evidence path is content addressed, so an intact existing file is
+    reused without rewriting it, and an identical uncompressed checkpoint
+    capture is hard-linked rather than copied when the filesystem allows it.
+    """
     digest = hashlib.sha256(data).hexdigest()
     root = directory.resolve()
     dest = root / 'evidence' / digest[:2]
@@ -113,15 +148,17 @@ def _store_capture(directory: Path, data: bytes, suffix: str) -> tuple[Path, str
     if not path.resolve().is_relative_to(root):
         raise ValueError('Evidence capture path escapes output directory')
     dest.mkdir(parents=True, exist_ok=True)
-    if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+    if path.is_file() and path.stat().st_size == len(data) and _file_sha256(path) == digest:
         return path, digest
     pending = None
     try:
-        with tempfile.NamedTemporaryFile(dir=dest, prefix='.capture-', delete=False) as stream:
-            pending = Path(stream.name)
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
+        pending = _link_checkpoint_blob(root, digest, len(data), dest)
+        if pending is None:
+            with tempfile.NamedTemporaryFile(dir=dest, prefix='.capture-', delete=False) as stream:
+                pending = Path(stream.name)
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
         os.replace(pending, path)
     finally:
         if pending is not None:
@@ -198,7 +235,7 @@ def _conflicts(rows: list[dict]):
 
 
 def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
-    from .report import export_report
+    from .report import _export
     from .validation import _expiry
     run = store.run(run_id)
     if run["config_hash"] != config_fingerprint(config):
@@ -219,11 +256,7 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
         if expired or expiry_problem:
             row.update(comparable=False, reason=row["reason"] + "; validity date at report time expired or needs review")
     path = Path(config.output_dir) / f"{'demo-' if config.demo else ''}prices-{run_id}.xlsx"
-    export_report(config, run, store.tasks(run_id), rows, path)
     coverage = store.run_coverage(run_id)
-    if coverage:
-        from .report import append_section_coverage
-        append_section_coverage(path, coverage)
     # Triage is mutable; re-exports must read its current state instead of the
     # immutable issue snapshot embedded in historical coverage.
     issue_rows: list[dict] = []
@@ -231,19 +264,26 @@ def report_for_run(config: CollectionConfig, store: Store, run_id: str) -> dict:
     while batch := store.collection_issues(run_id, offset=offset, limit=500):
         issue_rows.extend(batch)
         offset += len(batch)
-    if coverage or issue_rows:
-        from .report import append_collection_issues
-        append_collection_issues(path, issue_rows)
+    # Coverage and issue sheets are written in the same pass as the evidence
+    # sheets; the finished workbook is never reloaded to append them.
+    path, summary = _export(config, run, store.tasks(run_id), rows, path,
+                            section_coverage=coverage or None,
+                            collection_issues=issue_rows if coverage or issue_rows else None,
+                            deep_validation=False)
     from .catalog_refresh import refresh_for_run
     refresh = refresh_for_run(Path(config.output_dir), run_id)
     if refresh:
         from .report import append_refresh_summary
         append_refresh_summary(path, refresh)
+        added = ["Collection Changes", "Item Changes"]
+        summary["sheet_names"] = [name for name in summary["sheet_names"] if name not in added] + added
+    stat = path.stat()
+    summary["file"] = [stat.st_size, stat.st_mtime_ns]
     from .final_report import finalize_reports
     artifacts = finalize_reports([path], path, metadata={
         "status": run["status"], "run_id": run_id,
         "coverage": coverage, "started_at": run.get("started_at"),
-        "finished_at": run.get("finished_at"),
+        "finished_at": run.get("finished_at"), "workbook_summary": summary,
     })
     with store.db:
         store.db.execute("UPDATE runs SET report_path=? WHERE id=?", (str(path), run_id))
@@ -303,8 +343,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                 if max_tasks is not None:
                     tasks = tasks[:max_tasks - processed]
                 if time.monotonic() >= deadline:
-                    for task in tasks:
-                        store.update_task(task["id"], "budget_exhausted", "Run time limit reached")
+                    store.update_tasks([task["id"] for task in tasks], "budget_exhausted", "Run time limit reached")
                     continue
                 backends = ["file"] if source.kind == "file" else source.backends
                 # A supplied recipe requires the browser state after the clicks.
@@ -344,13 +383,11 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                                            'capture_count': len(capture_evidence),
                                            'receipts': [item['receipt_path'] for item in capture_evidence]})
                     for attempt in attempts:
-                        for task in tasks:
-                            store.update_task(task["id"], "running", backend=attempt['backend'], attempt=True)
-                        with store.db:
-                            store.db.execute("INSERT INTO attempts(run_id,source_id,backend,status,at,data) VALUES(?,?,?,?,?,?)",
-                                             (run_id, source.id, attempt['backend'], attempt['status'], attempt['at'],
-                                              json.dumps({'message': attempt['message'], 'trace': attempt['trace'],
-                                                          'prior_capture_evidence': capture_evidence}, ensure_ascii=False)))
+                        # One transaction per attempt: counters and trace agree after a crash.
+                        store.record_attempt(run_id, source.id, [task["id"] for task in tasks], attempt['backend'],
+                                             attempt['status'], attempt['at'],
+                                             {'message': attempt['message'], 'trace': attempt['trace'],
+                                              'prior_capture_evidence': capture_evidence})
                     if last.status == "fetched":
                         try:
                             candidates = captured_response[1] if captured_response else extract_current(last, source, saved, extract)
@@ -405,10 +442,11 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                                            if captured_responses and fetched.backend == "http" else source)
                         save_snapshot(store, snapshot_source, fetched, candidates, evidence_path, digest)
                         evidence_by_response[response_index] = (evidence_path, digest)
+                    finished = []
                     for task in tasks:
                         response_index = best_by_task.get(task["id"], fallback_index)
                         if response_index is None:
-                            store.finish_task(task["id"], last.status if last.status in TERMINAL else "failed", last.message, last.backend, [])
+                            finished.append((task["id"], last.status if last.status in TERMINAL else "failed", last.message, last.backend, []))
                             continue
                         fetched, candidates = responses[response_index]
                         evidence_path, digest = evidence_by_response[response_index]
@@ -436,10 +474,12 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                             known_candidates = [c for c in candidates if c.fields]
                             state = "product_not_found" if known_candidates else "review"
                             reason = "Configured product identifier was not found in the source" if known_candidates else (fetched.message or "No extraction candidate: review CSS/column mapping, PDF rules, or OCR")
-                        store.finish_task(task["id"], state, reason, fetched.backend, rows)
+                        finished.append((task["id"], state, reason, fetched.backend, rows))
+                    # Evidence files are durable before this single commit for the source.
+                    store.finish_tasks(finished)
                 else:
-                    for task in tasks:
-                        store.finish_task(task["id"], last.status if last.status in TERMINAL else "failed", last.message, last.backend, [])
+                    store.finish_tasks([(task["id"], last.status if last.status in TERMINAL else "failed", last.message, last.backend, [])
+                                        for task in tasks])
                 processed += len(tasks)
             tasks = store.tasks(run_id)
             paused = paused or any(t["status"] in {"queued", "running"} for t in tasks)

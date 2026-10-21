@@ -24,6 +24,14 @@ TRACKER_INIT_JS = r"""(() => {
   if (typeof window.fetch === 'function') {
     const originalFetch = window.fetch;
     window.fetch = function (...args) {
+      // keepalive fetches are fire-and-forget beacons (ads, analytics). Under
+      // Playwright request interception their promise can stay pending forever,
+      // which would block every observation on pages that load such tags.
+      const request = args[0];
+      if ((args[1] && args[1].keepalive) || (typeof Request !== 'undefined'
+          && request instanceof Request && request.keepalive)) {
+        return originalFetch.apply(this, args);
+      }
       state.pending++; changed();
       let finished = false;
       const finish = () => {
@@ -157,6 +165,61 @@ def wait_settled_sync(page: Any, read: Callable[[], Any], *,
             last["status"] = "timeout"
             return last
         page.wait_for_timeout(min(poll_ms, max(1, int((deadline - now) * 1000))))
+
+
+def network_state_sync(page: Any) -> dict:
+    """Return the tracker state, or an empty dict when it cannot be read."""
+    try:
+        state = page.evaluate(SETTLEMENT_STATE_JS)
+    except Exception:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def wait_action_effects_sync(page: Any, *, max_ms: float, quiet_ms: float,
+                             floor_ms: float = 100, read: Callable[[], Any] | None = None,
+                             previous: Any = None, require_change: bool = False,
+                             poll_ms: int = 100, untracked_ms: float | None = None) -> dict:
+    """Wait for the effects of one page action instead of a fixed sleep.
+
+    The action is marked on the tracker first, so idle time counts from the
+    action. The wait ends once no fetch/XHR or visible loader has been active
+    for ``quiet_ms``, the optional ``read()`` value has been unchanged for
+    ``quiet_ms`` (and differs from ``previous`` when ``require_change``), and
+    ``floor_ms`` has elapsed. It never exceeds ``max_ms``. A page without the
+    tracker keeps the previous fixed wait (``untracked_ms``, default
+    ``max_ms``): absence of network evidence is not evidence of quiet.
+    """
+    started = time.monotonic()
+    deadline = started + max(0.0, max_ms) / 1000
+    try:
+        page.evaluate(MARK_ACTION_JS)
+    except Exception:
+        pass
+    last_value: Any = object()
+    value_since = started
+    while True:
+        network = network_state_sync(page)
+        if network.get("tracked") is not True:
+            fixed = max_ms if untracked_ms is None else min(max_ms, untracked_ms)
+            page.wait_for_timeout(max(1, int(fixed - (time.monotonic() - started) * 1000)))
+            return {"status": "untracked", "elapsed_seconds": time.monotonic() - started}
+        try:
+            value = read() if read is not None else None
+        except Exception:
+            value = object()  # e.g. an execution context replaced by navigation
+        now = time.monotonic()
+        if value != last_value:
+            last_value, value_since = value, now
+        if ((now - started) * 1000 >= floor_ms
+                and (not require_change or value != previous)
+                and network.get("pending") == 0 and network.get("loading") == 0
+                and isinstance(network.get("idleMs"), (int, float)) and network["idleMs"] >= quiet_ms
+                and (now - value_since) * 1000 >= quiet_ms):
+            return {"status": "settled", "elapsed_seconds": now - started}
+        if now >= deadline:
+            return {"status": "timeout", "elapsed_seconds": now - started}
+        page.wait_for_timeout(max(1, min(poll_ms, int((deadline - now) * 1000))))
 
 
 async def wait_settled_async(page: Any, read: Callable[[], Awaitable[Any]], *,

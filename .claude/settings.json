@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__sourceledger__get_*",
+      "mcp__sourceledger__list_*",
+      "mcp__sourceledger__wait_for_job"
+    ],
+    "ask": [
+      "mcp__sourceledger__confirm_*",
+      "mcp__sourceledger__start_*",
+      "mcp__sourceledger__retry_*"
+    ]
+  }
+}

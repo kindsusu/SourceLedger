@@ -22,6 +22,11 @@ JOB_STATES = frozenset({"queued", "running", "succeeded", "failed", "interrupted
 MAX_ARGUMENT_BYTES = 256 * 1024
 MAX_JOBS_LIMIT = 100
 POLL_SECONDS = 0.1
+IDLE_POLL_MAX_SECONDS = 1.0
+# Detached workers exit after this long without queued work; the next job
+# start launches a new one. Without it, every MCP client session leaves an
+# idle worker polling forever.
+DEFAULT_WORKER_IDLE_SECONDS = 600.0
 HEARTBEAT_SECONDS = 2.0
 STARTUP_SECONDS = 15.0
 
@@ -334,7 +339,8 @@ def start_worker(root: str | Path) -> dict[str, Any]:
         # Keep the venv entry point itself. Resolving a POSIX venv symlink can
         # silently select the global interpreter and lose installed packages.
         interpreter = os.path.abspath(os.path.expanduser(sys.executable))
-        command = [interpreter, "-m", "su_crawler.assistant_runtime", "worker", "--root", str(workspace), "--token", token]
+        command = [interpreter, "-m", "su_crawler.assistant_runtime", "worker", "--root", str(workspace), "--token", token,
+                   "--idle-timeout", str(DEFAULT_WORKER_IDLE_SECONDS)]
         options: dict[str, Any] = {"stdin": subprocess.DEVNULL, "stdout": log, "stderr": subprocess.STDOUT, "cwd": str(workspace)}
         if os.name == "nt":
             options["creationflags"] = _worker_creationflags()
@@ -365,6 +371,39 @@ def start_worker(root: str | Path) -> dict[str, Any]:
         # state first, its expected-token check rejects this stale child.
         _write_json(runtime / "stop.json", {"token": token, "requested_at": utc_now()})
         raise RuntimeError(f"Assistant worker did not become ready within {STARTUP_SECONDS:g} seconds; inspect {runtime / 'worker.log'}")
+
+
+def run_inline_worker(root: str | Path, *, idle_timeout: float = 1.0) -> bool:
+    """Drain the queue in this process when no worker owns the workspace.
+
+    Used by unattended CLI runs so no detached process outlives them. Returns
+    False without doing work when another worker is active or wins the launch
+    race; callers then wait for that worker instead.
+    """
+    if isinstance(idle_timeout, bool) or not isinstance(idle_timeout, (int, float)) or not 0 < idle_timeout <= 60:
+        raise ValueError("idle_timeout must be between 0 and 60 seconds")
+    workspace = _root(root)
+    runtime = workspace / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    for path in (runtime / "start.lock", runtime / "worker.lock"):
+        if path.is_symlink() or (path.exists() and path.resolve().parent != runtime.resolve()):
+            raise ValueError("assistant runtime files must not be symbolic links or junctions")
+    try:
+        with _locked(runtime / "start"):
+            if _status_with_start_lock(workspace)["status"] != "stopped":
+                return False
+            token = uuid.uuid4().hex
+            (runtime / "stop.json").unlink(missing_ok=True)
+            _write_json(runtime / "state.json", {
+                "status": "starting", "pid": os.getpid(), "token": token, "current_job_id": None,
+                "updated_at": utc_now(), "mode": "inline",
+            })
+    except RuntimeError:
+        return False  # Another launcher owns the start lock.
+    try:
+        return _run_worker(workspace, token, float(idle_timeout)) == 0
+    except RuntimeError:
+        return False  # Another worker acquired the worker lock first.
 
 
 def stop_worker(root: str | Path) -> dict[str, Any]:
@@ -494,7 +533,10 @@ def _run_worker(root: Path, token: str, idle_timeout: float) -> int:
                     last_heartbeat = now
                 if idle_timeout > 0 and now - last_work >= idle_timeout:
                     break
-                time.sleep(POLL_SECONDS)
+                # Poll quickly right after work, then back off: an idle worker
+                # scanning the job directory every 0.1 s costs a CPU core share.
+                idle_for = now - last_work
+                time.sleep(POLL_SECONDS if idle_for < 5 else min(IDLE_POLL_MAX_SECONDS, POLL_SECONDS * idle_for))
                 continue
             job = _claim_job(root, job["id"], token)
             if job is None:
@@ -518,7 +560,7 @@ def _run_worker(root: Path, token: str, idle_timeout: float) -> int:
             _finish_job(root, job, token, result=result, error=error)
             state.update(status="idle", current_job_id=None, updated_at=utc_now())
             _write_json(state_path, state)
-            last_heartbeat = time.monotonic()
+            last_heartbeat = last_work = time.monotonic()
         state.update(status="stopped", current_job_id=None, updated_at=utc_now())
         _write_json(state_path, state)
         stop = _read_json(runtime / "stop.json")

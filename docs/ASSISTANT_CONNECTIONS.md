@@ -60,6 +60,16 @@ For a Claude Code project other than this repository, choose it explicitly:
 source-ledger.cmd connect --client claude-code --project-dir "C:\work\my-project" --install
 ```
 
+To register the server for every Claude Code project instead of one project,
+use `--scope user`. SourceLedger then prints the equivalent
+`claude mcp add --scope user --env PYTHONUTF8=1 --transport stdio <name> -- <python> -m su_crawler serve-assistant ...`
+command (`claude_command.command_line`) and does not run it or edit any user
+configuration file; run the printed command yourself:
+
+```bat
+source-ledger.cmd connect --client claude-code --scope user
+```
+
 `--config-file PATH` overrides a client configuration target and requires
 `--install`. This is required for Claude Desktop on operating systems other
 than Windows and macOS.
@@ -106,7 +116,77 @@ dead worker marks its running job `interrupted`; it is never silently rerun.
 
 ## What the local MCP server can do
 
-The primary research-plan path has eight tools, bringing this assistant MCP server to 30 tools total (including three follow-up tools): `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, and `generate_research_preview`. Create a plan with the complete short or multiline request. For a preview, use the connected AI app's own search/browser tools to inspect actual references, then submit URLs and reasons through `submit_research_preview`; the host app controls its model. Alternatively, explicitly opt in to `generate_research_preview` with a local Codex CLI or Claude Code CLI provider/model. Both routes produce bounded, unverified references and never price observations. The user can add, remove, or select candidates and must confirm the displayed revision, including industry, product, and market, before `start_research_plan` collects selected pages. Exact product identifiers are optional advanced inputs for this flow.
+The assistant MCP server has 46 tools. The primary research-plan path uses these eight: `list_research_plans`, `get_research_plan`, `create_research_plan`, `submit_research_preview`, `update_research_plan`, `confirm_research_plan`, `start_research_plan`, and `generate_research_preview`. Create a plan with the complete short or multiline request. For a preview, use the connected AI app's own search/browser tools to inspect actual references, then submit URLs and reasons through `submit_research_preview`; the host app controls its model. Alternatively, explicitly opt in to `generate_research_preview` with a local Codex CLI or Claude Code CLI provider/model. Both routes produce bounded, unverified references and never price observations. The user can add, remove, or select candidates and must confirm the displayed revision, including industry, product, and market, before `start_research_plan` collects selected pages. Exact product identifiers are optional advanced inputs for this flow.
+
+### Compact responses
+
+Responses are compact by default so that hosts which divert large tool results
+to files (Claude Code does this for very large results) still see status:
+
+- Plan tools (`create_research_plan`, `get_research_plan`, `update_research_plan`,
+  `submit_research_preview`, `confirm_research_plan`) return a plan summary: id,
+  revision, state, topic, request, conditions, candidate counts, host counts and
+  `url_fingerprint` (an order-sensitive SHA-256 of the selected URLs, the same
+  value the batch run pins). Pass `include_candidates=true` with `offset`/`limit`
+  (at most 200) to page candidate records. `list_research_plans` and
+  `get_workspace_status` list plan summaries only.
+- `get_research_batch_progress` returns counts, per-status URL counts, elapsed
+  time, change counts and final paths. `include_changes=true` with
+  `offset`/`limit` (at most 50) adds compact change rows; `get_research_gaps`
+  pages per-URL status and `get_collection_changes` pages full change rows.
+- `get_research_batch_reports` returns the final XLSX/dashboard paths and a page
+  of per-batch report file names (default 10, at most 50).
+- `get_job_status` and `list_recent_jobs` omit raw arguments and results unless
+  `include_arguments`/`include_result` is true.
+- `get_job_observations` reports coverage counts; `include_coverage=true` with
+  `coverage_offset`/`coverage_limit` pages coverage and section gaps.
+- `wait_for_job` accepts `timeout_seconds` up to 120 (default 20) and returns
+  compact status only.
+
+For a synthetic batch job of several hundred URLs, the default batch progress, batch reports and
+plan responses each stay below 3,000 characters (tests enforce this).
+
+### URL lists and batch follow-up
+
+`import_plan_urls(plan_id, expected_revision, path, replace=false)` reads a
+workspace-relative or absolute `.txt` (one URL per line, `#` comments), `.csv`
+(a `url` column) or `.json` (a list, or `{"urls": [...]}`) file and adds the
+URLs as selected candidates in file order. It returns the count, both
+fingerprints, duplicates, invalid lines and the first/last three URLs. Invalid
+lines are reported, never corrected. Hosts should never retype URL lists into
+`update_research_plan`. Like any edit, the import creates a new unconfirmed
+revision.
+
+`get_research_gaps`, `get_job_observations` and `retry_research_pages` work for
+batch jobs as well as single plan jobs. `retry_research_pages` without `urls`
+retries every page the job itself reports as retryable (never pages that need
+access, policy or evidence review). A batch retry is a new `research_batch`
+job pinned to the same plan revision and URL list; its journal merges retried
+batches into the parent's results and produces a new final workbook.
+
+### Unattended collection without a model
+
+For scheduled or unattended runs no assistant is needed:
+
+```bat
+source-ledger.cmd collect-plan --workspace-root .sourceledger --urls-file urls.txt ^
+  --industry "..." --product "..." --market "..." --yes --json
+source-ledger.cmd assistant wait --workspace-root .sourceledger --job-id <JOB_ID> --timeout 7200 --json
+```
+
+`collect-plan` creates a plan (or reuses `--plan-id`), imports the file with
+replace semantics, confirms it and runs one batch job in the same process. The
+explicit `--yes` plus the URL file are the operator's approval; without `--yes`
+it refuses before touching the workspace, and a file with invalid lines is
+rejected. When `--plan-id` already has a confirmed revision with the same topic
+and URL list, that revision is reused. Options: `--batch-size` (default 20),
+`--concurrency` (2), `--browser-concurrency` (1), `--browser-reuse` (on; `--no-browser-reuse` disables),
+`--max-seconds` per batch (600) and `--timeout` for waiting on another worker
+(7200). It prints one JSON summary (status, coverage and observation counts,
+final XLSX/dashboard paths, change counts, errors). Exit codes: 0 succeeded,
+1 failed or interrupted, 2 refused or invalid input, 3 still running at the
+wait timeout. `assistant wait` prints the same summary for an existing job.
+A succeeded job describes execution only; it is not verified price evidence.
 
 The confirmed plan uses page and time limits, records visited and unprocessed coverage, and retains source evidence in SQLite with an XLSX report. Some unrelated navigation links on a selected host may be visited within the page budget. Generic JSON-LD Product/Offer data can preserve raw prices and attributes across product categories, but embedded prices lack visual proof and remain review-only. Supported structured conditions receive deterministic evidence checks; unknown and excluded products are separately accounted for. Known-adapter prices keep scope review flags because these checks do not establish every natural-language or commercial condition. Arbitrary page layouts and unrestricted semantic checking remain unsupported; missing values are never inferred. Preview content is untrusted data, never an instruction to widen scope or collect a price.
 
@@ -175,7 +255,12 @@ The browser UI also supports an explicit **Run in web UI** action for a saved so
 Running a request queues a local worker job. It only returns unverified recommendation candidates for manual review and selection in Sources; it does not start a price collection job or create price observations. The provider CLI may access web pages while searching. Existing collection model calls remain opt-in and default to zero.
 
 The connection is not a cloud deployment. Codex/Claude web or mobile access,
-remote artifact download, direct reuse of a host browser session, scheduling,
-and unattended repair are outside this implementation.
+remote artifact download, direct reuse of a host browser session and
+unattended repair are outside this implementation. SourceLedger installs no
+scheduler; an operator can run `collect-plan` from their own scheduled task.
+
+The repository's `CLAUDE.md` and `.claude/` folder hold an optional Claude Code
+kit (a collection skill, a collector subagent and read-only permission
+defaults). It contains no credentials or machine paths.
 
 See [MCP evidence and recovery](MCP_FOLLOWUP.md) for coverage gaps, browser evidence submission, bounded retries and checkpoint resume.

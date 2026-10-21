@@ -2,6 +2,17 @@
 
 Older confirmed snapshots without ``refresh_policy`` intentionally run in full
 mode. Newly reviewed plans should write the normalized default explicitly.
+
+Full collection is the default. Incremental mode only revalidates retained
+evidence of plain public HTTP pages (no adapter, recipe, selectors or
+profile) with ETag/Last-Modified validators. It is deliberately not faster for
+adapter pages such as Gongcar or Jetcar: their observations come from a
+rendered browser capture (list expansion, price sheets, visible-state proof),
+which has no HTTP validator and must be visited again to prove what is
+displayed now. A 304 for the page's HTML would not show that the rendered
+inventory, prices or conditions are unchanged, so adapter pages are always
+recollected in full and only their comparison with the baseline is
+incremental.
 """
 from __future__ import annotations
 

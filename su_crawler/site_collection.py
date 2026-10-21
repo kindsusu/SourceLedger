@@ -31,6 +31,22 @@ HOST_ADAPTERS = {
 }
 
 
+# Adapters whose sections can be complete only from a rendered browser capture
+# (every Gongcar coverage rule requires backend == "playwright"; its rendered
+# DOM also outranks static HTML). For these, the browser runs first and HTTP
+# is only a fallback when the browser fails, times out, is unavailable, or
+# extracts nothing. Jetcar sections can be complete from static HTML, so it
+# keeps HTTP first and stops early only with complete, sufficient evidence.
+# Catalog collection derives products from the chosen response only, so a
+# skipped HTTP response cannot remove an observation row there.
+BROWSER_FIRST_ADAPTERS = frozenset({'gongcar'})
+
+
+def browser_first(source) -> bool:
+    return (source.adapter in BROWSER_FIRST_ADAPTERS and bool(source.recipe) and not source.profile_dir
+            and 'playwright' in source.backends and 'http' in source.backends)
+
+
 def _ready_recipe(adapter: str, url: str = '') -> list[dict]:
     path = urlsplit(url).path.rstrip('/')
     if adapter == 'amazoncar':
@@ -84,7 +100,34 @@ def _offer_fingerprint(fields, evidence_sha256):
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
+UNSETTLED_FLAG = 'Browser observation did not settle before capture'
+
+
+def _unsettled(result):
+    return any(event.get('event') == 'observation_unsettled' for event in result.trace)
+
+
 def _sections(result, candidates, adapter):
+    """Describe section coverage; an unsettled capture is never complete.
+
+    Candidates from an unsettled browser capture receive a review flag here so
+    every caller (fresh capture, retained-evidence reanalysis, site collection)
+    treats them alike.
+    """
+    unsettled = _unsettled(result)
+    if unsettled:
+        for candidate in candidates:
+            if UNSETTLED_FLAG not in candidate.review_flags:
+                candidate.review_flags.append(UNSETTLED_FLAG)
+    sections = _adapter_sections(result, candidates, adapter)
+    if unsettled:
+        for section in sections:
+            if section.get('status') == 'complete':
+                section.update(status='partial', reason='observation_unsettled')
+    return sections
+
+
+def _adapter_sections(result, candidates, adapter):
     if adapter == 'gongcar':
         from .adapters.gongcar import section_coverage
         sections = section_coverage(result, candidates)
@@ -242,6 +285,9 @@ def collect_sites(workspace_path: str | Path, *, urls: list[str] | None = None,
                 best: tuple[FetchResult, list] | None = None
                 best_score: tuple = (-1,)
                 attempts = []
+                # Unlike catalog collection, products here come from every
+                # response, so an HTTP-only item would be lost if HTTP were
+                # skipped. Keep both backends in the original order.
                 for backend in source.backends:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:

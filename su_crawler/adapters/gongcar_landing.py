@@ -42,7 +42,11 @@ def extract(result: FetchResult, path: str, mode: str, visibility: str) -> list[
             continue
         raw = visible_text(card) or ""
         locator = f"gongcar:{path}:popular:card:{index}"
-        item_id = 'local-observation-gongcar-' + stable_id(path, index, raw, basis)
+        specs = [node for node in card.select('.deal-spec') if is_visible(node)]
+        spec = visible_text(specs[0]) if len(specs) == 1 else ""
+        # Non-price attributes only: a price change must not look like a new offer.
+        item_id = 'local-observation-gongcar-' + stable_id(path, index, str(card.get('data-id') or ''),
+                                                           visible_text(names[0]), spec, basis)
         fields = {"item_id": item_id, "name": visible_text(names[0]), "section": _key(path)}
         proofs = {"item_id": evidence(locator, item_id, raw, proof_kind="local_observation"),
                   "name": evidence(locator + '/name', fields['name'], fields['name'], raw),
@@ -54,8 +58,6 @@ def extract(result: FetchResult, path: str, mode: str, visibility: str) -> list[
 
         if card.get('data-id'):
             add('observed_source_id', str(card['data-id']), str(card['data-id']), 'data-id')
-        specs = [node for node in card.select('.deal-spec') if is_visible(node)]
-        spec = visible_text(specs[0]) if len(specs) == 1 else ""
         if spec:
             add('options', spec, spec, 'spec')
         if basis:

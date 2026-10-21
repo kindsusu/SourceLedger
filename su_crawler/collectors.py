@@ -9,6 +9,7 @@ import asyncio
 from contextlib import ExitStack, contextmanager
 import hashlib
 import importlib.util
+import json
 import ipaddress
 import mimetypes
 import socket
@@ -25,7 +26,7 @@ import httpx
 
 from .models import FetchResult, Source, resolve_path, utc_now
 from .browser_runtime import browser_headless, select_browser_runtime
-from .browser_settlement import install_tracker_sync, wait_settled_sync
+from .browser_settlement import SETTLEMENT_STATE_JS, install_tracker_sync, wait_settled_sync
 from .browser_enumeration import ListingChanged, SnapshotBudgetExceeded, enumerate_buttons, enumerate_options, paginate, scroll_list, validate_enumeration_step
 from .access_challenges import detect_challenge
 
@@ -35,6 +36,11 @@ MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 MAX_VARIANT_SNAPSHOTS = 200
 MAX_VARIANT_BYTES = 32 * 1024 * 1024
 MAX_REDIRECTS = 10
+# Final evidence capture budget kept back from list expansion/enumeration.
+FINAL_CAPTURE_RESERVE_SECONDS = 15.0
+UNSETTLED_CAPTURE_SECONDS = 2.0
+UNSETTLED_MESSAGE = "Browser observation did not settle before capture; retained for review"
+_BOUNDED_RECIPE_ACTIONS = {"expand_list", "enumerate_options", "enumerate_buttons", "paginate", "scroll_list"}
 WELL_KNOWN_NAT64 = ipaddress.ip_network("64:ff9b::/96")
 _PASSWORD_FIELD = re.compile(r"<input\b[^>]*(?:type\s*=\s*['\"]?password|name\s*=\s*['\"]password['\"]?)", re.I)
 
@@ -52,10 +58,16 @@ class RobotsUnavailable(Exception):
 
 
 class RobotsPolicyCache:
-    """A bounded cache owned by one collection job, shareable across workers."""
+    """A bounded cache owned by one collection job, shareable across workers.
 
-    def __init__(self, ttl_seconds: float = 300.0) -> None:
+    Unavailable answers are cached too, so a robots.txt that answers 401/403
+    (or fails) is not requested again for every page. Server and network
+    failures use a short TTL because they may be transient.
+    """
+
+    def __init__(self, ttl_seconds: float = 900.0, failure_ttl_seconds: float = 15.0) -> None:
         self.ttl_seconds = ttl_seconds
+        self.failure_ttl_seconds = failure_ttl_seconds
         self._entries: dict[tuple[Any, ...], tuple[float, RobotFileParser | None, str]] = {}
         self._lock = threading.Lock()
 
@@ -69,12 +81,14 @@ class RobotsPolicyCache:
                 return None
             return entry[1], entry[2]
 
-    def put(self, key: tuple[Any, ...], parser: RobotFileParser | None, reason: str) -> None:
+    def put(self, key: tuple[Any, ...], parser: RobotFileParser | None, reason: str,
+            *, transient: bool = False) -> None:
+        ttl = self.failure_ttl_seconds if transient else self.ttl_seconds
         with self._lock:
-            if len(self._entries) >= 256:
+            if len(self._entries) >= 256 and key not in self._entries:
                 oldest = min(self._entries, key=lambda item: self._entries[item][0])
                 del self._entries[oldest]
-            self._entries[key] = (time.monotonic() + self.ttl_seconds, parser, reason)
+            self._entries[key] = (time.monotonic() + ttl, parser, reason)
 
 
 _robots_cache: ContextVar[RobotsPolicyCache | None] = ContextVar("robots_policy_cache", default=None)
@@ -89,6 +103,71 @@ def robots_policy_scope(cache: RobotsPolicyCache | None = None) -> Any:
         yield shared
     finally:
         _robots_cache.reset(token)
+
+
+def _new_http_client(timeout_seconds: float) -> httpx.Client:
+    return httpx.Client(
+        timeout=httpx.Timeout(timeout_seconds),
+        follow_redirects=False,
+        headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/json,*/*;q=0.8"},
+        trust_env=False,
+    )
+
+
+class HttpClientPool:
+    """One connection-pooling HTTP client per collection job.
+
+    ``httpx.Client`` is safe to share between worker threads. Per-request
+    timeouts still follow each source's remaining budget. Redirects are never
+    followed by the client; each hop is checked by the collector.
+    """
+
+    def __init__(self) -> None:
+        self._client: httpx.Client | None = None
+        self._lock = threading.Lock()
+
+    def client(self) -> httpx.Client:
+        with self._lock:
+            if self._client is None:
+                self._client = _new_http_client(30.0)
+            return self._client
+
+    def close(self) -> None:
+        with self._lock:
+            client, self._client = self._client, None
+        if client is not None:
+            client.close()
+
+
+_http_pool: ContextVar[HttpClientPool | None] = ContextVar("http_client_pool", default=None)
+
+
+@contextmanager
+def http_client_scope(pool: HttpClientPool | None = None) -> Any:
+    """Reuse HTTP connections within one job; pass the pool to worker threads."""
+    shared = pool or HttpClientPool()
+    token = _http_pool.set(shared)
+    try:
+        yield shared
+    finally:
+        _http_pool.reset(token)
+        if pool is None:
+            shared.close()
+
+
+def active_job_resources() -> tuple[RobotsPolicyCache | None, HttpClientPool | None]:
+    """Return the robots cache and HTTP pool of an enclosing job scope, if any."""
+    return _robots_cache.get(), _http_pool.get()
+
+
+@contextmanager
+def collection_job_scope() -> Any:
+    """Share robots decisions and HTTP connections across a job's batches.
+
+    ``collect_plan`` reuses an active scope instead of creating its own.
+    """
+    with robots_policy_scope(_robots_cache.get()) as robots, http_client_scope(_http_pool.get()) as pool:
+        yield robots, pool
 
 
 def _policy_error(code: str, message: str) -> PolicyError:
@@ -124,8 +203,17 @@ def _resolved_addresses(host: str, port: int) -> set[ipaddress.IPv4Address | ipa
             ipaddress.ip_address(record[4][0].split("%", 1)[0])
             for record in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
         }
-    except (socket.gaierror, ValueError) as exc:
+    except socket.gaierror as exc:
+        if exc.errno in _TEMPORARY_DNS_ERRNOS:
+            raise _policy_error("dns_temporary_failure", "Temporary failure resolving host address") from exc
         raise _policy_error("dns_resolution_failed", "Unable to resolve host address") from exc
+    except ValueError as exc:
+        raise _policy_error("dns_resolution_failed", "Unable to resolve host address") from exc
+
+
+# Resolver "try again" answers (EAI_AGAIN; WSATRY_AGAIN on Windows). A name that
+# does not exist stays dns_resolution_failed and is never retried.
+_TEMPORARY_DNS_ERRNOS = {code for code in (getattr(socket, "EAI_AGAIN", None), 11002) if code is not None}
 
 
 def _embedded_ipv4(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
@@ -279,18 +367,19 @@ def _file_collect(source: Source, base_dir: str) -> FetchResult:
 
 def _get_following_policy(
     client: httpx.Client, source: Source, url: str, *, headers: dict[str, str] | None = None,
-    enforce_robots: bool = False,
+    enforce_robots: bool = False, timeout: float | None = None,
 ) -> tuple[httpx.Response, list[dict[str, Any]]]:
     trace: list[dict[str, Any]] = []
     current = url
     for _ in range(MAX_REDIRECTS + 1):
         _check_url(source, current)
         if enforce_robots:
-            _require_robots_access(client, source, current)
+            _require_robots_access(client, source, current, timeout=timeout)
         # Validators can identify a prior response, so never forward them to a
         # redirect target (including another allowed domain).
         request_headers = headers if current == url else None
-        response = client.send(client.build_request("GET", current, headers=request_headers), stream=True)
+        options: dict[str, Any] = {"timeout": httpx.Timeout(timeout)} if timeout is not None else {}
+        response = client.send(client.build_request("GET", current, headers=request_headers, **options), stream=True)
         trace.append({"event": "http", "url": _safe_url(str(response.url)), "status": response.status_code, "at": utc_now()})
         if response.status_code not in {301, 302, 303, 307, 308}:
             return response, trace
@@ -302,11 +391,21 @@ def _get_following_policy(
     raise httpx.TooManyRedirects("Redirect limit exceeded")
 
 
-def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[str, str]:
-    """Return allowed/disallowed/unavailable without treating fetch errors as rules."""
+_AMBIENT = object()
+
+
+def _robots_decision(client: httpx.Client, source: Source, url: str,
+                     cache: RobotsPolicyCache | None | object = _AMBIENT,
+                     timeout: float | None = None) -> tuple[str, str]:
+    """Return allowed/disallowed/unavailable without treating fetch errors as rules.
+
+    Pass ``cache`` explicitly from callbacks (such as Playwright route
+    handlers) that may run outside the caller's context variables.
+    """
     parsed = urlsplit(url)
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    cache = _robots_cache.get()
+    if cache is _AMBIENT:
+        cache = _robots_cache.get()
     key = (parsed.scheme, parsed.netloc.lower(), USER_AGENT, tuple(sorted(source.allowed_domains)), source.internal)
     cached = cache.get(key) if cache is not None else None
     if cached is not None:
@@ -314,8 +413,14 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
         if parser is None:
             return "unavailable" if reason != "robots.txt not found" else "allowed", reason
         return ("allowed", "robots.txt allows collection") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt disallows collection")
+
+    def unavailable(reason: str, *, transient: bool) -> tuple[str, str]:
+        if cache is not None:
+            cache.put(key, None, reason, transient=transient)
+        return "unavailable", reason
+
     try:
-        response, _ = _get_following_policy(client, source, robots_url)
+        response, _ = _get_following_policy(client, source, robots_url, timeout=timeout)
         if response.status_code in {404, 410}:
             response.close()
             if cache is not None:
@@ -323,13 +428,13 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
             return "allowed", "robots.txt not found"
         if response.status_code in {401, 403}:
             response.close()
-            return "unavailable", "robots.txt access is unavailable"
+            return unavailable("robots.txt access is unavailable", transient=False)
         if 400 <= response.status_code < 500:
             response.close()
-            return "unavailable", "robots.txt request failed"
+            return unavailable("robots.txt request failed", transient=response.status_code == 429)
         if response.status_code >= 500:
             response.close()
-            return "unavailable", "robots.txt server error"
+            return unavailable("robots.txt server error", transient=True)
         try:
             data = _read_limited(response).decode(response.encoding or "utf-8", errors="replace")
         finally:
@@ -341,11 +446,13 @@ def _robots_decision(client: httpx.Client, source: Source, url: str) -> tuple[st
             cache.put(key, parser, "robots.txt policy loaded")
         return ("allowed", "robots.txt allows collection") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt disallows collection")
     except (httpx.HTTPError, OSError, ValueError, PolicyError):
-        return "unavailable", "Unable to check robots.txt"
+        return unavailable("Unable to check robots.txt", transient=True)
 
 
-def _require_robots_access(client: httpx.Client, source: Source, url: str) -> None:
-    decision, reason = _robots_decision(client, source, url)
+def _require_robots_access(client: httpx.Client, source: Source, url: str,
+                           cache: RobotsPolicyCache | None | object = _AMBIENT, *,
+                           timeout: float | None = None) -> None:
+    decision, reason = _robots_decision(client, source, url, cache, timeout)
     if decision == "disallowed":
         raise _policy_error("robots_disallowed", "robots.txt does not allow collection")
     if decision == "unavailable":
@@ -382,15 +489,16 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
         _check_url(source, source.location)
     except PolicyError as exc:
         return _policy_result(source, "http", exc)
-    timeout = httpx.Timeout(source.timeout_seconds)
+    pool = _http_pool.get()
     try:
-        with robots_policy_scope(_robots_cache.get()), httpx.Client(
-            timeout=timeout,
-            follow_redirects=False,
-            headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,application/json,*/*;q=0.8"},
-            trust_env=False,
-        ) as client:
-            response, trace = _get_following_policy(client, source, source.location, headers=_conditional_headers(validators), enforce_robots=source.respect_robots)
+        with ExitStack() as scope:
+            scope.enter_context(robots_policy_scope(_robots_cache.get()))
+            client = (pool.client() if pool is not None
+                      else scope.enter_context(_new_http_client(source.timeout_seconds)))
+            response, trace = _get_following_policy(client, source, source.location, headers=_conditional_headers(validators),
+                                                    enforce_robots=source.respect_robots, timeout=source.timeout_seconds)
+            # A pooled connection is returned only after the body is closed.
+            scope.callback(response.close)
             final_url = str(response.url)
             metadata = _http_metadata(response)
             if response.status_code == 304:
@@ -497,6 +605,28 @@ def _expand_options(step: dict[str, Any]) -> tuple[str, str, int, int, str | Non
             float(step.get("initial_wait_seconds", 8)), float(step.get("progress_wait_seconds", 5)))
 
 
+_LIGHT_LIST_PROBE_JS = """els => ({count: els.length,
+  last: els.length ? (els[els.length - 1].innerText || '').trim().slice(0, 4096) : ''})"""
+
+# A list whose growth was observed to wait on fetch/XHR may confirm its end
+# after this much network-quiet, button-free and card-stable time instead of
+# the full progress window. Lists without that evidence keep the full window.
+NETWORK_TERMINAL_FLOOR_SECONDS = 2.5
+
+
+def _network_state(page: Any) -> dict[str, Any]:
+    try:
+        state = page.evaluate(SETTLEMENT_STATE_JS)
+    except Exception:
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _network_quiet(state: dict[str, Any], quiet_ms: float) -> bool:
+    return (state.get("tracked") is True and state.get("pending") == 0 and state.get("loading") == 0
+            and isinstance(state.get("idleMs"), (int, float)) and state["idleMs"] >= quiet_ms)
+
+
 def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list[dict[str, Any]]) -> None:
     """Expand one scoped, append-only list; record incomplete or replaced lists honestly."""
     item_selector, button_selector, max_clicks, max_items, empty_selector, all_selector, initial_wait, progress_wait = _expand_options(step)
@@ -511,6 +641,7 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
     replaced = False
     start_url = page.url
     current: list[str] = []
+    network_driven = False
 
     def scoped_one(selector: str, kind: str) -> Any:
         matches = container.locator(selector)
@@ -520,6 +651,12 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
 
     def visible_count(selector: str) -> int:
         return container.locator(selector + ":visible").count()
+
+    def light() -> tuple[int, str]:
+        # Polling reads the count and last card text only. Full card HTML is
+        # serialized on progress and for terminal confirmation.
+        data = container.locator(item_selector + ":visible").evaluate_all(_LIGHT_LIST_PROBE_JS)
+        return int(data.get("count", 0)), hashlib.sha256(str(data.get("last", "")).encode("utf-8")).hexdigest()
 
     def observe() -> list[str]:
         nonlocal count, replaced
@@ -547,26 +684,54 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
         return identities
 
     def terminal_confirmed() -> bool:
-        """Confirm the button and cards stay unchanged for the recipe's progress window."""
-        if (remaining_ms() - 1500) / 1000 < progress_wait:
+        """Confirm the button and cards stay unchanged for the terminal window.
+
+        The window is the recipe's progress wait. A list whose every load was
+        seen on the tracked network uses a shorter floor, counted from the
+        last network activity and only while no fetch/XHR or loader is active.
+        """
+        floor = min(progress_wait, NETWORK_TERMINAL_FLOOR_SECONDS)
+        if (remaining_ms() - 1500) / 1000 < (floor if network_driven else progress_wait):
             return False
         stable_since = time.monotonic()
         baseline = prior.copy()
+        baseline_light = light()
         while True:
             if page.url != start_url or visible_count(button_selector):
                 return False
-            if observe() != baseline:
-                baseline = prior.copy()
-                stable_since = time.monotonic()
+            current_light = light()
+            if current_light != baseline_light:
+                baseline_light = current_light
+                if observe() != baseline:
+                    baseline = prior.copy()
+                    stable_since = time.monotonic()
             if replaced:
                 return False
+            window = progress_wait
+            if network_driven:
+                state = _network_state(page)
+                if state.get("tracked") is True:
+                    now = time.monotonic()
+                    if state.get("pending") or state.get("loading"):
+                        stable_since = now
+                    elif isinstance(state.get("idleMs"), (int, float)):
+                        stable_since = max(stable_since, now - state["idleMs"] / 1000)
+                    window = floor
             elapsed = time.monotonic() - stable_since
-            if elapsed >= progress_wait:
+            if elapsed >= window:
+                # Positive confirmation: a full re-read must match exactly.
+                if observe() != baseline:
+                    if replaced:
+                        return False
+                    baseline = prior.copy()
+                    baseline_light = light()
+                    stable_since = time.monotonic()
+                    continue
                 return page.url == start_url and visible_count(button_selector) == 0
             available_ms = remaining_ms() - 1500
             if available_ms <= 0:
                 return False
-            page.wait_for_timeout(min(200, max(1, (progress_wait - elapsed) * 1000), available_ms))
+            page.wait_for_timeout(min(200, max(1, (window - elapsed) * 1000), available_ms))
 
     try:
         if container.count() != 1:
@@ -587,9 +752,10 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
                 reason = "unexpected_navigation"
                 status = "partial" if count else "unknown"
                 break
-            current = observe()
-            if current:
-                break
+            if light()[0]:
+                current = observe()
+                if current:
+                    break
             if empty_selector and visible_count(empty_selector) == 1:
                 status, reason = "complete", "explicit_empty"
                 break
@@ -624,6 +790,8 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
                 status, reason = "partial", "click_budget" if clicks >= max_clicks else "item_budget"
                 break
             control = scoped_one(button_selector + ":visible", "button")
+            before_light = light()
+            before_network = _network_state(page)
             if step.get("trigger", "click") == "scroll":
                 control.scroll_into_view_if_needed(timeout=remaining_ms())
             else:
@@ -631,16 +799,29 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
             clicks += 1
             before = current
             progressed = False
+            saw_request = False
+            button_hid = False
             progress_until = time.monotonic() + min(progress_wait, max(0.0, (remaining_ms() - 1500) / 1000))
             while time.monotonic() < progress_until:
                 if page.url != start_url:
                     break
-                current = observe()
-                if current != before:
-                    progressed = True
-                    break
+                if not button_hid and visible_count(button_selector) == 0:
+                    button_hid = True
+                state = _network_state(page)
+                saw_request = saw_request or bool(state.get("pending")) or (
+                    state.get("version") is not None and before_network.get("version") is not None
+                    and state["version"] != before_network["version"])
+                if light() != before_light:
+                    current = observe()
+                    if current != before:
+                        progressed = True
+                        break
                 page.wait_for_timeout(min(200, max(1, (progress_until - time.monotonic()) * 1000)))
-            if not progressed:
+            if progressed:
+                # Each load must be network-driven for the shorter terminal
+                # floor to apply; one client-side reveal disables it.
+                network_driven = saw_request and (network_driven or clicks == 1)
+            else:
                 if page.url != start_url:
                     status, reason = "partial", "unexpected_navigation"
                 elif visible_count(button_selector) == 0:
@@ -656,6 +837,17 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
                     else:
                         status, reason = "partial", "completion_unconfirmed"
                 else:
+                    current = observe()
+                    if current != before:
+                        # A card changed without changing the count or last
+                        # card; treat as progress and let replacement checks run.
+                        continue
+                    if button_hid:
+                        # The control hid and came back inside the progress
+                        # window (a slow load finishing early on a slow page):
+                        # that is a new state, so click again within budget.
+                        current = prior.copy()
+                        continue
                     status, reason = "partial", "no_progress"
                 break
     except ValueError as exc:
@@ -666,9 +858,16 @@ def _expand_list(page: Any, step: dict[str, Any], remaining_ms: Any, trace: list
         reason = "action_timeout" if type(exc).__name__.endswith("TimeoutError") else "browser_error"
         status = "partial" if count else "unknown"
     finally:
+        cards = list(observed.values())
         trace.append({"event": "list_expansion", "section": section, "status": status,
                       "reason": reason, "observed_count": count, "click_count": clicks,
-                      "replaced": replaced, "observed_cards": list(observed.values()), "at": utc_now()})
+                      "replaced": replaced, "network_driven": network_driven,
+                      "observed_cards_sha256": _cards_digest(cards),
+                      "observed_cards": cards, "at": utc_now()})
+
+
+def _cards_digest(cards: list[dict[str, Any]]) -> str:
+    return hashlib.sha256(json.dumps(cards, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 _OBSERVATION_PROBE_JS = r"""(selector) => {
@@ -734,6 +933,11 @@ def _evidence_snapshot(page: Any, listing_expectation: dict[str, Any] | None = N
             if (computedHidden) {
               copy.setAttribute('hidden', '');
               copy.setAttribute('data-sourceledger-computed-hidden', 'true');
+            }
+            // Struck-through amounts are usually former prices. Record the
+            // computed decoration so extraction need not trust class names.
+            if ((style.textDecorationLine || '').includes('line-through')) {
+              copy.setAttribute('data-sourceledger-computed-line-through', 'true');
             }
           });
           return { html: '<!doctype html>\\n' + clone.outerHTML, probe, captured_at: new Date().toISOString() };
@@ -915,14 +1119,17 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
     try:
         session = None if source.profile_dir else getattr(_browser_thread_state, "session", None)
         with ExitStack() as cleanup:
-            cleanup.enter_context(robots_policy_scope(_robots_cache.get()))
+            # Route callbacks run in Playwright's dispatcher context, where
+            # this thread's context variables are not visible. Pass the job's
+            # robots cache explicitly so navigations reuse its decisions.
+            robots_cache = cleanup.enter_context(robots_policy_scope(_robots_cache.get()))
             robots_client = None
             if source.respect_robots:
-                robots_client = cleanup.enter_context(httpx.Client(
-                    timeout=httpx.Timeout(min(source.timeout_seconds, max(0.1, deadline - time.monotonic()))),
-                    follow_redirects=False, headers={"User-Agent": USER_AGENT}, trust_env=False,
-                ))
-                _require_robots_access(robots_client, source, source.location)
+                pool = _http_pool.get()
+                robots_client = (pool.client() if pool is not None else
+                                 cleanup.enter_context(_new_http_client(min(source.timeout_seconds, max(0.1, deadline - time.monotonic())))))
+                _require_robots_access(robots_client, source, source.location, robots_cache,
+                                       timeout=max(0.1, deadline - time.monotonic()))
             # Unroute and close while Playwright's driver is still running.
             # An outer finally executes too late: __exit__ already stops it.
             if session is not None:
@@ -961,7 +1168,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                             raise _policy_error("navigation_method_denied", "Browser navigation method is not allowed")
                         _check_url(source, request.url)
                         if robots_client is not None:
-                            _require_robots_access(robots_client, source, request.url)
+                            _require_robots_access(robots_client, source, request.url, robots_cache,
+                                                   timeout=max(0.1, deadline - time.monotonic()))
                         # Browser-followed redirects do not reliably trigger a
                         # route callback. Stop at this response and perform the
                         # next navigation explicitly so each hop is checked.
@@ -972,7 +1180,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                                 destination = urljoin(request.url, location)
                                 _check_url(source, destination)
                                 if robots_client is not None:
-                                    _require_robots_access(robots_client, source, destination)
+                                    _require_robots_access(robots_client, source, destination, robots_cache,
+                                                           timeout=max(0.1, deadline - time.monotonic()))
                                 pending_redirect.append(destination)
                                 trace.append({"event": "navigation_redirect_verified", "url": _safe_url(destination), "at": utc_now()})
                                 route.abort("blockedbyclient")
@@ -1075,19 +1284,39 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             if initial_challenge:
                 return challenge_result(initial_challenge, page.url)
 
-            def capture_settled(listing_expectation: dict[str, Any] | None = None) -> dict[str, Any]:
+            def capture_unsettled(reason: str) -> dict[str, Any]:
+                # Keep the rendered DOM, e.g. hundreds of expanded cards, as
+                # review evidence instead of discarding it for the initial
+                # HTTP rows. It is never reported as a settled observation.
+                snapshot = _evidence_snapshot(page)
+                require_navigation_policy()
+                _check_url(source, snapshot['probe']['url'])
+                trace.append({'event': 'observation_unsettled', 'phase': 'final_capture',
+                              'reason': reason, 'at': utc_now()})
+                return snapshot
+
+            def capture_settled(listing_expectation: dict[str, Any] | None = None, *,
+                                allow_unsettled: bool = False) -> dict[str, Any]:
                 # A page-specific row selector narrows the stability probe. Without
                 # one, the visible document is conservative (e.g. a ticking page
                 # can time out rather than manufacture a verified observation).
                 for _ in range(2):
+                    # Leave time to retain an unsettled snapshot after a timeout.
+                    left = remaining_ms() / 1000
+                    available = left - (min(UNSETTLED_CAPTURE_SECONDS, left * 0.2) if allow_unsettled else 0)
                     settled = wait_settled_sync(
                         page, lambda: page.evaluate(_OBSERVATION_PROBE_JS, source.row_selector),
                         ready=lambda value: bool(value.get('text')),
-                        timeout_seconds=min(15, remaining_ms() / 1000),
+                        timeout_seconds=min(15, max(0.5, available)),
                     )
+                    network = settled.get('network') or {}
                     trace.append({'event': 'observation_settlement', 'status': settled['status'],
-                                  'duration_ms': round(settled['elapsed_seconds'] * 1000, 1), 'at': utc_now()})
+                                  'duration_ms': round(settled['elapsed_seconds'] * 1000, 1),
+                                  'pending': network.get('pending'), 'loading': network.get('loading'),
+                                  'at': utc_now()})
                     if settled['status'] != 'settled':
+                        if allow_unsettled:
+                            return capture_unsettled('settle_timeout')
                         raise PlaywrightTimeoutError('Observation did not settle')
                     snapshot = _evidence_snapshot(page, listing_expectation,
                                                   observation=settled['probe'], selector=source.row_selector,
@@ -1096,7 +1325,19 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                         require_navigation_policy()
                         _check_url(source, snapshot['probe']['url'])
                         return snapshot
+                if allow_unsettled:
+                    return capture_unsettled('observation_changed')
                 raise PlaywrightTimeoutError('Observation changed during evidence capture')
+
+            # List expansion and enumeration stop early enough to leave this
+            # reserve for the final capture; otherwise an expanded DOM could
+            # be lost to a deadline in the last settlement wait.
+            final_reserve_ms = (min(FINAL_CAPTURE_RESERVE_SECONDS, source.timeout_seconds * 0.25) * 1000
+                                if any(step.get('action') in _BOUNDED_RECIPE_ACTIONS for step in source.recipe) else 0.0)
+
+            def recipe_remaining_ms() -> float:
+                # Never hand Playwright a zero timeout: zero disables it.
+                return max(1.0, remaining_ms() - final_reserve_ms)
 
             def capture_variant(selections: dict[str, str], selection_values: dict[str, str] | None = None,
                                 listing_expectation: dict[str, Any] | None = None) -> None:
@@ -1145,6 +1386,25 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                         locator = visible
                     try:
                         locator.click(timeout=timeout_ms)
+                    except PlaywrightTimeoutError:
+                        if pending_redirect:
+                            pass
+                        elif step.get('if_visible'):
+                            # Optional targets such as promo pop-ups can fade in on a
+                            # slow page and not be clickable within their short step
+                            # timeout. Retry once; skip when the target went away.
+                            # A target that still blocks the page fails later steps.
+                            optional = page.locator(f':is({selector}):visible')
+                            if optional.count() == 1:
+                                try:
+                                    optional.click(timeout=min(max(requested_ms, 5000), remaining_ms()))
+                                except PlaywrightTimeoutError:
+                                    if optional.count():
+                                        raise
+                            trace.append({'event': 'recipe_step_retried', 'index': index, 'action': action,
+                                          'still_visible': bool(optional.count()), 'at': utc_now()})
+                        else:
+                            raise
                     except Exception:
                         if not pending_redirect:
                             raise
@@ -1168,15 +1428,15 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                     if expected not in actual:
                         raise AssertionError("Browser text assertion failed")
                 elif action == "expand_list":
-                    _expand_list(page, step, remaining_ms, trace)
+                    _expand_list(page, step, recipe_remaining_ms, trace)
                 elif action == "enumerate_options":
-                    enumerate_options(page, step, remaining_ms, capture_variant, trace, source.unavailable_markers)
+                    enumerate_options(page, step, recipe_remaining_ms, capture_variant, trace, source.unavailable_markers)
                 elif action == "enumerate_buttons":
-                    enumerate_buttons(page, step, remaining_ms, capture_variant, trace, source.unavailable_markers)
+                    enumerate_buttons(page, step, recipe_remaining_ms, capture_variant, trace, source.unavailable_markers)
                 elif action == "paginate":
-                    paginate(page, step, remaining_ms, capture_variant, trace)
+                    paginate(page, step, recipe_remaining_ms, capture_variant, trace)
                 elif action == "scroll_list":
-                    scroll_list(page, step, remaining_ms, capture_variant, trace)
+                    scroll_list(page, step, recipe_remaining_ms, capture_variant, trace)
                 if challenge_seen:
                     return challenge_result(challenge_seen, page.url)
                 if pending_redirect:
@@ -1204,7 +1464,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             evidence_started = time.monotonic()
             browser_phase = 'evidence_capture'
             require_navigation_policy()
-            snapshot = capture_settled()
+            snapshot = capture_settled(allow_unsettled=True)
+            unsettled = any(event.get('event') == 'observation_unsettled' for event in trace)
             html = snapshot['html'].encode('utf-8')
             challenge = detect_challenge(html, document_status.get("latest", 200))
             if challenge:
@@ -1226,7 +1487,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             trace.append({"event": "evidence_timing", "duration_ms": round((time.monotonic() - evidence_started) * 1000, 1), "at": utc_now()})
             return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url,
                            fetched_at=snapshot['captured_at'], screenshot=screenshot, trace=trace,
-                           variant_snapshots=variant_snapshots)
+                           variant_snapshots=variant_snapshots,
+                           message=UNSETTLED_MESSAGE if unsettled else "")
     except _AccessChallengeFound as exc:
         return challenge_result(exc.challenge, page.url)
     except PlaywrightTimeoutError:

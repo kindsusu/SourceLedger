@@ -339,3 +339,57 @@ def test_candidate_quality_rejects_unproven_price(proof):
     )
     assert _candidate_quality(candidate)[0] == 0
     assert not _has_sufficient_evidence([candidate])
+
+
+def test_report_export_never_reloads_the_finished_workbook(tmp_path, monkeypatch):
+    import openpyxl
+    from su_crawler import final_report, xlsx_sheets
+    from su_crawler.collection_issues import sync_coverage_issues
+
+    config = demo(tmp_path)
+    run = execute(config)
+    store = Store(tmp_path)
+    try:
+        coverage = [{"url": "https://example.org/item", "source_id": "catalog", "status": "visited",
+                     "sections": [{"section": "offers", "status": "unknown"}]}]
+        store.save_run_coverage(run["id"], coverage)
+        sync_coverage_issues(store, run["id"], coverage)
+        fail = lambda *a, **k: pytest.fail("finished workbook was reloaded")
+        monkeypatch.setattr(openpyxl, "load_workbook", fail)
+        monkeypatch.setattr(final_report, "load_workbook", fail)
+        monkeypatch.setattr(xlsx_sheets, "_replace_openpyxl", fail)
+        result = report_for_run(config, store, run["id"])
+        monkeypatch.undo()
+        assert Path(result["dashboard_path"]).is_file()
+        book = openpyxl.load_workbook(result["report_path"], read_only=True)
+        try:
+            assert book.sheetnames[-2:] == ["Catalog coverage", "Collection Issues"]
+            assert list(book["Collection Issues"].values)[1][3] == "open"
+        finally:
+            book.close()
+    finally:
+        store.close()
+
+
+def test_ledger_indexes_and_atomic_attempt_records(tmp_path):
+    store = Store(tmp_path)
+    try:
+        indexes = {row[0] for row in store.db.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        assert {"observations_run", "observations_task", "attempts_run_source", "browser_submissions_run"} <= indexes
+        plan = store.db.execute("EXPLAIN QUERY PLAN DELETE FROM observations WHERE task_id=?", ("t",)).fetchall()
+        assert any("observations_task" in str(tuple(row)) for row in plan)
+        with store.db:
+            store.db.execute("INSERT INTO runs(id,config_hash,status,started_at,demo) VALUES('r','h','running','now',0)")
+            for task in ("a", "b"):
+                store.db.execute("INSERT INTO tasks(id,run_id,source_id,product_id,status,updated_at) VALUES(?,?,?,?,?,?)",
+                                 (task, "r", "s", task, "queued", "now"))
+        store.record_attempt("r", "s", ["a", "b"], "http", "fetched", "now", {"message": "", "trace": []})
+        assert [row["attempts"] for row in store.tasks("r")] == [1, 1]
+        with pytest.raises(Exception):
+            # A failed attempt record must not leave counted attempts behind.
+            store.record_attempt("missing-run", "s", ["a", "b"], "http", "fetched", "now", {"x": object()})
+        assert [row["attempts"] for row in store.tasks("r")] == [1, 1]
+        store.finish_tasks([("a", "verified", "", "http", []), ("b", "failed", "x", "http", [])])
+        assert [row["status"] for row in store.tasks("r")] == ["verified", "failed"]
+    finally:
+        store.close()

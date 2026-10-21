@@ -245,3 +245,43 @@ def test_many_rows_keep_provenance_and_filter_after_cached_merge(tmp_path):
         assert [rows[n][2] for n in (1, 52, 103)] == [0, 1, 2]
     finally:
         wb.close()
+
+
+def _export_with_summary(tmp_path, demo=False):
+    from su_crawler.models import CollectionConfig, Product, Source
+    from su_crawler.report import _export
+    config = CollectionConfig("t", [Product("p1", "P")], [Source("s1", "S", "web", "https://a.example/p", ["p1"])],
+                              str(tmp_path), str(tmp_path))
+    rows = [{"id": f"o{i}", "task_id": "t", "product_id": "p1", "source_id": "s1", "status": "verified",
+             "amount": "10" if i % 2 else None, "source_url": url, "raw_fields": {"name": "P", "price": "10"},
+             "evidence": {}} for i, url in enumerate(["https://a.example/p", "https://b.example/q", "not a url",
+                                                      None, "https://a.example/r"])]
+    path, summary = _export(config, {"id": "r", "demo": demo}, [{"id": "t", "product_id": "p1", "source_id": "s1"}],
+                            rows, tmp_path / "summary.xlsx", section_coverage=[])
+    stat = path.stat()
+    summary["file"] = [stat.st_size, stat.st_mtime_ns]
+    return path, summary
+
+
+@pytest.mark.parametrize("demo", [False, True])
+def test_exported_summary_matches_streamed_workbook_read(tmp_path, demo):
+    from su_crawler.final_report import workbook_summary
+    path, summary = _export_with_summary(tmp_path, demo)
+    read = workbook_summary(path)
+    assert {key: value for key, value in summary.items() if key != "file"} == read
+
+
+def test_finalize_uses_current_summary_and_ignores_a_stale_one(tmp_path, monkeypatch):
+    from su_crawler import final_report
+    path, summary = _export_with_summary(tmp_path)
+    expected = finalize_reports([path], path)
+    monkeypatch.setattr(final_report, "load_workbook", lambda *a, **k: pytest.fail("workbook reloaded"))
+    supplied = finalize_reports([path], path, metadata={"workbook_summary": summary})
+    assert supplied == expected
+    summary["file"] = [summary["file"][0], summary["file"][1] - 1]  # describes another file state
+    monkeypatch.undo()
+    calls = []
+    original = final_report.workbook_summary
+    monkeypatch.setattr(final_report, "workbook_summary", lambda p: calls.append(p) or original(p))
+    assert finalize_reports([path], path, metadata={"workbook_summary": summary}) == expected
+    assert calls

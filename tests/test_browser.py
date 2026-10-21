@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -33,6 +34,21 @@ class Handler(BaseHTTPRequestHandler):
             <script>setTimeout(() => {document.querySelector('#term').selectedIndex=1;
             document.querySelector('#price').textContent='125';
             document.querySelector('#loader').remove()}, 900)</script></body></html>"""
+            status = 200
+        elif self.path == "/beacon":
+            body = b"""<html><body><div id='price'>100</div>
+            <script>fetch('/hang', {keepalive: true, method: 'GET'}).catch(() => {});</script></body></html>"""
+            status = 200
+        elif self.path == "/promo":
+            body = b"""<html><body><div id='price'>100</div>
+            <div id='promo' style='position:fixed;inset:0;background:#fff'><button id='close'
+              onclick="document.getElementById('promo').remove()">close</button></div>
+            <div id='shield' style='position:fixed;inset:0;z-index:9'></div>
+            <script>setTimeout(() => document.getElementById('shield').remove(), 1500)</script></body></html>"""
+            status = 200
+        elif self.path == "/hang":
+            time.sleep(12)
+            body = b"late"
             status = 200
         else:
             body = PAGE
@@ -149,6 +165,27 @@ def test_browser_snapshot_preserves_choice_identity_and_marks_computed_hidden_wi
     assert 'id="quote" class="css-hidden" hidden="" data-sourceledger-computed-hidden="true"' in snapshot
 
 
+def test_browser_snapshot_marks_computed_line_through_prices():
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as pw:
+        runtime = select_browser_runtime(pw.chromium)
+        if runtime is None:
+            pytest.skip("Browser unavailable")
+        browser = pw.chromium.launch(headless=True, **runtime.launch_options())
+        try:
+            page = browser.new_page()
+            page.set_content("""<style>.was { text-decoration: line-through }</style>
+              <span id="old" class="was">500,000</span><del id="del">450,000</del>
+              <span id="now">400,000</span>""")
+            snapshot = _evidence_html_snapshot(page).decode("utf-8")
+        finally:
+            browser.close()
+    assert 'id="old" class="was" data-sourceledger-computed-line-through="true"' in snapshot
+    assert 'id="del" data-sourceledger-computed-line-through="true"' in snapshot
+    assert '<span id="now">400,000</span>' in snapshot
+
+
 def test_browser_cleanup_unroutes_with_ignored_late_errors_before_closing():
     events = []
 
@@ -183,6 +220,34 @@ def test_generic_collector_waits_for_dynamic_price_and_captures_matching_control
     controls = next(row['controls'] for row in result.trace if row['event'] == 'selected_control_states')
     assert controls[0]['selected_label'] == '24 months'
     assert any(row['event'] == 'observation_settlement' and row['status'] == 'settled' for row in result.trace)
+
+
+def test_keepalive_beacon_does_not_block_observation_settlement(tmp_path):
+    if next(item for item in doctor() if item['backend'] == 'playwright')['status'] != 'available':
+        pytest.skip('Browser unavailable')
+    with server() as url:
+        source = Source(id='beacon', name='beacon', kind='web', location=url + '/beacon',
+                        product_ids=[], allowed_domains=['127.0.0.1'], internal=True,
+                        respect_robots=False, timeout_seconds=10)
+        result = collect(source, str(tmp_path), 'playwright')
+    assert result.status == 'fetched', result.message
+    settlement = next(row for row in result.trace if row['event'] == 'observation_settlement')
+    assert settlement['status'] == 'settled' and settlement['pending'] == 0
+
+
+def test_optional_click_that_is_briefly_unclickable_is_retried(tmp_path):
+    if next(item for item in doctor() if item['backend'] == 'playwright')['status'] != 'available':
+        pytest.skip('Browser unavailable')
+    with server() as url:
+        source = Source(id='promo', name='promo', kind='web', location=url + '/promo',
+                        product_ids=[], allowed_domains=['127.0.0.1'], internal=True,
+                        respect_robots=False, timeout_seconds=20, row_selector='#price',
+                        recipe=[{'action': 'click', 'selector': '#close', 'if_visible': True,
+                                 'timeout_seconds': 1}])
+        result = collect(source, str(tmp_path), 'playwright')
+    assert result.status == 'fetched', result.message
+    assert any(row['event'] == 'recipe_step_retried' and row['still_visible'] is False for row in result.trace)
+    assert b'id="promo"' not in result.content
 
 
 def test_atomic_snapshot_rejects_changed_observation():

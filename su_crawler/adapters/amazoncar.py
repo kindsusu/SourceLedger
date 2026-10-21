@@ -173,27 +173,38 @@ def extract_long_term(result: FetchResult, source: Source) -> list[Candidate]:
         price_raw = visible_text(price_span)
         price_match = _PRICE.fullmatch(price_raw or "")
         term_node = next((s for s in button.find_all("span") if _TERM.fullmatch(visible_text(s) or "")), None)
-        if term_node is None:
-            continue
         locator = f'css:div[class*="choice-box"]:term[{index}]'
-        fields: dict[str, str] = {
-            "item_id": item_id, "contract_mode": mode_raw,
-            "term_months": term_match.group(1), **conditions,
-        }
+        fields: dict[str, str] = {"item_id": item_id, "contract_mode": mode_raw}
         evidence: dict[str, dict[str, object]] = {
             "item_id": {"location": "url:path", "raw": item_id, "source_text": result.final_url or source.location,
                         "display_state": "not_applicable", "proof_kind": "source_identity"},
             "contract_mode": _proof(mode_raw, 'css:div[class*="choice-rent-lease"] button[class*="active"]',
                                     mode_button, proof_mode),
-            "term_months": _proof(visible_text(term_node) or "", locator + " span:term", term_node,
-                                  proof_mode, rule="korean_months", source_text=raw),
-            **condition_proofs,
         }
+        terms = set(_TERM.findall(raw))
+        if term_node is not None:
+            fields["term_months"] = term_match.group(1)
+            evidence["term_months"] = _proof(visible_text(term_node) or "", locator + " span:term", term_node,
+                                             proof_mode, rule="korean_months", source_text=raw)
+        elif len(terms) == 1:
+            # Displayed in the button text, but not as its own label element.
+            fields["term_months"] = next(iter(terms))
+            evidence["term_months"] = _proof(term_match.group(0), locator, button, proof_mode,
+                                             rule="korean_months", source_text=raw)
+        fields.update(conditions)
+        evidence.update(condition_proofs)
         if name_node is not None:
             fields["name"] = visible_text(name_node) or ""
             evidence["name"] = _proof(fields["name"], 'css:h1[class*="name"]', name_node, proof_mode)
         flags = [*condition_flags, *capture_flags]
-        if price_match and price_span is not None:
+        if term_node is None:
+            # The period label is not its own element, so the price cannot be
+            # bound to it exactly. Keep the displayed option with a null price.
+            flags.append("term_label_not_exact_span")
+            evidence["price"] = {"raw": None, "location": locator, "source_text": raw,
+                                 "display_state": display_state(button, proof_mode)[0],
+                                 "proof_kind": "rendered_text" if proof_mode == "rendered_dom" else "html_text"}
+        elif price_match and price_span is not None:
             fields["price"] = price_match.group(1).replace(",", "")
             evidence["price"] = _proof(price_raw or "", locator + ' span[class*="price"]', price_span,
                                        proof_mode, rule="korean_won_amount", source_text=raw)
@@ -252,13 +263,23 @@ def extract_short_term(result: FetchResult, source: Source) -> list[Candidate]:
             continue
         for column, (duration, cell) in enumerate(zip(_DURATIONS, prices), start=1):
             raw = visible_text(cell) or ""
-            if not re.fullmatch(r"[\d,]+", raw):
+            if not raw:
                 continue
+            numeric = bool(re.fullmatch(r"[\d,]+", raw))
             locator = f"css:table:tariff tbody tr:{row_index} td:price[{column}]"
-            fields = {"price": raw, "item_id": vehicle_raw, "vehicle_class": vehicle_raw,
+            fields = {"item_id": vehicle_raw, "vehicle_class": vehicle_raw,
                       "tariff_category": category, "rental_duration": duration}
+            if numeric:
+                fields = {"price": raw, **fields}
+            else:
+                # "문의" or "-": a displayed cell without a numeric tariff stays a
+                # null-price candidate with its wording, never 0 or dropped.
+                fields["availability"] = raw
+            price_proof = _proof(raw, locator, cell, proof_mode)
+            if not numeric:
+                price_proof.update(raw=None, source_text=raw)
             evidence = {
-                "price": _proof(raw, locator, cell, proof_mode),
+                "price": price_proof,
                 "item_id": _proof(vehicle_raw, f"css:table:tariff tbody tr:{row_index} td:vehicle", vehicle, proof_mode),
                 "vehicle_class": _proof(vehicle_raw, f"css:table:tariff tbody tr:{row_index} td:vehicle", vehicle, proof_mode),
                 "tariff_category": _proof(category, f"css:table:tariff tbody tr:{row_index} td:category(rowspan)",
@@ -274,6 +295,8 @@ def extract_short_term(result: FetchResult, source: Source) -> list[Candidate]:
                 fields["tax"] = "excluded"
                 evidence["tax"] = _proof("부가세 별도", "css:p:short-term-tax", tax_node, proof_mode,
                                          rule="korean_vat_excluded")
+            if not numeric:
+                evidence["availability"] = _proof(raw, locator, cell, proof_mode)
             if eligibility_node is not None:
                 fields["eligibility"] = "단기렌트는 아마존카 기존 고객에게만 제공됩니다."
                 evidence["eligibility"] = _proof(fields["eligibility"], "css:p:short-term-eligibility",
@@ -282,7 +305,8 @@ def extract_short_term(result: FetchResult, source: Source) -> list[Candidate]:
             # Preserve this as a nonmonthly tariff; comparison is reviewed.
             results.append(Candidate(fields, evidence, locator, "amazoncar_rendered_tariff",
                                      source_visibility="visible" if proof_mode == "rendered_dom" else "unconfirmed",
-                                     evidence_mode=proof_mode))
+                                     evidence_mode=proof_mode,
+                                     review_flags=[] if numeric else ["tariff_price_not_numeric"]))
     return results
 
 

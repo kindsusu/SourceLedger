@@ -235,7 +235,15 @@ Claude Code outside this repository, add `--project-dir "C:\work\my-project"`.
 The connector has no paid service requirement and does not auto-start a
 worker. See [local assistant connections](docs/ASSISTANT_CONNECTIONS.md) for
 configuration targets, safe backups, queued-job commands, and the verification
-scope.
+scope. Use `connect --client claude-code --scope user` to print the
+equivalent `claude mcp add --scope user` command for all Claude Code projects.
+
+MCP responses are compact by default; `import_plan_urls` adds a URL list file
+to a plan without retyping it. For unattended runs with no model, use
+`source-ledger collect-plan --urls-file urls.txt --industry ... --product ... --market ... --yes`
+and `source-ledger assistant wait`; see
+[unattended collection](docs/ASSISTANT_CONNECTIONS.md#unattended-collection-without-a-model).
+Claude Code users can start from `CLAUDE.md` and the `.claude/` kit.
 
 ## Fixed-configuration MCP
 

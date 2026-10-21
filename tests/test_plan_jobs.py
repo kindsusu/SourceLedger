@@ -132,5 +132,5 @@ def test_mcp_preview_edit_confirmation_without_external_model(tmp_path, monkeypa
     assert call("list_recent_jobs", {})["jobs"] == []
     plan = call("confirm_research_plan", {"plan_id": plan["id"], "expected_revision": plan["revision"], "user_confirmed": True})["plan"]
     result = call("start_research_plan", {"plan_id": plan["id"], "expected_revision": plan["revision"]})
-    assert result["job"]["arguments"]["plan_fingerprint"] == plans.fingerprint(plan)
+    assert result["job"]["arguments"]["plan_fingerprint"] == plan["plan_fingerprint"]
     assert len(call("list_research_plans", {})["plans"]) == 1

@@ -76,6 +76,38 @@ def test_challenge_not_retried_as_rate_limit():
     assert _classify('blocked', 'access_challenge')[0] == 'browser_handoff'
 
 
+def test_temporary_dns_failure_is_transient_but_other_policy_denials_are_not():
+    from su_crawler.catalog_scheduler import _transient
+    from su_crawler.models import FetchResult
+
+    def denied(code):
+        return FetchResult('s', 'policy_denied', 'http', message=f'Request denied by policy ({code})',
+                           trace=[{'event': 'policy_denied', 'code': code}])
+
+    assert _transient(denied('dns_temporary_failure'))
+    assert not _transient(denied('dns_resolution_failed'))  # the name does not exist
+    assert not _transient(denied('robots_disallowed'))
+
+
+def test_resolver_try_again_is_classified_as_temporary(monkeypatch):
+    import socket
+    from su_crawler import collectors
+
+    def fail(errno):
+        def getaddrinfo(*args, **kwargs):
+            raise socket.gaierror(errno, 'resolver')
+        return getaddrinfo
+
+    monkeypatch.setattr(collectors.socket, 'getaddrinfo', fail(11002))
+    with pytest.raises(collectors.PolicyError) as temporary:
+        collectors._resolved_addresses('example.com', 443)
+    assert temporary.value.code == 'dns_temporary_failure'
+    monkeypatch.setattr(collectors.socket, 'getaddrinfo', fail(11001))
+    with pytest.raises(collectors.PolicyError) as missing:
+        collectors._resolved_addresses('example.invalid', 443)
+    assert missing.value.code == 'dns_resolution_failed'
+
+
 def test_catalog_challenge_stops_backend_fallback(tmp_path):
     from su_crawler.catalog_collection import collect_plan
     from su_crawler.models import FetchResult

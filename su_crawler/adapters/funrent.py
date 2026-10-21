@@ -30,7 +30,8 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
     basis_text = f"{cap_raw or ''} {amount_raw or ''}"
     if not amount_raw or amount_raw == "—" or "원" not in amount_raw or "월" not in basis_text:
         return []
-    price = won(amount_raw)
+    # The estimate may be floor-qualified; flags below record that.
+    price = won(amount_raw, allow_from=True)
     car_id = car.get("value")
     dep_id = dep.get("value")
     term_id = term.get("value")

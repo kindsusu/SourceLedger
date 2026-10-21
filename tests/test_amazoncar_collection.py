@@ -21,6 +21,16 @@ from su_crawler.amazoncar_collection import (
 )
 
 
+
+def _launch_options(chromium):
+    """Use the same browser selection as the collector (managed Chromium, else system Chrome/Edge)."""
+    from su_crawler.browser_runtime import select_browser_runtime
+    runtime = select_browser_runtime(chromium)
+    if runtime is None:
+        import pytest
+        pytest.skip('Browser unavailable')
+    return runtime.launch_options()
+
 def sample_item():
     return {"href": "/cars/new/000001/01", "text": "Sample trim"}
 
@@ -248,7 +258,7 @@ def test_atomic_capture_keeps_displayed_price_and_html_from_one_dom(tmp_path):
 
     async def check():
         async with playwright.async_playwright() as driver:
-            browser = await driver.chromium.launch(headless=True)
+            browser = await driver.chromium.launch(headless=True, **_launch_options(driver.chromium))
             try:
                 page = await browser.new_page()
                 await page.set_content("""<h1>Example car</h1>
@@ -283,7 +293,7 @@ def test_no_displayed_quote_is_kept_as_reviewable_mode(tmp_path, monkeypatch):
 
     async def check():
         async with playwright.async_playwright() as driver:
-            browser = await driver.chromium.launch(headless=True)
+            browser = await driver.chromium.launch(headless=True, **_launch_options(driver.chromium))
             try:
                 page = await browser.new_page()
                 await collection.install_tracker_async(page)

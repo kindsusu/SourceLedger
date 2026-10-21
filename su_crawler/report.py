@@ -3,18 +3,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
-from io import BytesIO
 import json
 import os
 from pathlib import Path
 import tempfile
 from typing import Any
 from urllib.parse import urlparse
-import zipfile
 
 import xlsxwriter
 
 from .models import CollectionConfig
+from .xlsx_sheets import SheetSpec, cell_text, replace_sheets, validate_package, write_xlsxwriter
 
 
 SHEETS = ("Run Summary", "Collection Status", "Price Comparison", "Observation History", "Source Evidence", "Review Required")
@@ -77,27 +76,47 @@ def _decimal(value: Any) -> Decimal | None:
         return None
 
 
-def _write_decimal(ws: Any, row: int, col: int, value: Any, number_fmt: Any) -> None:
-    """Use a numeric cell when Excel can preserve it; always keep raw elsewhere."""
+def _write_decimal(ws: Any, row: int, col: int, value: Any, number_fmt: Any) -> float | None:
+    """Use a numeric cell when Excel can preserve it; always keep raw elsewhere.
+
+    Returns the number written, or None for a blank cell.
+    """
     dec = _decimal(value)
     if dec is None:
         ws.write_blank(row, col, None)
-        return
+        return None
     # Excel stores IEEE-754 numbers.  Avoid silently rounding long Decimal IDs/prices.
     digits = len(dec.as_tuple().digits)
     if digits <= 15:
         places = max(0, -dec.normalize().as_tuple().exponent)
         cell_format = number_fmt.get(places, number_fmt['scientific']) if isinstance(number_fmt, dict) else number_fmt
         ws.write_number(row, col, float(dec), cell_format)
-    else:
-        ws.write_blank(row, col, None)
+        return float(dec)
+    ws.write_blank(row, col, None)
+    return None
 
 
-def _write_value(ws: Any, row: int, col: int, value: Any, text_fmt: Any | None = None) -> None:
+def _write_value(ws: Any, row: int, col: int, value: Any, text_fmt: Any | None = None) -> str | None:
+    """Write literal text; return exactly what the cell holds (None when blank)."""
     if value is None or value == "":
         ws.write_blank(row, col, None, text_fmt)
-        return
-    ws.write_string(row, col, _text(value), text_fmt)
+        return None
+    # Excel cells hold 32,767 characters. Cut explicitly with a visible marker;
+    # SQLite keeps the full field evidence and raw values.
+    text = cell_text(_text(value))
+    ws.write_string(row, col, text, text_fmt)
+    return text
+
+
+def _write_link(ws: Any, row: int, col: int, value: Any, link_fmt: Any, text_fmt: Any) -> str | None:
+    """Write a safe http(s) link, or the literal text when Excel cannot hold the link."""
+    url = _safe_url(value)
+    display = cell_text(_text(value))
+    # xlsxwriter skips URLs over Excel's 2,079-character limit; keep them as text.
+    if url and len(url) <= 2079 and cell_text(url) == url:
+        if ws.write_url(row, col, url, link_fmt, display) >= 0:
+            return display
+    return _write_value(ws, row, col, value, text_fmt)
 
 
 def _setup_sheet(ws: Any, headers: list[str], formats: dict[str, Any], demo: bool) -> int:
@@ -122,16 +141,45 @@ def _raw_price(obs: dict[str, Any]) -> Any:
     return raw.get("price") if isinstance(raw, dict) else None
 
 
+HIDDEN_PRICE_NOTE = "Price field evidence is hidden in the source display; amount left blank for review."
+HIDDEN_ESTIMATE_NOTE = "Estimate field evidence is hidden in the source display; estimate left blank for review."
+
+
+def _field_hidden(obs: dict[str, Any], name: str) -> bool:
+    """A field captured from a hidden DOM node is never shown as an amount."""
+    evidence = obs.get("evidence")
+    proof = evidence.get(name) if isinstance(evidence, dict) else None
+    return isinstance(proof, dict) and proof.get("display_state") == "hidden"
+
+
+def _hidden_notes(obs: dict[str, Any]) -> list[str]:
+    notes = []
+    if _field_hidden(obs, "price"):
+        notes.append(HIDDEN_PRICE_NOTE)
+    if obs.get("value_origin") == "calculator_estimate" and _field_hidden(obs, "derived_values.estimated_price"):
+        notes.append(HIDDEN_ESTIMATE_NOTE)
+    return notes
+
+
+def _reason(obs: dict[str, Any]) -> Any:
+    notes = _hidden_notes(obs)
+    if not notes:
+        return obs.get("reason")
+    return "; ".join(([str(obs["reason"])] if obs.get("reason") else []) + notes)
+
+
 def _observed_amount(obs: dict[str, Any], *, include_review: bool = False) -> Any:
     if ((obs.get("status") == "verified" or include_review and obs.get("status") == "review")
             and obs.get("value_origin", "observed") == "observed"
-            and obs.get("source_visibility") != "hidden"):
+            and obs.get("source_visibility") != "hidden"
+            and not _field_hidden(obs, "price")):
         return obs.get("amount")
     return None
 
 
 def _estimated_amount(obs: dict[str, Any]) -> Any:
-    if obs.get("value_origin") == "calculator_estimate" and obs.get("source_visibility") != "hidden":
+    if (obs.get("value_origin") == "calculator_estimate" and obs.get("source_visibility") != "hidden"
+            and not _field_hidden(obs, "derived_values.estimated_price")):
         return obs.get("derived_amount")
     return None
 
@@ -145,30 +193,16 @@ def _comparison_evidence_ok(obs: dict[str, Any]) -> bool:
     return mode in {"unknown", "structured_record", "document_text"}
 
 
-def _validate_xlsx(path: Path) -> None:
-    with zipfile.ZipFile(path) as archive:
-        if archive.testzip() is not None or "[Content_Types].xml" not in archive.namelist():
-            raise ValueError("invalid XLSX archive")
+def _validate_xlsx(path: Path, *, deep: bool = True) -> None:
+    """Check the package; ``deep`` re-reads every member to verify its CRC."""
+    validate_package(Path(path), deep=deep)
 
 
-def append_section_coverage(path: str | Path, coverage: list[dict[str, Any]]) -> Path:
-    """Replace the catalog section audit sheet in an existing report atomically.
-
-    Coverage is page based; each page may contain several section records.
-    """
-    from openpyxl import load_workbook
-    from openpyxl.styles import Font, PatternFill
-
-    path = Path(path)
-    wb = load_workbook(BytesIO(path.read_bytes()))
-    title = "Catalog coverage"
-    if title in wb:
-        del wb[title]
-    ws = wb.create_sheet(title)
-    headers = ["Page URL", "Section", "Status", "Observed offers", "Extracted offers",
-               "Current prices", "Unparsed offers", "Expansion clicks", "Reason",
-               "Evidence reference", "Snapshot reference", "Expected offers"]
-    ws.append(headers)
+def _coverage_spec(coverage: list[dict[str, Any]]) -> SheetSpec:
+    """Catalog section audit; coverage is page based with several sections each."""
+    rows: list[list[Any]] = [["Page URL", "Section", "Status", "Observed offers", "Extracted offers",
+                              "Current prices", "Unparsed offers", "Expansion clicks", "Reason",
+                              "Evidence reference", "Snapshot reference", "Expected offers"]]
     for page in coverage:
         if not isinstance(page, dict):
             continue
@@ -186,127 +220,63 @@ def append_section_coverage(path: str | Path, coverage: list[dict[str, Any]]) ->
         for section in sections:
             evidence = section.get("evidence") or section.get("evidence_ref") or section.get("evidence_path")
             snapshot = section.get("snapshot_path") or section.get("snapshot_ref") or page.get("evidence_path")
-            ws.append([_text(page.get("url") or page.get("source_url")),
-                       _text(section.get("section")), _text(section.get("status") or "unknown"),
-                       section.get("observed_count"), section.get("extracted_count"),
-                       section.get("price_count"), section.get("unparsed_count"),
-                       section.get("click_count"), _text(section.get("reason")),
-                       _text(evidence), _text(snapshot), section.get("expected_count")])
-    for cell in ws[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="1F4E78")
-    for col, width in {"A": 48, "B": 28, "C": 16, "D": 18, "E": 18,
-                       "F": 18, "G": 18, "H": 18, "I": 48, "J": 50, "K": 50, "L": 18}.items():
-        ws.column_dimensions[col].width = width
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:L{max(ws.max_row, 1)}"
-    fd, tmp_name = tempfile.mkstemp(prefix=path.stem + ".", suffix=".xlsx", dir=path.parent)
-    os.close(fd)
-    temp = Path(tmp_name)
-    try:
-        wb.save(temp)
-        _validate_xlsx(temp)
-        os.replace(temp, path)
-    finally:
-        wb.close()
-        temp.unlink(missing_ok=True)
-    append_collection_issues(path, [issue for page in coverage if isinstance(page, dict)
-                                    for issue in (page.get("collection_issues") or [])
-                                    if isinstance(issue, dict)])
-    return path
+            rows.append([_text(page.get("url") or page.get("source_url")),
+                         _text(section.get("section")), _text(section.get("status") or "unknown"),
+                         section.get("observed_count"), section.get("extracted_count"),
+                         section.get("price_count"), section.get("unparsed_count"),
+                         section.get("click_count"), _text(section.get("reason")),
+                         _text(evidence), _text(snapshot), section.get("expected_count")])
+    widths = dict(enumerate((48, 28, 16, 18, 18, 18, 18, 18, 48, 50, 50, 18), 1))
+    return SheetSpec("Catalog coverage", rows, widths=widths, freeze=(2, 1),
+                     auto_filter=f"A1:L{len(rows)}", row_styles={1: "header_blue"})
 
 
-def append_collection_issues(path: str | Path, issues: list[dict[str, Any]]) -> Path:
-    """Replace the actionable issue ledger in an existing XLSX report atomically."""
-    from openpyxl import load_workbook
-    from openpyxl.styles import Font, PatternFill
+def _coverage_issues(coverage: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [issue for page in coverage if isinstance(page, dict)
+            for issue in (page.get("collection_issues") or []) if isinstance(issue, dict)]
 
-    path = Path(path)
-    wb = load_workbook(BytesIO(path.read_bytes()))
-    title = "Collection Issues"
-    if title in wb:
-        del wb[title]
-    ws = wb.create_sheet(title)
-    headers = ["Issue ID", "Page URL", "Section", "Status", "Category", "Reason",
-               "Next action", "Attempts", "Evidence reference"]
-    ws.append(headers)
+
+def _issues_spec(issues: list[dict[str, Any]]) -> SheetSpec:
+    rows: list[list[Any]] = [["Issue ID", "Page URL", "Section", "Status", "Category", "Reason",
+                              "Next action", "Attempts", "Evidence reference"]]
     for issue in issues:
         if not isinstance(issue, dict):
             continue
-        ws.append([_text(issue.get("id")), _text(issue.get("url")), _text(issue.get("section")),
-                   _text(issue.get("status")), _text(issue.get("category")), _text(issue.get("reason")),
-                   _text(issue.get("next_action")), issue.get("attempt_count"),
-                   _text(issue.get("evidence_ref"))])
-        for cell in ws[ws.max_row]:
-            if isinstance(cell.value, str):
-                cell.data_type = "s"  # Source text must never become an Excel formula.
-    for cell in ws[1]:
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill("solid", fgColor="1F4E78")
-    for col, width in {"A": 30, "B": 52, "C": 26, "D": 16, "E": 24,
-                       "F": 52, "G": 52, "H": 12, "I": 48}.items():
-        ws.column_dimensions[col].width = width
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:I{max(ws.max_row, 1)}"
-    fd, tmp_name = tempfile.mkstemp(prefix=path.stem + ".", suffix=".xlsx", dir=path.parent)
-    os.close(fd)
-    temp = Path(tmp_name)
-    try:
-        wb.save(temp)
-        _validate_xlsx(temp)
-        os.replace(temp, path)
-    finally:
-        wb.close()
-        temp.unlink(missing_ok=True)
-    return path
+        rows.append([_text(issue.get("id")), _text(issue.get("url")), _text(issue.get("section")),
+                     _text(issue.get("status")), _text(issue.get("category")), _text(issue.get("reason")),
+                     _text(issue.get("next_action")), issue.get("attempt_count"),
+                     _text(issue.get("evidence_ref"))])
+    widths = dict(enumerate((30, 52, 26, 16, 24, 52, 52, 12, 48), 1))
+    return SheetSpec("Collection Issues", rows, widths=widths, freeze=(2, 1),
+                     auto_filter=f"A1:I{len(rows)}", row_styles={1: "header_blue"})
 
 
-def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
+def _refresh_specs(refresh: dict[str, Any]) -> list[SheetSpec]:
     """Present revalidation separately from prices; source strings remain literal."""
-    from openpyxl import load_workbook
-    from openpyxl.styles import Font, Alignment, PatternFill
     from .result_view import FIELD_LABELS
-    path = Path(path)
-    wb = load_workbook(BytesIO(path.read_bytes()))
-    title = "Collection Changes"
-    if title in wb:
-        del wb[title]
-    ws = wb.create_sheet(title)
-    ws.append(["Scope", refresh.get('scope')])
-    ws.append(["Mode", refresh.get('effective_mode'), "Reason", refresh.get('reason')])
     incremental = (refresh.get('policy') or {}).get('mode', refresh.get('effective_mode')) == 'incremental'
-    ws.append(["Last full check (UTC)", refresh.get('last_full_at'),
-               "Next interval full check (incremental only, UTC)",
-               refresh.get('next_full_due_at') if incremental else None])
-    ws.append(["Note", "Removed candidates are review items, not confirmed discontinued products. Revalidated evidence is not a fresh source capture.",
-               "Approved URLs rechecked", refresh.get('approved_urls_rechecked'),
-               "Inventory completeness verified", refresh.get('inventory_completeness_verified')])
-    headers = ["Page URL", "Check status", "Added", "Changed", "Unchanged", "Unavailable", "Removed candidate",
-               "Original capture (UTC)", "Last checked (UTC)"]
-    ws.append(headers)
+    rows: list[list[Any]] = [
+        ["Scope", refresh.get('scope')],
+        ["Mode", refresh.get('effective_mode'), "Reason", refresh.get('reason')],
+        ["Last full check (UTC)", refresh.get('last_full_at'),
+         "Next interval full check (incremental only, UTC)",
+         refresh.get('next_full_due_at') if incremental else None],
+        ["Note", "Removed candidates are review items, not confirmed discontinued products. Revalidated evidence is not a fresh source capture.",
+         "Approved URLs rechecked", refresh.get('approved_urls_rechecked'),
+         "Inventory completeness verified", refresh.get('inventory_completeness_verified')],
+        ["Page URL", "Check status", "Added", "Changed", "Unchanged", "Unavailable", "Removed candidate",
+         "Original capture (UTC)", "Last checked (UTC)"],
+    ]
     for item in refresh.get('changes', []):
-        ws.append([item.get(key) for key in ('url', 'status', 'added', 'changed', 'unchanged', 'unavailable',
-                    'removed_candidate', 'original_fetched_at', 'checked_at')])
-    for row in ws:
-        for cell in row:
-            if isinstance(cell.value, str):
-                cell.data_type = 's'
-    for cell in ws[5]:
-        cell.font = Font(bold=True)
-    ws.freeze_panes = 'A6'
-    ws.auto_filter.ref = f'A5:I{max(5, ws.max_row)}'
-    for col in ('A', 'H', 'I'):
-        ws.column_dimensions[col].width = 38
-    for col in ('B', 'C', 'D', 'E', 'F', 'G'):
-        ws.column_dimensions[col].width = 18
-    title = 'Item Changes'
-    if title in wb:
-        del wb[title]
-    items = wb.create_sheet(title)
-    items.append(['Status', 'Product', 'Source identity', 'Previous price', 'Current price',
-                  'Previous currency', 'Current currency', 'Previous conditions', 'Current conditions',
-                  'Changed fields', 'Reason', 'Page URL', 'Previous checked (UTC)', 'Checked (UTC)'])
+        rows.append([item.get(key) for key in ('url', 'status', 'added', 'changed', 'unchanged', 'unavailable',
+                     'removed_candidate', 'original_fetched_at', 'checked_at')])
+    widths = {1: 38, 8: 38, 9: 38, **{col: 18 for col in range(2, 8)}}
+    changes = SheetSpec("Collection Changes", rows, widths=widths, freeze=(6, 1),
+                        auto_filter=f"A5:I{max(5, len(rows))}", row_styles={5: "bold"})
 
+    items: list[list[Any]] = [['Status', 'Product', 'Source identity', 'Previous price', 'Current price',
+                               'Previous currency', 'Current currency', 'Previous conditions', 'Current conditions',
+                               'Changed fields', 'Reason', 'Page URL', 'Previous checked (UTC)', 'Checked (UTC)']]
     status_labels = {'baseline': 'First capture', 'added': 'Product added', 'price_changed': 'Price changed',
                      'price_and_conditions_changed': 'Price and observed conditions changed',
                      'conditions_changed': 'Conditions changed', 'unavailable': 'Unavailable for comparison',
@@ -381,30 +351,30 @@ def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
                       conditions(item.get('before')), conditions(item.get('after')),
                       ', '.join(label(key) for key in item.get('changed_fields', [])), reason, item.get('url'),
                       item.get('previous_checked_at'), item.get('checked_at')])
-    for row in items:
-        for cell in row:
-            if isinstance(cell.value, str):
-                cell.data_type = 's'
-            cell.alignment = Alignment(wrap_text=True, vertical='top')
-    for cell in items[1]:
-        cell.font = Font(bold=True, color='FFFFFF')
-        cell.fill = PatternFill('solid', fgColor='17365D')
-    items.row_dimensions[1].height = 32
-    items.freeze_panes = 'A2'
-    items.auto_filter.ref = f'A1:N{max(1, items.max_row)}'
-    for column in 'ABCDEFGHIJKLMN':
-        items.column_dimensions[column].width = 26 if column not in {'H', 'I', 'K', 'L'} else 48
-    fd, name = tempfile.mkstemp(prefix=path.stem + '.', suffix='.xlsx', dir=path.parent)
-    os.close(fd)
-    temp = Path(name)
-    try:
-        wb.save(temp)
-        _validate_xlsx(temp)
-        os.replace(temp, path)
-    finally:
-        wb.close()
-        temp.unlink(missing_ok=True)
-    return path
+    item_widths = {col: (48 if col in {8, 9, 11, 12} else 26) for col in range(1, 15)}
+    item_sheet = SheetSpec("Item Changes", items, widths=item_widths, freeze=(2, 1),
+                           auto_filter=f"A1:N{max(1, len(items))}", row_styles={1: "header_navy_wrap"},
+                           cell_style="wrap_top", row_heights={1: 32})
+    return [changes, item_sheet]
+
+
+def append_section_coverage(path: str | Path, coverage: list[dict[str, Any]]) -> Path:
+    """Replace the catalog section audit sheet in an existing report atomically.
+
+    Coverage is page based; each page may contain several section records. The
+    issue ledger embedded in the coverage is replaced in the same write.
+    """
+    return replace_sheets(path, [_coverage_spec(coverage), _issues_spec(_coverage_issues(coverage))])
+
+
+def append_collection_issues(path: str | Path, issues: list[dict[str, Any]]) -> Path:
+    """Replace the actionable issue ledger in an existing XLSX report atomically."""
+    return replace_sheets(path, [_issues_spec(issues)])
+
+
+def append_refresh_summary(path: str | Path, refresh: dict[str, Any]) -> Path:
+    """Present revalidation separately from prices; source strings remain literal."""
+    return replace_sheets(path, _refresh_specs(refresh))
 
 
 def export_report(
@@ -414,11 +384,36 @@ def export_report(
     observations: list[dict[str, Any]],
     output_path: Path,
     *, supplemental_sheets: list[dict[str, Any]] | None = None,
+    section_coverage: list[dict[str, Any]] | None = None,
+    collection_issues: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Write an auditable report atomically and return its final path.
 
     Unknown values stay blank.  The input observations must already contain
     only extracted source facts; this exporter does no estimation or matching.
+    ``section_coverage`` and ``collection_issues`` add the same audit sheets
+    as ``append_section_coverage``/``append_collection_issues`` in this one
+    write, so a pipeline export never re-opens the finished workbook.
+    """
+    return _export(config, run, tasks, observations, output_path, supplemental_sheets=supplemental_sheets,
+                   section_coverage=section_coverage, collection_issues=collection_issues)[0]
+
+
+def _export(
+    config: CollectionConfig,
+    run: dict[str, Any],
+    tasks: list[dict[str, Any]],
+    observations: list[dict[str, Any]],
+    output_path: Path,
+    *, supplemental_sheets: list[dict[str, Any]] | None = None,
+    section_coverage: list[dict[str, Any]] | None = None,
+    collection_issues: list[dict[str, Any]] | None = None,
+    deep_validation: bool = True,
+) -> tuple[Path, dict[str, Any]]:
+    """Export and return the dashboard inputs read from what was written.
+
+    The summary mirrors ``final_report.workbook_summary`` exactly, so the
+    finished workbook does not have to be parsed again for the dashboard.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -462,6 +457,7 @@ def export_report(
                    "Recorded Conditions", "Missing Conditions", "Supporting Evidence Count", "Conflicting Values", "Source URL", "Observation ID",
                    "Price Field Evidence", "Declared Normalization", "Comparison Readiness"]
         ws = wb.add_worksheet("Results"); row = _setup_sheet(ws, headers, fmts, demo)
+        result_cells: list[list[Any]] = []
         for obs in presentation["rows"]:
             fields = obs.get("raw_fields") or {}
             recorded = "\n".join(f'{item["label"]}: {item["value"]}' + (" (normalized from browser text)" if item["status"] == "derived" else "")
@@ -482,16 +478,20 @@ def export_report(
                 recorded = f'Displayed price text (review required): {fields["price"]}' + ("\n" + recorded if recorded else "")
             if obs.get("price_kind") == "from":
                 recorded = "Displayed price: starting at (source uses ~); exact quote unknown" + ("\n" + recorded if recorded else "")
+            if _hidden_notes(obs):
+                recorded = "\n".join(_hidden_notes(obs)) + ("\n" + recorded if recorded else "")
             values = [fields.get("name") or obs.get("product_id"), obs.get("source_name"),
                       _observed_amount(obs, include_review=True), obs.get("currency"), obs["result_status"],
                       recorded, "\n".join(FIELD_LABELS.get(key, key) for key in obs["missing_conditions"]), len(obs["supporting_evidence"]),
                       "\n".join(f'{FIELD_LABELS.get(c["field"], c["field"])}: {c["observed"]} / {c["submitted"]}' for c in obs["conflicts"]), obs.get("source_url"), obs["id"],
                       obs["field_validation"]["price_evidence"], obs["field_validation"]["normalization"],
                       obs["field_validation"]["comparison"]]
+            written = []
             for col, value in enumerate(values):
-                if col in (2, 7): _write_decimal(ws, row, col, value, fmts["number"])
-                elif col == 9 and _safe_url(value): ws.write_url(row, col, value, fmts["link"], value)
-                else: _write_value(ws, row, col, value, fmts["text"])
+                if col in (2, 7): written.append(_write_decimal(ws, row, col, value, fmts["number"]))
+                elif col == 9: written.append(_write_link(ws, row, col, value, fmts["link"], fmts["text"]))
+                else: written.append(_write_value(ws, row, col, value, fmts["text"]))
+            result_cells.append([written[9], written[2] is not None])
             row += 1
         ws.set_column(0, 1, 28); ws.set_column(2, 4, 23); ws.set_column(5, 6, 46)
         ws.set_column(7, 7, 20); ws.set_column(8, 10, 42)
@@ -560,7 +560,7 @@ def export_report(
                 if col in (4, 6, 14, 15, 16): _write_decimal(ws, row, col, value, fmts["number"])
                 elif col == 13: _write_decimal(ws, row, col, value, fmts["number"])
                 elif col == 11: _write_utc(ws, row, col, value, fmts["date"], fmts["text"])
-                elif col == 12 and _safe_url(value): ws.write_url(row, col, _safe_url(value), fmts["link"], _text(value))
+                elif col == 12: _write_link(ws, row, col, value, fmts["link"], fmts["text"])
                 else: _write_value(ws, row, col, value, fmts["text"])
             row += 1
         ws.set_column(0, 3, 22); ws.set_column(4, 6, 18); ws.set_column(7, 10, 17); ws.set_column(11, 11, 23); ws.set_column(12, 12, 46); ws.set_column(13, 16, 14)
@@ -571,7 +571,7 @@ def export_report(
         history_headers.extend(["Evidence Mode", "Reference Price (observed)", "Advance Percent (observed)"])
         ws = wb.add_worksheet(SHEETS[3]); row = _setup_sheet(ws, history_headers, fmts, demo)
         for obs in observations:
-            values = [obs.get("id"), obs.get("task_id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), obs.get("reason"), obs.get("collected_at"), _observed_amount(obs), _raw_price(obs), obs.get("normalized_amount"), obs.get("calculation"), obs.get("currency"), obs.get("unit"), obs.get("comparable"), obs.get("freshness"), obs.get("extraction_method"), obs.get("raw_fields"), obs.get("price_profile", "unit"), obs.get("value_origin", "observed"), obs.get("source_visibility"), obs.get("verification_level"), _estimated_amount(obs), obs.get("derived_values"), obs.get("review_flags"), obs.get("rental_conditions")]
+            values = [obs.get("id"), obs.get("task_id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), _reason(obs), obs.get("collected_at"), _observed_amount(obs), _raw_price(obs), obs.get("normalized_amount"), obs.get("calculation"), obs.get("currency"), obs.get("unit"), obs.get("comparable"), obs.get("freshness"), obs.get("extraction_method"), obs.get("raw_fields"), obs.get("price_profile", "unit"), obs.get("value_origin", "observed"), obs.get("source_visibility"), obs.get("verification_level"), _estimated_amount(obs), obs.get("derived_values"), obs.get("review_flags"), obs.get("rental_conditions")]
             values.append(_observed_amount(obs, include_review=True) if obs.get('status') == 'review' else None)
             values.append(obs.get('evidence_mode', 'unknown'))
             values.extend([(obs.get("raw_fields") or {}).get("reference_price"),
@@ -589,6 +589,7 @@ def export_report(
         # 5. One row per observation with locator, raw evidence and hash/file reference.
         evidence_headers = ["Observation ID", "Product", "Source", "Source URL", "Evidence File", "SHA-256", "Locator", "Extraction Method", "Field Evidence JSON", "Raw Fields JSON", "Evidence Mode", "Capture Receipt", "Receipt SHA-256", "Screenshot File", "Screenshot SHA-256"]
         ws = wb.add_worksheet(SHEETS[4]); row = _setup_sheet(ws, evidence_headers, fmts, demo)
+        evidence_urls: list[Any] = []
         for obs in observations:
             values = [obs.get("id"), by_product.get(obs.get("product_id"), None).name if obs.get("product_id") in by_product else obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("source_url"), obs.get("evidence_path"), obs.get("evidence_sha256"), obs.get("locator"), obs.get("extraction_method"), obs.get("evidence"), obs.get("raw_fields")]
             artifacts = obs.get('evidence_artifacts') or {}
@@ -596,7 +597,7 @@ def export_report(
             screenshot = artifacts.get('screenshot') or {}
             values.extend([obs.get('evidence_mode', 'unknown'), receipt.get('path'), receipt.get('sha256'), screenshot.get('path'), screenshot.get('sha256')])
             for col, value in enumerate(values):
-                if col == 3 and _safe_url(value): ws.write_url(row, col, _safe_url(value), fmts["link"], _text(value))
+                if col == 3: evidence_urls.append(_write_link(ws, row, col, value, fmts["link"], fmts["text"]))
                 else: _write_value(ws, row, col, value, fmts["text"])
             row += 1
         ws.set_column(0, 2, 22); ws.set_column(3, 4, 44); ws.set_column(5, 7, 26); ws.set_column(8, 9, 54)
@@ -614,9 +615,9 @@ def export_report(
                 row += 1
         for obs in observations:
             if not (obs.get("status") == "verified" and obs.get("freshness") == "observed" and obs.get("comparable") is True):
-                values = ["Observation", obs.get("id"), obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), obs.get("reason"), _raw_price(obs), obs.get("source_url"), obs.get("collected_at")]
+                values = ["Observation", obs.get("id"), obs.get("product_id"), obs.get("source_name") or obs.get("source_id"), obs.get("status"), _reason(obs), _raw_price(obs), obs.get("source_url"), obs.get("collected_at")]
                 for col, value in enumerate(values):
-                    if col == 7 and _safe_url(value): ws.write_url(row, col, _safe_url(value), fmts["link"], _text(value))
+                    if col == 7: _write_link(ws, row, col, value, fmts["link"], fmts["text"])
                     elif col == 8: _write_utc(ws, row, col, value, fmts["date"], fmts["text"])
                     else: _write_value(ws, row, col, value, fmts["note"] if col == 5 else fmts["text"])
                 row += 1
@@ -647,13 +648,13 @@ def export_report(
                           terms.get("deposit_installment_amount"), terms.get("deposit_installment_months"), terms.get("deposit_percent"),
                           (obs.get("raw_fields") or {}).get("displayed_deposit"), obs.get("value_origin"), obs.get("source_visibility"),
                           obs.get("status"), obs.get("comparable"), obs.get("freshness"), obs.get("collected_at"),
-                          obs.get("source_url"), obs.get("reason"), obs.get("id")]
+                          obs.get("source_url"), _reason(obs), obs.get("id")]
                 values.extend([(obs.get("raw_fields") or {}).get("reference_price"),
                                terms.get("advance_percent", (obs.get("raw_fields") or {}).get("advance_percent"))])
                 for col, value in enumerate(values):
                     if col in (2, 3, 5, 6, 7, 8, 15, 16, 17, 18): _write_decimal(ws, row, col, value, fmts["number"])
                     elif col == 25: _write_utc(ws, row, col, value, fmts["date"], fmts["text"])
-                    elif col == 26 and _safe_url(value): ws.write_url(row, col, _safe_url(value), fmts["link"], _text(value))
+                    elif col == 26: _write_link(ws, row, col, value, fmts["link"], fmts["text"])
                     else: _write_value(ws, row, col, value, fmts["note"] if col == 27 else fmts["text"])
                 row += 1
             ws.set_row(1 if demo else 0, 44)
@@ -677,10 +678,25 @@ def export_report(
                 row += 1
             ws.set_column(0, len(headers) - 1, 26)
             _finish_sheet(ws, 1 if demo else 0, row, len(headers) - 1)
+        # Coverage and issue audits join the same write instead of a later
+        # load/save of the whole workbook.
+        audit_specs = []
+        if section_coverage is not None:
+            audit_specs.append(_coverage_spec(section_coverage))
+        if collection_issues is not None:
+            audit_specs.append(_issues_spec(collection_issues))
+        spec_formats: dict[str, Any] = {}
+        for spec in audit_specs:
+            write_xlsxwriter(wb, spec, spec_formats)
+        sheet_names = [sheet.name for sheet in wb.worksheets()]
         wb.close()
-        _validate_xlsx(tmp_path)
+        _validate_xlsx(tmp_path, deep=deep_validation)
         os.replace(tmp_path, output_path)
-        return output_path
+        summary = {"result_rows": result_cells, "price_column": True,
+                   "evidence_urls": [] if result_cells else evidence_urls,
+                   "categories": None, "task_count": len(coverage_rows), "comparison_count": len(selected),
+                   "demo": demo, "sheet_names": sheet_names}
+        return output_path, summary
     except Exception:
         try: tmp_path.unlink(missing_ok=True)
         finally: raise

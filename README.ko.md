@@ -228,6 +228,9 @@ XLSX 보고서는 렌탈 관측이 있는 실행에만 **Rental Quotes** 시트�
 ```
 
 다른 클라이언트는 `claude-code`, `claude-desktop`을 사용합니다. 이 저장소 밖 Claude Code 프로젝트에는 `--project-dir "C:\work\my-project"`를 추가하세요. 이 연결은 유료 서비스를 요구하지 않고 worker를 자동으로 시작하지 않습니다. 설정 대상, 안전한 백업, 대기 작업 명령, 검증 범위는 [로컬 AI 도구 연결 안내](docs/ASSISTANT_CONNECTIONS.ko.md)를 참고하세요.
+모든 Claude Code 프로젝트에 등록하려면 `connect --client claude-code --scope user`로 동일한 `claude mcp add --scope user` 명령을 출력해 직접 실행하세요.
+
+MCP 응답은 기본적으로 간결하며, `import_plan_urls`로 URL 목록 파일을 다시 입력하지 않고 계획에 추가합니다. 모델 없이 무인 실행하려면 `source-ledger collect-plan --urls-file urls.txt --industry ... --product ... --market ... --yes`와 `source-ledger assistant wait`를 사용하세요. 자세한 내용은 [모델 없는 무인 수집](docs/ASSISTANT_CONNECTIONS.ko.md#모델-없는-무인-수집)을 참고하세요. Claude Code 사용자는 `CLAUDE.md`와 `.claude/` 도구 모음으로 시작할 수 있습니다.
 
 ## 고정 설정 MCP
 
