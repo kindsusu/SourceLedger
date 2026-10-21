@@ -18,6 +18,9 @@ MAX_PAGE_COUNT = 50
 MAX_SOURCE_COUNT = 50
 MAX_CONFIG_TASKS = 1000
 MAX_REPORT_BYTES = 50 * 1024 * 1024
+# Whole-file MCP resources can land in a model's context; larger files are
+# reported by path and hash only (get_job_report / get_job_dashboard).
+MAX_RESOURCE_BYTES = 8 * 1024 * 1024
 
 
 def _reject_symlink_path(path: Path, label: str, *, boundary: Path | None = None) -> None:
