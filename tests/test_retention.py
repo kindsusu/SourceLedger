@@ -88,7 +88,7 @@ def test_busy_writer_prevents_maintenance(tmp_path):
 
 def test_blob_symlink_aborts_before_removal(tmp_path):
     _seed(tmp_path)
-    blob = next(path for path in (tmp_path / "checkpoint_blobs").rglob("*.gz"))
+    blob = next(path for path in (tmp_path / "checkpoint_blobs").rglob("*.bin"))
     outside = tmp_path.parent / "outside-checkpoint-example"
     outside.write_bytes(b"outside")
     blob.unlink()

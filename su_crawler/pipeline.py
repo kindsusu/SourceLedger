@@ -112,9 +112,9 @@ def _file_sha256(path: Path) -> str:
 def _link_checkpoint_blob(root: Path, digest: str, size: int, dest: Path) -> Path | None:
     """Hard-link an identical uncompressed checkpoint capture as pending evidence.
 
-    Catalog checkpoints keep incompressible captures (screenshots, PDFs, small
-    pages) as ``checkpoint_blobs/<xx>/<sha256>.bin``. Linking shares those bytes
-    instead of writing a second copy. Only a verified, link-free regular file
+    Catalog checkpoints keep captures as ``checkpoint_blobs/<xx>/<sha256>.bin``
+    (older runs may also have compressed ``.gz`` blobs, which are not linked).
+    Linking shares those bytes instead of writing a second copy. Only a verified, link-free regular file
     inside the output directory qualifies; otherwise the caller writes bytes.
     """
     shard = root / 'checkpoint_blobs' / digest[:2]
