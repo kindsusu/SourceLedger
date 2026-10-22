@@ -32,6 +32,11 @@ def test_amounts_accept_one_whole_token_only():
     assert displayed_amount("수량 3 500원")[0]["value"] == "500"
     assert price_basis("월 렌탈료 29,900원") == ("monthly", "월 렌탈료 29,900원")
     assert price_basis("3월 15일 출시 12,000원") == (None, None)
+    # Titles that merely mention a period are not billing periods.
+    assert price_basis("A Year in Provence £56.88") == (None, None)
+    assert price_basis("Monthly Planner $12") == (None, None)
+    assert price_basis("월간 잡지 9,000원") == (None, None)
+    assert price_basis("$99 billed annually")[0] == "yearly"
     assert price_basis("$12/mo")[0] == "monthly"
     assert term_months("3년 약정") == ("36", "3년 약정")
     assert term_months("36-48개월") == (None, None)
@@ -44,7 +49,8 @@ def test_replayable_normalization_rules():
     assert evidence_attests("currency", "원", "KRW", {"rule": "currency_marker"})
     assert not evidence_attests("currency", "$", "USD", {"rule": "currency_marker"})
     assert evidence_attests("term_months", "24개월 약정", "24", {"rule": "contract_term"})
-    assert evidence_attests("price_basis", "/월", "monthly", {"rule": "recurring_marker"})
+    assert evidence_attests("price_basis", "원/월", "monthly", {"rule": "recurring_marker"})
+    assert not evidence_attests("price_basis", "/월", "monthly", {"rule": "recurring_marker"})
 
 
 LIST = """<html><body><header><a href="/cart">장바구니 0원</a></header><ul class="goods-list">{}</ul>
@@ -177,3 +183,62 @@ def test_pinned_selectors_prove_currency_from_the_price_marker():
     assert candidates[0].fields["price"] == "16,000원" and candidates[0].fields["currency"] == "KRW"
     assert evidence_attests("currency", candidates[0].evidence["currency"]["raw"], "KRW",
                             candidates[0].evidence["currency"]["normalization"])
+
+
+# -- cases found while checking public storefronts (synthetic markup) ---------
+
+def test_fullwidth_sign_split_decimal_and_aria_hidden_visual_price():
+    assert displayed_amount("￦7,900")[0]["value"] == "7900"
+    cards = "".join(f'<div class="card"><a href="/p/{i}"><h3>Chair {i}</h3></a><span class="price">'
+                    f'<span aria-hidden="true"><span class="cur">$</span><span class="int">{i}9</span>'
+                    f'<span class="dec">.99</span></span><span class="price__sr-text">Price $ {i}9.99</span>'
+                    f'</span></div>' for i in range(1, 4))
+    candidates = extract_generic(page(f'<main class="grid">{cards}</main>', "https://shop.example/chairs"))
+    assert [c.fields["price"] for c in candidates] == ["19.99", "29.99", "39.99"]
+    assert candidates[0].evidence["price"]["display_state"] == "visible"
+
+
+def test_product_page_beats_recommended_cards_and_body_classes_are_not_off_content():
+    related = "".join(f'<li><a href="/b/{i}"><h3>Other {i}</h3></a><p class="price">£{i}0.00</p></li>'
+                      for i in range(1, 5))
+    html = (f'<body class="has-related-articles"><div class="main"><h1>Main Book</h1><p class="price">£45.17</p>'
+            f'<table><tr><td>£45.17</td></tr><tr><td>£0.00</td></tr></table></div>'
+            f'<section><h2>Recently viewed</h2><ol>{related}</ol></section></body>')
+    [candidate] = extract_generic(page(html, "https://shop.example/b/main"))
+    assert (candidate.fields["name"], candidate.fields["price"]) == ("Main Book", "45.17")
+
+
+def test_card_ignores_related_item_link_and_uses_discount_rate():
+    cards = "".join(f'<li class="item"><a href="/goods/{i}" class="title">Book {i}</a>'
+                    f'<span class="rate">10%</span><strong>16,650원</strong> <span class="dash">18,500원</span>'
+                    f'<div>eBook <a href="/goods/{i}00"><span>11,700원</span></a></div></li>' for i in range(1, 4))
+    candidates = extract_generic(page(f'<ul class="list">{cards}</ul>', backend="http"))
+    assert {(c.fields["price"], c.fields["reference_price"]) for c in candidates} == {("16650", "18500")}
+
+
+def test_sole_price_under_screen_reader_regular_label_is_the_price():
+    cards = "".join(f'<article class="card"><a href="/p/{i}"><h4>Tee {i}</h4></a><span class="price">'
+                    f'<span class="sr-only">Regular Price: </span>${30 + i}</span></article>' for i in range(1, 4))
+    candidates = extract_generic(page(f'<div class="grid">{cards}</div>', "https://shop.example/c"))
+    assert [c.fields["price"] for c in candidates] == ["31", "32", "33"]
+    assert candidates[0].fields["name"] == "Tee 1"
+
+
+def test_plan_price_lines_skip_trial_amounts():
+    html = ('<article><h1>Plans</h1><ul><li><span>Basic: 월 7,000원</span></li><li><span>Standard: 월 13,500원</span></li>'
+            '<li><span>Extra member: 월 4,000원, 월 5,000원</span></li><li><span>첫 달 ₩0</span></li></ul></article>')
+    candidates = extract_generic(page(html, "https://plans.example/prices"))
+    assert [(c.fields["name"], c.fields["price"], c.fields["price_basis"]) for c in candidates] == [
+        ("Basic", "7000", "monthly"), ("Standard", "13500", "monthly")]
+
+
+def test_structured_list_rows_confirmed_by_card_name_and_stubs_dropped():
+    import json as _json
+    items = [{"@type": "Product", "name": f"Set {i}", "offers": {"@type": "Offer", "price": f"{i}9900",
+                                                                 "priceCurrency": "KRW"}} for i in range(1, 3)]
+    data = {"@type": "ItemList", "itemListElement": items + [{"@type": "Product", "url": "/stub"}]}
+    cards = "".join(f'<div class="c"><a href="/s/{i}">Set {i}</a><span>{i}9,900원</span></div>' for i in range(1, 3))
+    html = f'<script type="application/ld+json">{_json.dumps(data)}</script><main>{cards}</main>'
+    candidates = extract_generic(page(html, "https://toys.example/new"))
+    assert [c.fields["price"] for c in candidates] == ["19900", "29900"]
+    assert all(c.evidence["price"]["display_state"] == "visible" for c in candidates)

@@ -311,6 +311,24 @@ def test_prefetched_responses_choose_quality_per_product_and_keep_original_evide
     assert receipt["artifacts"] == {key: artifacts[key] for key in ("content", "screenshot")}
 
 
+def test_captured_responses_are_recorded_after_the_run_budget(tmp_path):
+    """The run budget bounds new fetches, not recording what was already collected."""
+    config = demo(tmp_path)
+    source = replace(config.sources[0], kind="web", location="https://example.com/items",
+                     backends=["http"], product_ids=["a"], max_attempts=1)
+    config = replace(config, sources=[source], products=[Product("a", "A", identifiers={"model": "A"})],
+                     max_run_seconds=0)
+    fields = {"model": "A", "price": "100", "currency": "KRW"}
+    captured = Candidate(fields, {key: {"location": "row", "raw": value} for key, value in fields.items()}, "row", "html")
+    response = FetchResult(source.id, "fetched", "http", content=b"static", final_url=source.location)
+    result = execute(config, prefetched={source.id: [(response, [captured])]})
+    store = Store(tmp_path)
+    tasks, rows = store.tasks(result["id"]), store.observations(result["id"])
+    store.close()
+    assert [task["status"] for task in tasks] != ["budget_exhausted"]
+    assert [row["locator"] for row in rows] == ["row"]
+
+
 @pytest.mark.parametrize(("price", "separator"), [
     ("12,000", "."),
     ("KRW 12000", "."),

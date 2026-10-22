@@ -26,9 +26,9 @@ from functools import lru_cache
 from typing import Any
 from urllib.parse import parse_qs, urljoin, urlsplit
 
-from bs4 import Comment, Tag
+from bs4 import Comment, NavigableString, Tag
 
-from .adapters.common import display_state, html_soup, is_struck, visible_text
+from .adapters.common import display_state, html_soup, is_struck
 from .amounts import ISO_CODES, currency_codes, currency_for, deposit, displayed_amount, find_amounts, price_basis, term_months
 from .models import Candidate, FetchResult, Source
 
@@ -57,8 +57,9 @@ _OFF_CONTENT_TOKENS = frozenset({"related", "recommend", "recommended", "similar
 _SOLD_OUT = re.compile(r"일시\s*품절|품절|sold\s*out|out\s*of\s*stock", re.I)
 _ID_KEYS = ("product_no", "productno", "goods_no", "goodsno", "goodscd", "item_id", "itemid", "product_id",
             "productid", "prdno", "pid", "gno", "idx", "no", "id", "sku")
-_NAME_SELECTORS = ("[itemprop=name]", "[class*=name]", "[class*=Name]", "[class*=title]", "[class*=Title]",
-                   "h2", "h3", "h4", "h5", "h1", "strong")
+# Headings first: a "title container" class often also wraps a rating badge.
+_NAME_SELECTORS = ("[itemprop=name]", "h2", "h3", "h4", "h5", "[class*=name]", "[class*=Name]", "[class*=title]",
+                   "[class*=Title]", "h1", "strong")
 _STATE_CLASS = re.compile(r"\d|^(?:on|off|active|selected|current|first|last|odd|even|hover|show|hide|open|"
                           r"is-.*|has-.*|swiper-slide-.*|slick-.*)$", re.I)
 
@@ -86,6 +87,38 @@ def _css(signature: tuple[str, tuple[str, ...]]) -> str:
     return name + "".join("." + re.sub(r"([^\w-])", r"\\\1", c) for c in classes)
 
 
+_SCREEN_READER = re.compile(r"sr-only|sr-text|visually-hidden|screen-reader|a11y|(?:^|\s)blind(?:\s|$)", re.I)
+
+
+def _state(node: Tag | None, mode: str) -> tuple[str, list[dict[str, Any]]]:
+    """Display state where ``aria-hidden`` alone does not hide anything.
+
+    Storefronts often mark the visual price aria-hidden and add screen-reader
+    text beside it; only a rendered or explicit hidden state hides content.
+    """
+    state, hidden_by = display_state(node, mode)
+    if state == "hidden" and all(set(item["reasons"]) <= {"aria_hidden"} for item in hidden_by):
+        return ("visible" if mode == "rendered_dom" else "unconfirmed"), []
+    return state, hidden_by
+
+
+def _joined(node: Tag) -> str:
+    """Text as rendered inline: adjacent tags join ("$249" + ".99"), source spaces stay."""
+    return _squash(node.get_text(""))
+
+
+def _shown(node: Tag | None, mode: str) -> str | None:
+    """Visible text of a node, without hidden or screen-reader-only descendants."""
+    if node is None or _state(node, mode)[0] == "hidden":
+        return None
+    parts = [str(value) for value in node.descendants
+             if isinstance(value, NavigableString) and not isinstance(value, Comment) and str(value).strip()
+             and isinstance(value.parent, Tag) and value.parent.name not in _SKIP
+             and _state(value.parent, mode)[0] != "hidden"
+             and not _SCREEN_READER.search(" ".join(map(str, value.parent.get("class", []))))]
+    return _squash(" ".join(parts)) or None
+
+
 class _Entry:
     """One minimal element whose own text shows at least one amount."""
 
@@ -94,9 +127,10 @@ class _Entry:
         self.ancestors = {id(parent) for parent in node.parents}
         self.single, _ = displayed_amount(text)
         self.struck = is_struck(node)
-        self.hidden = display_state(node, mode)[0] == "hidden"
+        self.hidden = (_state(node, mode)[0] == "hidden"
+                       or bool(_SCREEN_READER.search(" ".join(map(str, node.get("class", []))))))
         tokens = _tokens(node) | (_tokens(node.parent) if isinstance(node.parent, Tag) else set())
-        label = re.sub(r"[\d,.\s원₩$€£¥円]+", " ", text)
+        label = re.sub(r"[\d,.\s원₩￦$＄€£￡¥￥円]+", " ", _shown(node, mode) or "")
         self.current_hint = bool(tokens & _CURRENT_TOKENS) or bool(_CURRENT_LABEL.search(label))
         self.reference_hint = not self.current_hint and (
             bool(tokens & _REFERENCE_TOKENS) or bool(_REFERENCE_LABEL.search(label)))
@@ -132,10 +166,23 @@ class _Page:
                 for _ in range(4):
                     if not isinstance(node, Tag) or node.name in {"body", "html", "[document]"} or node.name in _SKIP:
                         break
-                    text = _text(node)
+                    text = _joined(node)
                     if len(text) > 80:
                         break
-                    if find_amounts(text):
+                    amounts = find_amounts(text)
+                    if amounts:
+                        # A split decimal ("$249" then ".99") completes in a parent.
+                        for _ in range(2):
+                            outer = node.parent
+                            if not isinstance(outer, Tag) or outer.name in {"body", "html"}:
+                                break
+                            outer_text = _joined(outer)
+                            wider = find_amounts(outer_text) if len(outer_text) <= 80 else []
+                            if (len(amounts) == 1 and len(wider) == 1 and wider[0]["token"] != amounts[0]["token"]
+                                    and wider[0]["token"].startswith(amounts[0]["token"])):
+                                node, text, amounts = outer, outer_text, wider
+                            else:
+                                break
                         if id(node) not in found:
                             found[id(node)] = _Entry(node, text, self.mode)
                         break
@@ -197,7 +244,7 @@ def _proof(location: str, raw: Any, *, node: Tag | None = None, mode: str = "sta
         proof["source_text"] = source_text
     if rule:
         proof["normalization"] = {"rule": rule}
-    state, hidden_by = display_state(node, mode) if node is not None else ("unconfirmed", [])
+    state, hidden_by = _state(node, mode) if node is not None else ("unconfirmed", [])
     proof["display_state"] = state
     if hidden_by:
         proof["hidden_by"] = hidden_by
@@ -267,45 +314,92 @@ def _add_conditions(row: dict, page: _Page, context: Tag, location: str) -> None
                                   "display_state": "not_applicable", "proof_kind": "dom_attribute"}
 
 
-def _pick(entries: list[_Entry]) -> tuple[_Entry | None, _Entry | None, str | None]:
+def _discount_pair(entries: list[_Entry], context_text: str) -> tuple[_Entry, _Entry] | None:
+    """Two prices joined by a displayed discount rate (e.g. 18,500 at 10% = 16,650).
+
+    Static HTML often strikes the list price only through CSS; the shown rate
+    still proves which amount is current.
+    """
+    values = {}
+    for entry in entries:
+        values.setdefault(Decimal(entry.single["value"]), entry)
+    if len(values) != 2:
+        return None
+    low, high = sorted(values)
+    for rate in re.findall(r"(?<![\d.])(\d{1,2})\s*%", context_text):
+        expected = high * (100 - int(rate)) / 100
+        if 0 < int(rate) < 100 and abs(expected - low) <= max(Decimal(1), high * Decimal("0.005")):
+            return values[low], values[high]
+    return None
+
+
+def _pick(entries: list[_Entry], context_text: str = "") -> tuple[_Entry | None, _Entry | None, str | None]:
     """One current price and at most one reference price, or why none."""
     def key(entry):
         return entry.single["value"], currency_codes(entry.single["marker"])
 
     usable = [entry for entry in entries if entry.usable]
-    chosen = None
+    chosen = reference = None
     if len({key(entry) for entry in usable}) == 1:
         chosen = usable[0]
     elif usable:
         hinted = [entry for entry in usable if entry.current_hint]
         if len({key(entry) for entry in hinted}) == 1:
             chosen = hinted[0]
+        elif (pair := _discount_pair(usable, context_text)) is not None:
+            chosen, reference = pair
+    else:
+        # A sole shown price is the price even under a "regular price" label
+        # (often screen-reader text on a product that is not on sale).
+        plain = [entry for entry in entries if entry.single and not entry.struck and not entry.hidden
+                 and not entry.auxiliary]
+        if len({key(entry) for entry in plain}) == 1:
+            chosen = plain[0]
     if chosen is None:
         return None, None, "multiple_amounts_unresolved" if usable else "no_current_price"
-    references = [entry for entry in entries
-                  if (entry.struck or entry.reference_hint) and not entry.hidden and entry.single
-                  and key(entry) != key(chosen)]
-    reference = references[0] if len({key(entry) for entry in references}) == 1 else None
+    if reference is None:
+        references = [entry for entry in entries
+                      if (entry.struck or entry.reference_hint) and not entry.hidden and entry.single
+                      and key(entry) != key(chosen)]
+        reference = references[0] if len({key(entry) for entry in references}) == 1 else None
     return chosen, reference, None
 
 
-def _name_node(card: Tag) -> Tag | None:
+def _name_node(card: Tag, mode: str) -> Tag | None:
     for selector in _NAME_SELECTORS:
         for node in card.select(selector)[:10]:
-            text = visible_text(node)
+            text = _shown(node, mode)
             if text and 2 <= len(text) <= 200 and not find_amounts(text):
                 return node
     return None
 
 
+def _own_entries(page: _Page, card: Tag, product_url: str | None) -> list[_Entry]:
+    """Prices in a card, without those inside a link to another product (related items)."""
+    entries = page.within(card)
+    if not product_url:
+        return entries
+    own = []
+    for entry in entries:
+        anchor = entry.node if entry.node.name == "a" else entry.node.find_parent("a")
+        inside = anchor is not None and anchor is not card and any(parent is card for parent in anchor.parents)
+        href = str(anchor.get("href", "")).strip() if inside and anchor.has_attr("href") else ""
+        if href and not href.startswith(("#", "javascript:")):
+            target = urljoin(page.url, href).split("#", 1)[0]
+            if target != product_url and item_identity(target) != item_identity(product_url):
+                continue
+        own.append(entry)
+    return own
+
+
 def _offer_row(page: _Page, card: Tag, entries: list[_Entry], *, locator: str, method: str, heuristic: bool,
                name_node: Tag | None = None, product_url: str | None = None,
                context: Tag | None = None) -> tuple[dict | None, _Entry | None]:
-    chosen, reference, problem = _pick(entries)
+    chosen, reference, problem = _pick(entries, _text(context if context is not None else card)[:600])
     row = _row(locator, method, page, heuristic=heuristic)
     fields, proofs = row["fields"], row["evidence"]
-    name_node = name_node if name_node is not None else _name_node(card)
-    name = visible_text(name_node) if name_node is not None else None
+    name_node = name_node if name_node is not None else _name_node(card, page.mode)
+    name = _shown(name_node, page.mode) if name_node is not None else None
     if not name:
         image = card.select_one("img[alt]")
         if image is not None and _squash(str(image.get("alt"))):
@@ -448,43 +542,75 @@ def _platform_cards(page: _Page) -> dict | None:
 
 # -- 2. structured data ---------------------------------------------------------
 
-def _confirm_structured(page: _Page, rows: list[dict]) -> None:
-    """Prove a structured price with the same amount rendered on the page."""
-    priced = [row for row in rows if row["fields"].get("price") is not None]
-    if page.mode != "rendered_dom" or not priced or len({str(r["fields"]["price"]) for r in priced}) != 1:
-        return
+def _decimal(value: Any) -> Decimal | None:
     try:
-        target = Decimal(str(priced[0]["fields"]["price"]))
+        return Decimal(str(value))
     except (InvalidOperation, ValueError):
+        return None
+
+
+def _confirm_structured(page: _Page, rows: list[dict]) -> None:
+    """Prove structured prices with the same amounts rendered on the page.
+
+    One shared price is matched to a shown amount in the main content. Rows
+    with different prices (a list page) are matched one by one to a shown
+    amount whose surrounding card names the same product.
+    """
+    priced = [row for row in rows if _decimal(row["fields"].get("price")) is not None]
+    if page.mode != "rendered_dom" or not priced:
         return
-    entry = next((entry for entry in page.entries
-                  if entry.usable and not _off_content(entry.node) and Decimal(entry.single["value"]) == target), None)
-    if entry is None:
+    if len({_decimal(r["fields"]["price"]) for r in priced}) == 1:
+        target = _decimal(priced[0]["fields"]["price"])
+        entry = next((entry for entry in page.entries if entry.usable and not _off_content(entry.node)
+                      and Decimal(entry.single["value"]) == target), None)
+        if entry is not None:
+            for row in priced:
+                _upgrade_structured(page, row, entry)
         return
+    for row in priced:
+        name = _squash(str(row["fields"].get("name") or "")).casefold()
+        if len(name) < 3:
+            continue
+        target = _decimal(row["fields"]["price"])
+        for entry in page.entries:
+            if not entry.usable or Decimal(entry.single["value"]) != target:
+                continue
+            parent, depth = entry.node.parent, 0
+            while isinstance(parent, Tag) and depth < 6 and parent.name not in {"body", "html"}:
+                if name in _squash(parent.get_text(" "))[:3000].casefold():
+                    break
+                parent, depth = parent.parent, depth + 1
+            else:
+                continue
+            if isinstance(parent, Tag) and parent.name not in {"body", "html"}:
+                _upgrade_structured(page, row, entry)
+                break
+
+
+def _upgrade_structured(page: _Page, row: dict, entry: _Entry) -> None:
     amount = entry.single
     codes = currency_codes(amount["marker"])
-    for row in priced:
-        fields, proofs = row["fields"], row["evidence"]
-        declared = fields.get("currency")
-        if declared is not None and str(declared).upper() not in codes:
-            continue  # the visible marker names another currency
-        structured = proofs.get("price", {}).get("location")
-        fields["price"] = amount["value"]
-        proofs["price"] = {**_proof("visible price matching structured offer", amount["token"], node=entry.node,
-                                    mode=page.mode, source_text=entry.text, rule="displayed_amount"),
-                           "structured_location": structured}
-        if len(codes) == 1:
-            fields["currency"] = next(iter(codes))
-            proofs["currency"] = _proof("visible price marker", amount["marker"], node=entry.node, mode=page.mode,
-                                        source_text=entry.text, rule="currency_marker")
-        elif declared is not None:
-            proofs["currency"] = {**_proof(f"{proofs['currency']['location']} + visible price marker", str(declared),
-                                           node=entry.node, mode=page.mode, kind="marker_with_structured_currency"),
-                                  "marker": amount["marker"]}
-        row["review_flags"] = [flag for flag in row["review_flags"] if flag != UNCONFIRMED_STRUCTURED_FLAG]
-        row["mode"], row["visibility"] = "rendered_dom", "visible"
-        context = entry.node.parent if isinstance(entry.node.parent, Tag) else entry.node
-        _add_conditions(row, page, context, "visible price context")
+    fields, proofs = row["fields"], row["evidence"]
+    declared = fields.get("currency")
+    if declared is not None and str(declared).upper() not in codes:
+        return  # the visible marker names another currency
+    structured = proofs.get("price", {}).get("location")
+    fields["price"] = amount["value"]
+    proofs["price"] = {**_proof("visible price matching structured offer", amount["token"], node=entry.node,
+                                mode=page.mode, source_text=entry.text, rule="displayed_amount"),
+                       "structured_location": structured}
+    if len(codes) == 1:
+        fields["currency"] = next(iter(codes))
+        proofs["currency"] = _proof("visible price marker", amount["marker"], node=entry.node, mode=page.mode,
+                                    source_text=entry.text, rule="currency_marker")
+    elif declared is not None:
+        proofs["currency"] = {**_proof(f"{proofs['currency']['location']} + visible price marker", str(declared),
+                                       node=entry.node, mode=page.mode, kind="marker_with_structured_currency"),
+                              "marker": amount["marker"]}
+    row["review_flags"] = [flag for flag in row["review_flags"] if flag != UNCONFIRMED_STRUCTURED_FLAG]
+    row["mode"], row["visibility"] = "rendered_dom", "visible"
+    context = entry.node.parent if isinstance(entry.node.parent, Tag) else entry.node
+    _add_conditions(row, page, context, "visible price context")
 
 
 def _jsonld_rows(page: _Page, content: bytes, backend: str) -> tuple[list[dict], list[dict]]:
@@ -493,6 +619,9 @@ def _jsonld_rows(page: _Page, content: bytes, backend: str) -> tuple[list[dict],
     probe = FetchResult("generic", "fetched", backend, content=content, final_url=page.url)
     rows = []
     for candidate in extract_jsonld(probe):
+        if not any(candidate.fields.get(key) not in (None, "") for key in
+                   ("name", "price", "sku", "mpn", "gtin", "gtin8", "gtin12", "gtin13", "gtin14")):
+            continue  # a variant stub (often only a URL) states nothing to record
         data = asdict(candidate)
         rows.append({"fields": data["fields"], "evidence": data["evidence"], "specs": data["specs"],
                      "locator": data["locator"], "method": data["extraction_method"],
@@ -527,8 +656,8 @@ def _microdata_rows(page: _Page) -> list[dict]:
     fields, proofs = row["fields"], row["evidence"]
     for selector in ('[itemprop="name"]', "h1"):
         node = page.soup.select_one(selector)
-        if node is not None and visible_text(node):
-            fields["name"] = visible_text(node)
+        if node is not None and _shown(node, page.mode):
+            fields["name"] = _shown(node, page.mode)
             proofs["name"] = _proof(f"css:{selector}", fields["name"], node=node, mode=page.mode)
             break
     else:
@@ -590,14 +719,14 @@ def _repeated_cards(page: _Page) -> dict | None:
         if identity in seen:
             continue  # carousels repeat the same product
         seen.add(identity)
-        entries = page.within(card)
+        entries = _own_entries(page, card, url)
         row, chosen = _offer_row(page, card, entries, locator=f"generic:card:{identity}",
                                  method="generic_repeated_cards", heuristic=True, product_url=url)
         if row is None:
             continue
         rows.append(row)
         if "name" not in selectors:
-            name = _relative_selector(card, _name_node(card))
+            name = _relative_selector(card, _name_node(card, page.mode))
             price = _relative_selector(card, chosen.node) if chosen is not None else None
             if name and price:
                 selectors = {"name": name, "price": price, "product_url": "a::attr(href)"}
@@ -611,34 +740,110 @@ def _repeated_cards(page: _Page) -> dict | None:
 
 def _off_content(node: Tag) -> bool:
     current, depth = node, 0
-    while isinstance(current, Tag) and depth < 15:
+    # <body>/<html> classes describe the whole page ("has-related-articles").
+    while isinstance(current, Tag) and current.name not in {"body", "html"} and depth < 15:
         if current.name in {"nav", "header", "footer", "aside"} or _tokens(current) & _OFF_CONTENT_TOKENS:
             return True
         current, depth = current.parent, depth + 1
     return False
 
 
-def _single_product(page: _Page) -> dict | None:
-    heading = next((node for node in page.soup.select("h1") if visible_text(node) and not _off_content(node)), None)
-    if heading is None:
-        return None
-    entries = [entry for entry in page.entries if not _off_content(entry.node)]
-    chosen, _, problem = _pick(entries)
+def _heading(page: _Page) -> Tag | None:
+    return next((node for node in page.soup.select("h1")
+                 if _shown(node, page.mode) and not _off_content(node)), None)
+
+
+def _product_row(page: _Page, heading: Tag, entries: list[_Entry], region: Tag) -> dict | None:
+    chosen, _, _ = _pick(entries, _text(region)[:600])
     if chosen is None:
-        if not entries:
-            return None
-        return {"method": "single_product", "platform": None, "rows": [],
-                "trace": [{"event": "extraction_gap", "reason": problem}],
-                "section": _section("single_product", 1, 0, [], status="unknown", reason=problem)}
+        return None
     context = chosen.node.parent if isinstance(chosen.node.parent, Tag) else chosen.node
-    row, _ = _offer_row(page, page.soup, entries, locator="generic:product", method="generic_single_product",
+    row, _ = _offer_row(page, region, entries, locator="generic:product", method="generic_single_product",
                         heuristic=True, name_node=heading, context=context)
+    if row is None:
+        return None
     identity = item_identity(page.url)
     row["fields"]["url_id"] = identity
     row["evidence"]["url_id"] = _identity_proof("url", identity)
     name, price = _unique_selector(page, heading), _unique_selector(page, chosen.node)
     rule = {"selectors": {"name": name, "price": price}} if name and price else None
     return _result("single_product", [row], 1, complete=False, suggested_rule=rule, reason="heuristic_single_price")
+
+
+def _heading_product(page: _Page) -> dict | None:
+    """A product page: the title's own block shows exactly one current price.
+
+    Checked before card lists so "related" or "recently viewed" cards on a
+    product page are not mistaken for the page's subject.
+    """
+    heading = _heading(page)
+    region = heading.parent if heading is not None else None
+    for _ in range(4):
+        if not isinstance(region, Tag) or region.name in {"body", "html", "[document]"}:
+            return None
+        # Zero amounts beside a title are tax lines or trials, not the price.
+        entries = [entry for entry in page.within(region) if not _off_content(entry.node)
+                   and not (entry.single and Decimal(entry.single["value"]) == 0)]
+        usable = {entry.single["value"] for entry in entries if entry.usable}
+        if len(usable) > 1 and _discount_pair([e for e in entries if e.usable], _text(region)[:600]) is None:
+            return None
+        if usable:
+            return _product_row(page, heading, entries, region)
+        region = region.parent
+    return None
+
+
+def _single_product(page: _Page) -> dict | None:
+    heading = _heading(page)
+    if heading is None:
+        return None
+    entries = [entry for entry in page.entries if not _off_content(entry.node)]
+    found = _product_row(page, heading, entries, page.soup) if entries else None
+    if found is not None:
+        return found
+    if not entries:
+        return None
+    _, _, problem = _pick(entries)
+    return {"method": "single_product", "platform": None, "rows": [],
+            "trace": [{"event": "extraction_gap", "reason": problem}],
+            "section": _section("single_product", 1, 0, [], status="unknown", reason=problem)}
+
+
+_LINE_TAIL = re.compile(r"[\s:：\-–—·|/]*(?:매월|월|연간|연|년|per|monthly)?[\s:：\-–—·|/]*$", re.I)
+
+
+def _price_lines(page: _Page) -> dict | None:
+    """A price table written as text lines ("스탠다드 : 월 13,500원"), e.g. plan pages."""
+    lines, seen = [], set()
+    for entry in page.entries:
+        # A zero amount is a free trial or promotion line, not a plan price.
+        if not entry.usable or _off_content(entry.node) or Decimal(entry.single["value"]) == 0:
+            continue
+        text = _shown(entry.node, page.mode) or ""
+        amounts = find_amounts(text)
+        if len(amounts) != 1:
+            continue
+        label = _LINE_TAIL.sub("", text[:amounts[0]["start"]]).strip()
+        if not (2 <= len(label) <= 60) or not re.search(r"[^\W\d_]", label) or label in seen:
+            continue
+        seen.add(label)
+        lines.append((label, entry))
+    if len(lines) < 2:
+        return None
+    rows = []
+    for label, entry in lines:
+        identity = f"{item_identity(page.url)}#{label}"
+        row, _ = _offer_row(page, entry.node, [entry], locator=f"generic:line:{label}", method="generic_price_lines",
+                            heuristic=True, name_node=entry.node, context=entry.node)
+        if row is None:
+            continue
+        row["fields"]["name"] = label
+        row["evidence"]["name"] = _proof(f"generic:line:{label} name", label, node=entry.node, mode=page.mode,
+                                         source_text=entry.text)
+        row["fields"]["url_id"] = identity
+        row["evidence"]["url_id"] = _identity_proof("url + line label", identity)
+        rows.append(row)
+    return _result("price_lines", rows, len(lines), complete=False, reason="heuristic_price_lines")
 
 
 # -- assembly ------------------------------------------------------------------
@@ -684,7 +889,7 @@ def _analyse(content: bytes, url: str, backend: str) -> dict:
                          reason="structured_records_only")
         result["trace"] = trace
         return result
-    for step in (_repeated_cards, _single_product):
+    for step in (_heading_product, _repeated_cards, _price_lines, _single_product):
         found = step(page)
         if found is not None and found["rows"]:
             found["trace"] = trace + found["trace"]

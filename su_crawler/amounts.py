@@ -11,20 +11,22 @@ from decimal import Decimal, InvalidOperation
 
 # Markers that name exactly one currency. "$" and "¥" are shared by several
 # currencies and need a page-level hint (structured data or page language).
-UNAMBIGUOUS_MARKERS = {"₩": "KRW", "원": "KRW", "€": "EUR", "£": "GBP", "円": "JPY", "元": "CNY"}
-AMBIGUOUS_MARKERS = {"$": frozenset({"USD", "CAD", "AUD", "NZD", "SGD", "HKD"}), "¥": frozenset({"JPY", "CNY"})}
+# Fullwidth signs (￦ ＄ ￥ ￡) appear on Korean and Japanese storefronts.
+UNAMBIGUOUS_MARKERS = {"₩": "KRW", "￦": "KRW", "원": "KRW", "€": "EUR", "£": "GBP", "￡": "GBP", "円": "JPY", "元": "CNY"}
+_DOLLAR = frozenset({"USD", "CAD", "AUD", "NZD", "SGD", "HKD"})
+AMBIGUOUS_MARKERS = {"$": _DOLLAR, "＄": _DOLLAR, "¥": frozenset({"JPY", "CNY"}), "￥": frozenset({"JPY", "CNY"})}
 ISO_CODES = frozenset({"AUD", "CAD", "CHF", "CNY", "EUR", "GBP", "HKD", "JPY", "KRW", "NZD", "SGD", "USD", "TWD"})
 
 # Thousands groups use "," "." or a no-break space (never an ordinary space,
 # which separates unrelated numbers in flattened card text).
 _NUMBER = r"\d{1,3}(?:[,.  ]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?"
-_PREFIX = r"(?P<pre>₩|\$|€|£|¥|(?:%s)\s?)" % "|".join(sorted(ISO_CODES))
+_PREFIX = r"(?P<pre>₩|￦|\$|＄|€|£|￡|¥|￥|(?:%s)\s?)" % "|".join(sorted(ISO_CODES))
 _SUFFIX = r"(?P<suf>\s?(?:만\s*원|원|円|元|€|(?:%s)\b))" % "|".join(sorted(ISO_CODES))
 _AMOUNT = re.compile(
     rf"(?:{_PREFIX}\s*(?P<a>{_NUMBER})(?:\s*(?P<man>만)\s*원?)?)|(?:(?P<b>{_NUMBER}){_SUFFIX})"
 )
-_RANGE = re.compile(rf"(?:{_NUMBER})\s*(?:만\s*원|원|円|€)?\s*[~∼〜\-–—]\s*(?:₩|\$|€|£|¥)?\s*\d")
-_FROM = re.compile(r"[~∼〜]\s*$|부터|이상|^\s*from\b|\bstarting\s+(?:at|from)\b|\bfrom\s*(?:₩|\$|€|£|¥)", re.I)
+_RANGE = re.compile(rf"(?:{_NUMBER})\s*(?:만\s*원|원|円|€)?\s*[~∼〜\-–—]\s*(?:₩|￦|\$|＄|€|£|￡|¥|￥)?\s*\d")
+_FROM = re.compile(r"[~∼〜]\s*$|부터|이상|^\s*from\b|\bstarting\s+(?:at|from)\b|\bfrom\s*(?:₩|￦|\$|＄|€|£|￡|¥|￥)", re.I)
 
 
 def _number(raw: str, marker: str) -> Decimal | None:
@@ -39,7 +41,7 @@ def _number(raw: str, marker: str) -> Decimal | None:
     elif re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d{1,3}(?:\.\d{3})+", text):
         # "1.234" is a group only for currencies without minor units in use.
         text = text.replace(",", "") if "," in text else (
-            text.replace(".", "") if marker in {"₩", "원", "KRW", "円", "JPY"} or len(text.split(".")) > 2 else text)
+            text.replace(".", "") if marker in {"₩", "￦", "원", "KRW", "円", "JPY"} or len(text.split(".")) > 2 else text)
     elif re.fullmatch(r"\d+,\d{1,2}", text):
         text = text.replace(",", ".")
     elif not re.fullmatch(r"\d+(?:\.\d{1,2})?", text):
@@ -121,10 +123,14 @@ _BASIS = (
     # that amount so the evidence replays on its own.
     ("monthly", re.compile(r"(?:^|(?<=[\s(/·|]))월\s*(?:렌탈료|렌트료|렌탈|렌트|구독료|구독|이용료|요금|납부금|납입금|대여료|사용료)?"
                            r"\s*[:：]?\s*₩?\s*\d[\d,]*(?:\.\d+)?\s*(?:만\s*원|원)?"
-                           r"|/\s*(?:월|개월|mo\b|month)|매월|월간|월\s*납|per\s+month|a\s+month|monthly|/mo\b", re.I)),
-    ("yearly", re.compile(r"/\s*(?:년|yr\b|year)|per\s+year|a\s+year|annually|yearly|연간\s*(?:구독|이용)", re.I)),
-    ("weekly", re.compile(r"/\s*(?:주|wk\b|week)|per\s+week|weekly|매주", re.I)),
-    ("daily", re.compile(r"/\s*(?:일|day)\b|per\s+day|a\s+day|1일\s*(?:대여|이용)|일\s*대여료|daily", re.I)),
+                           # Other forms must follow an amount: a title such as
+                           # "A Year in Provence" or "월간 잡지" names no billing period.
+                           r"|(?:\d|원)\s*(?:/|per\s+|a\s+)\s*(?:월|개월|mo\b|month\b)|매월\s*(?:결제|납부|청구)|월\s*납부"
+                           r"|billed\s+monthly", re.I)),
+    ("yearly", re.compile(r"(?:\d|원)\s*(?:/|per\s+|a\s+)\s*(?:년|yr\b|year\b)|billed\s+(?:annually|yearly)"
+                          r"|연간?\s*(?:구독료|이용료)", re.I)),
+    ("weekly", re.compile(r"(?:\d|원)\s*(?:/|per\s+|a\s+)\s*(?:주|wk\b|week\b)|billed\s+weekly", re.I)),
+    ("daily", re.compile(r"(?:\d|원)\s*(?:/|per\s+|a\s+)\s*(?:일|day\b)|1일\s*(?:대여료|이용료)|일\s*대여료", re.I)),
 )
 _TERM_MONTHS = re.compile(r"(\d{1,3})\s*개월\s*(?:약정|계약|의무|렌탈|렌트|구독|이용|할부)?")
 _TERM_YEARS = re.compile(r"(\d{1,2})\s*년\s*(?:약정|계약|의무|렌탈|렌트)")
