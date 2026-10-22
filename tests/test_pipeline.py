@@ -411,3 +411,18 @@ def test_ledger_indexes_and_atomic_attempt_records(tmp_path):
         assert [row["status"] for row in store.tasks("r")] == ["verified", "failed"]
     finally:
         store.close()
+
+
+def test_indexed_matching_returns_exactly_what_the_linear_scan_returns():
+    from su_crawler.pipeline import _matches, _matching
+    fields = [{"item_id": "A"}, {"item_id": " a "}, {"item_id": "B", "sku": "s1"}, {}, {"item_id": ""},
+              {"sku": "S1"}, {"item_id": "B", "sku": "S1"}]
+    candidates = [Candidate(f, {}, f"row:{i}", "test") for i, f in enumerate(fields)]
+    products = [Product("p1", "A", identifiers={"item_id": "a"}), Product("p2", "B", identifiers={"item_id": "B", "sku": "s1"}),
+                Product("p3", "none", identifiers={}), Product("p4", "empty", identifiers={"item_id": ""}),
+                Product("p5", "sku", identifiers={"sku": "s1"})]
+    cache = {}
+    for product in products:
+        expected = [c for c in candidates if _matches(c, product)]
+        assert _matching(candidates, product, cache) == expected
+        assert _matching(candidates, product, cache) == expected  # cached index
