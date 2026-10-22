@@ -358,7 +358,11 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     destination = Path(output_dir).resolve()
     base_dir = str(Path(root).resolve())
     from .collection_rules import normalize_rules, apply_rule
-    collection_rules = normalize_rules(snapshot.get('collection_rules', {}), {url for url, _ in selected} | unchecked)
+    collection_rules = normalize_rules(snapshot.get('collection_rules', {}), {url for url, _ in selected} | unchecked,
+                                       allow_trials=True)
+    # An assistant-proposed rule runs only with a verified, untampered trial.
+    from .rule_trials import active_rules
+    collection_rules, held_rules = active_rules(collection_rules, destination)
     fetch = collector or collect
     deadline = time.monotonic() + max_seconds
     queue = deque((url, "selected") for url in chosen)
@@ -1073,6 +1077,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                            "exclude_terms": snapshot.get("exclude_terms", []), "conditions": conditions},
             "scope": "Visited pages only; unrelated same-host navigation links may be visited within the page budget. No whole-site completeness claim.",
             "scope_note": "Coverage distinguishes visited pages, extracted products, explicit condition matches, unknowns, and exclusions. Only fields present in product evidence were checked. Other natural-language and commercial conditions still require review."}
+    if held_rules:
+        result["held_rules"] = held_rules
     result["budget"] = {"pages_used": dispatched, "max_pages": max_pages,
                         "seconds_used": min(max_seconds, elapsed + time.monotonic() - started), "max_seconds": max_seconds}
     result['rules_version'] = rules_version

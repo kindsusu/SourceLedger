@@ -244,7 +244,8 @@ def get_plan(root: str | Path, plan_id: str) -> dict[str, Any]:
         return {"plan": _load(db, _id(plan_id))}
 
 
-def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes: dict[str, Any]) -> dict[str, Any]:
+def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes: dict[str, Any],
+                *, trial_writer: bool = False) -> dict[str, Any]:
     edit = _object(changes, "changes", _EDIT_KEYS)
     if not edit:
         raise ValueError("changes must not be empty")
@@ -297,7 +298,9 @@ def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes:
         plan["candidates"] = candidates
         from .collection_rules import normalize_rules
         if 'collection_rules' in edit:
-            plan['collection_rules'] = normalize_rules(edit['collection_rules'], {c['url'] for c in candidates})
+            plan['collection_rules'] = normalize_rules(edit['collection_rules'], {c['url'] for c in candidates},
+                                                       existing=plan.get('collection_rules'),
+                                                       allow_trials=trial_writer)
         elif 'collection_rules' in plan:
             plan['collection_rules'] = rules_for(plan['collection_rules'], [c['url'] for c in candidates])
         plan["state"] = "preview" if candidates else "draft"
