@@ -102,7 +102,10 @@ def issues_from_coverage(store, run_id: str, coverage: list[dict]) -> list[dict]
             evidence = {key: section[key] for key in ('evidence_ref', 'expected_count', 'observed_count',
                         'extracted_count', 'price_count', 'unparsed_count', 'limits', 'trace',
                         'unavailable', 'skipped', 'unavailable_options', 'skipped_options',
-                        'missing_locators', 'mismatched_locators', 'enumeration') if key in section}
+                        'missing_locators', 'mismatched_locators', 'enumeration',
+                        # Generic extraction: which method chose the prices and the
+                        # collection_rules entry that would pin it after approval.
+                        'method', 'platform', 'suggested_rule') if key in section}
             issues.append(_issue(run_id, url, name, '', code, reason, action, evidence, scope,
                                  attempts=page.get('attempts', 0)))
             for key in ('missing_locators', 'mismatched_locators'):

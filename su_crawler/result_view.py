@@ -8,7 +8,7 @@ import re
 import unicodedata
 
 from .models import Candidate
-from .validation import RENTAL_COMPARISON_FIELDS, _evidence_matches, _field_display_proven
+from .validation import _evidence_matches, _field_display_proven, required_comparison_fields
 
 FIELD_LABELS = {"price": "Price", "currency": "Currency", "price_basis": "Price basis", "term_months": "Contract term (months)",
                 "deposit_amount": "Deposit", "advance_amount": "Advance payment", "annual_mileage_km": "Annual mileage (km)",
@@ -163,7 +163,7 @@ def build_result_view(rows):
         row["supporting_evidence"].append(evidence)
     for row in offers:
         fields = _fields(row)
-        required = RENTAL_COMPARISON_FIELDS if row.get("price_profile") == "rental" else ("currency", "unit", "pack_quantity", "tax", "price_type", "price_basis")
+        required = required_comparison_fields(row.get("price_profile") or "unit")
         display_fields = ("price", *required) + (("deposit_percent",) if "deposit_percent" in fields else ())
         row["field_status"] = {key: {"label": FIELD_LABELS.get(key, key), "value": fields.get(key), "status": "recorded" if fields.get(key) not in (None, "") else "missing"}
                                for key in display_fields}
@@ -224,7 +224,7 @@ def build_result_view(rows):
         candidate["supporting_evidence"] = []
         candidate["conflicts"] = []
         fields = _fields(candidate)
-        required = RENTAL_COMPARISON_FIELDS if candidate.get("price_profile") == "rental" else ("currency", "unit", "pack_quantity", "tax", "price_type", "price_basis")
+        required = required_comparison_fields(candidate.get("price_profile") or "unit")
         interpreted = (candidate.get("derived_values") or {}).get("literal_interpretations") or {}
         candidate["field_status"] = {
             key: {"label": FIELD_LABELS.get(key, key), "value": fields.get(key),

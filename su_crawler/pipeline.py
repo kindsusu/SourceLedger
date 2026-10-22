@@ -343,7 +343,10 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                     break
                 if max_tasks is not None:
                     tasks = tasks[:max_tasks - processed]
-                if time.monotonic() >= deadline:
+                # The run budget bounds new fetches. Responses a caller already
+                # captured are recorded however long earlier sources took;
+                # dropping them would discard collected evidence.
+                if time.monotonic() >= deadline and not (prefetched or {}).get(source.id):
                     store.update_tasks([task["id"] for task in tasks], "budget_exhausted", "Run time limit reached")
                     continue
                 backends = ["file"] if source.kind == "file" else source.backends
@@ -361,7 +364,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                 captured_responses = ([captured] if isinstance(captured, tuple) else list(captured or []))
                 max_calls = used + len(captured_responses) if captured_responses else source.max_attempts * len(backends)
                 for call in range(used, max_calls):
-                    if time.monotonic() >= deadline:
+                    if not captured_responses and time.monotonic() >= deadline:
                         last = FetchResult(source.id, "budget_exhausted", "none", message="Run time limit reached")
                         break
                     captured_response = captured_responses[call - used] if captured_responses else None

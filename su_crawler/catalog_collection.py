@@ -1,7 +1,9 @@
 """Bounded collection of pages selected in a confirmed research plan.
 
-Only known adapters and embedded JSON-LD Product/Offer records are interpreted.
-Other page content remains source evidence and an explicit coverage gap.
+Known site adapters run first; any other page goes through the generic chain
+(storefront platforms, structured data, visible-price heuristics). Whatever
+cannot be tied to a visible or structured price remains source evidence and
+an explicit coverage gap.
 """
 from __future__ import annotations
 
@@ -41,6 +43,7 @@ from .coverage import summarize, apply_status, unknown_section
 from .incremental import extraction_version
 from .incremental import conditional_fetch, extract_current
 from .catalog_refresh import (normalize_refresh_policy, scope_key, read_baseline, write_baseline,
+                              plan_scope_key, read_page_baselines, write_page_baselines, merge_page_baselines,
                               decide, item_changes, semantic_candidates, validated_http, page_baseline,
                               save_refresh_run, source_signature)
 
@@ -55,8 +58,16 @@ def _nodes(value, depth=0):
 
 
 def _jsonld_candidates(result: FetchResult) -> list[Candidate]:
-    from .structured_data import extract_jsonld
-    return extract_jsonld(result)
+    """Adapter-less extraction: platforms, structured data, then visible-price heuristics."""
+    from .generic_extraction import extract_generic
+    return extract_generic(result)
+
+
+def _url_or_none(value: str) -> str | None:
+    try:
+        return _url(value)
+    except ValueError:
+        return None
 
 
 def _links(result: FetchResult, page_url: str, host: str, excluded: set[str]):
@@ -81,6 +92,14 @@ def _links(result: FetchResult, page_url: str, host: str, excluded: set[str]):
             if urlsplit(link).hostname == host and link not in excluded and link not in seen:
                 seen.add(link)
                 links.append(link)
+    if not HOST_ADAPTERS.get(host):
+        # Spend the page budget on products first: card links found on a list
+        # page, then its pager, then every other same-host link.
+        from .generic_extraction import pagination_links, product_links
+        preferred = [link for link in (_url_or_none(value) for value in
+                                       [*product_links(result), *pagination_links(result)])
+                     if link in seen]
+        links = list(dict.fromkeys([*preferred, *links]))
     # Bound work explicitly; a truncated frontier is never an empty remainder.
     if len(links) > 1000:
         result.trace.append({"event": "discovery_truncated", "reason": "Link discovery limit reached",
@@ -230,11 +249,20 @@ def _term_match(candidate: Candidate, includes: list[str], excludes: list[str]) 
     return (not includes or any(term in text for term in includes)) and not any(term in text for term in excludes)
 
 
+def _price_profile(source: Source, candidate: Candidate) -> str:
+    """Vehicle adapters keep the rental contract; other offers are sales or recurring fees."""
+    from .validation import RECURRING_BASES
+    if source.adapter:
+        return "rental"
+    return "recurring" if candidate.fields.get("price_basis") in RECURRING_BASES else "sale"
+
+
 def _products_for(source: Source, candidates: list[Candidate], fallback_name: str) -> list[Product]:
     products, seen = [], set()
     for candidate in candidates:
         fields = candidate.fields
-        identity = next(((key, str(fields[key])) for key in ("sku", "item_id", "mpn", "gtin13", "gtin12", "gtin14", "gtin8", "gtin", "model", "name")
+        identity = next(((key, str(fields[key])) for key in ("sku", "item_id", "mpn", "gtin13", "gtin12", "gtin14", "gtin8", "gtin",
+                                                             "url_id", "model", "name")
                          if fields.get(key) is not None and str(fields[key]).strip()), None)
         if identity is None or identity in seen:
             continue
@@ -242,11 +270,11 @@ def _products_for(source: Source, candidates: list[Candidate], fallback_name: st
         product_id = "catalog_" + stable_id(source.id, *identity)
         products.append(Product(product_id, str(fields.get("name") or fields.get("model") or identity[1]),
                                 identifiers={identity[0]: identity[1]},
-                                price_profile="rental" if source.adapter else "unit"))
+                                price_profile=_price_profile(source, candidate)))
         source.product_ids.append(product_id)
     if not products:
         product_id = "catalog_unresolved_" + stable_id(source.id)
-        products.append(Product(product_id, fallback_name, price_profile="rental" if source.adapter else "unit"))
+        products.append(Product(product_id, fallback_name, price_profile="rental" if source.adapter else "sale"))
         source.product_ids.append(product_id)
     return products
 
@@ -344,8 +372,14 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     refresh_policy = (normalize_refresh_policy(snapshot['refresh_policy'])
                       if 'refresh_policy' in snapshot else {'mode': 'full', 'full_interval_days': 7})
     refresh_key = scope_key(snapshot, chosen, follow_links=follow_links)
-    prior_baseline = (state.get('refresh_baseline') if state and 'refresh_baseline' in state
-                      else read_baseline(destination, refresh_key))
+    pages_key = plan_scope_key(snapshot, follow_links=follow_links)
+    if state and 'refresh_baseline' in state:
+        prior_baseline = state.get('refresh_baseline')
+    else:
+        # Batch membership shifts when the approved URL list changes; each
+        # selected page still compares with its newest per-URL baseline.
+        prior_baseline = merge_page_baselines(read_baseline(destination, refresh_key),
+                                              read_page_baselines(destination, pages_key, chosen))
     refresh_decision = (state.get('refresh_decision') if state else None) or decide(
         refresh_policy, prior_baseline, rules_version,
         manual_full=bool(retry_urls is not None))
@@ -1133,7 +1167,10 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         partial_baseline = dict(prior_baseline or {
             'rules_version': None, 'last_full_at': None, 'valid': False})
         partial_baseline['pages'] = next_pages
+        partial_baseline.pop('pages_only', None)
         write_baseline(destination, refresh_key, partial_baseline)
+    write_page_baselines(destination, pages_key, {url: page for url, page in next_pages.items()
+                                                  if page is not baseline_pages.get(url)})
     next_due = (datetime.fromisoformat(last_full_at) + timedelta(days=refresh_policy['full_interval_days'])).isoformat() if last_full_at else None
     inventory_verified = bool(full_success and all(
         page.get('sections') and all(section.get('status') == 'complete'

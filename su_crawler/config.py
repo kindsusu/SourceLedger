@@ -10,7 +10,7 @@ import re
 from .models import CollectionConfig, Product, Source, resolve_path, stable_id
 from .browser_enumeration import validate_enumeration_step
 
-PRICE_PROFILES = frozenset({"unit", "rental"})
+PRICE_PROFILES = frozenset({"unit", "rental", "sale", "recurring"})
 SOURCE_ADAPTERS = frozenset({"jetcar", "gongcar", "funrent", "amazoncar"})
 
 
@@ -33,7 +33,7 @@ def load_config(path: str | Path) -> CollectionConfig:
         if not product.identifiers or any(not str(v).strip() for v in product.identifiers.values()):
             raise ValueError(f"Product {product.id}: identifiers are required for source matching")
         if not isinstance(product.price_profile, str) or product.price_profile not in PRICE_PROFILES:
-            raise ValueError(f"Product {product.id}: price_profile must be unit or rental")
+            raise ValueError(f"Product {product.id}: price_profile must be unit, rental, sale or recurring")
     for source in sources:
         for step in source.recipe:
             if not isinstance(step, dict):

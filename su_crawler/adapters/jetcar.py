@@ -75,16 +75,46 @@ def _availability_text(row: Tag, raw: str) -> str:
     return cells[0] if len(cells) == 1 else raw
 
 
-def _rent_identity(index: int, raw: str) -> tuple[int, str, str, str | None, str | None] | None:
+_BARE_AMOUNT = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)")
+
+
+def _columns(row: Tag | None) -> dict[str, str]:
+    """Cells of a headed quote table (보증금 | 계약기간 | 월 렌트비 | 주행거리) by header."""
+    table = row.find_parent("table") if row is not None else None
+    head = table.select("thead th") if table is not None else []
+    cells = row.find_all("td", recursive=False) if row is not None else []
+    if not head or len(head) != len(cells):
+        return {}
+    return {re.sub(r"\s+", " ", th.get_text(" ", strip=True)): unstruck_text(td) or "" for th, td in zip(head, cells)}
+
+
+def _column_price(columns: dict[str, str]) -> str | None:
+    """A bare amount under a 월 렌트비/월 렌트료 header (the header carries 월 and the won unit is implied)."""
+    raw = next((value for header, value in columns.items() if re.fullmatch(r"월\s*렌트[비료]", header)), None)
+    return raw.replace(",", "") if raw and _BARE_AMOUNT.fullmatch(raw) else None
+
+
+def _column_deposit(columns: dict[str, str]) -> tuple[str | None, str | None]:
+    raw = columns.get("보증금")
+    return (won(raw), raw) if raw else (None, None)
+
+
+def _rent_identity(index: int, raw: str, row: Tag | None = None) -> tuple[int, str, str, str | None, str | None] | None:
     """Use the displayed row and contract conditions, not its price alone."""
+    columns = _columns(row)
     term = re.search(r"(\d+)\s*개월", raw)
     price, _ = _row_price(raw)
+    price = price or _column_price(columns)
     if not term or not price:
         return None
     deposit_match = re.search(r"보증금\s*[\d,.]+\s*(?:만원|원)", raw)
     deposit = won(deposit_match.group()) if deposit_match else None
     if deposit_match and deposit is None:
         return None
+    if not deposit_match:
+        deposit, deposit_raw = _column_deposit(columns)
+        if deposit_raw and deposit is None:
+            return None
     annual_match = re.search(r"연\s*([\d,.]+)\s*(만)?\s*[Kk][Mm]", raw)
     annual = None
     if annual_match:
@@ -106,8 +136,8 @@ def section_coverage(result: FetchResult, candidates: list[Candidate]) -> list[d
     raw_rows = list(_rent_rows(table))
     expected: dict[tuple[int, str, str, str | None, str | None], str] = {}
     unparsed = 0
-    for index, raw, _ in raw_rows:
-        identity = _rent_identity(index, raw)
+    for index, raw, row in raw_rows:
+        identity = _rent_identity(index, raw, row)
         if identity is None:
             unparsed += 1
             continue
@@ -197,6 +227,9 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
         if not term:
             continue
         price, price_problem = _row_price(raw)
+        columns = _columns(row)
+        if price is None and _column_price(columns):
+            price, price_problem = _column_price(columns), None
         review_flags: list[str] = []
         row_fields, row_proofs = dict(fields), dict(proofs)
         if price is not None:
@@ -218,6 +251,11 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
         if deposit and won(deposit.group()):
             row_fields["deposit_amount"] = won(deposit.group())
             row_proofs["deposit_amount"] = evidence(f"table:rent/tr:{index}", row_fields["deposit_amount"], deposit.group(), raw)
+        elif not deposit:
+            column_deposit, column_raw = _column_deposit(columns)
+            if column_deposit:
+                row_fields["deposit_amount"] = column_deposit
+                row_proofs["deposit_amount"] = evidence(f"table:rent/tr:{index}/td:보증금", column_deposit, column_raw, raw)
         annual = re.search(r"연\s*([\d,.]+)\s*(만)?\s*[Kk][Mm]", raw)
         if annual:
             normalized = decimal_string(annual.group(1), multiplier=10_000 if annual.group(2) else 1)

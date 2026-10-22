@@ -311,7 +311,7 @@ def _refresh_specs(refresh: dict[str, Any]) -> list[SheetSpec]:
         if value is None:
             return None
         fields = {key: val for key, val in value.get('fields', {}).items()
-                  if key not in {'name', 'price', 'currency', 'sku', 'item_id', 'mpn', 'gtin'}}
+                  if key not in {'name', 'price', 'currency', 'sku', 'item_id', 'mpn', 'gtin', 'url_id', 'product_url'}}
         lines = [f'{label(key)}: {display(val)}' for key, val in fields.items()]
         lines.extend(f'{label("spec:" + key)}: {display(val)}' for key, val in value.get('specs', {}).items())
         return '\n'.join(lines) or None

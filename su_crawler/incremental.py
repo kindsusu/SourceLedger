@@ -14,8 +14,9 @@ from .models import Candidate, FetchResult, Source, stable_id
 def extraction_version() -> str:
     root = Path(__file__).parent
     files = [root / 'extraction.py', root / 'models.py']
-    if (root / 'structured_data.py').is_file():
-        files.append(root / 'structured_data.py')
+    for name in ('structured_data.py', 'generic_extraction.py', 'amounts.py', 'evidence_normalization.py'):
+        if (root / name).is_file():
+            files.append(root / name)
     files.extend(sorted((root / 'adapters').glob('*.py')))
     digest = hashlib.sha256()
     for path in files:
