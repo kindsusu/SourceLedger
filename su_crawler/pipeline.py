@@ -25,6 +25,26 @@ def _matches(candidate: Candidate, product: Product) -> bool:
                for key, value in product.identifiers.items())
 
 
+def _matching(candidates: list[Candidate], product: Product, cache: dict) -> list[Candidate]:
+    """The candidates ``_matches`` accepts for ``product``, in order, via a per-list index.
+
+    A page with N products is matched against N tasks; scanning every
+    candidate per task is quadratic. Each candidate list is indexed once per
+    identifier key set with the same comparison as ``_matches``.
+    """
+    keys = tuple(product.identifiers)
+    # The entry keeps its list referenced, so the id cannot be reused meanwhile.
+    entry = cache.get((id(candidates), keys))
+    if entry is None or entry[0] is not candidates:
+        index: dict[tuple[str, ...], list[Candidate]] = {}
+        for candidate in candidates:
+            value = tuple(str(candidate.fields.get(key, "")).strip().casefold() for key in keys)
+            index.setdefault(value, []).append(candidate)
+        entry = cache[(id(candidates), keys)] = (candidates, index)
+    wanted = tuple(str(value).strip().casefold() for value in product.identifiers.values())
+    return list(entry[1].get(wanted, ()))
+
+
 def _candidate_quality(candidate: Candidate, decimal_separator: str = ".") -> tuple[int, ...]:
     """Rank evidence quality without treating duplicate rows as stronger proof."""
     from .validation import _amount
@@ -365,6 +385,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                 if source.recipe:
                     backends = [b for b in backends if b == "playwright"] or ["playwright"]
                 responses: list[tuple[FetchResult, list[Candidate]]] = []
+                match_cache: dict = {}
                 best_by_task: dict[str, int] = {}
                 score_by_task: dict[str, tuple[int, ...]] = {}
                 fallback_index: int | None = None
@@ -416,7 +437,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                         priced_matches = 0
                         for task in tasks:
                             product = product_map[task["product_id"]]
-                            matches = [candidate for candidate in candidates if _matches(candidate, product)]
+                            matches = _matching(candidates, product, match_cache)
                             score = _response_quality(matches, source.decimal_separator)
                             if score > score_by_task.get(task["id"], (-1,)):
                                 score_by_task[task["id"]] = score
@@ -431,10 +452,10 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                         # missing optional commercial conditions do not cause
                         # retries beyond the configured finite budget.
                         if (not captured_responses and (source.kind == "file" or all(
-                                _has_sufficient_evidence([
-                                    candidate for candidate in responses[best_by_task[task["id"]]][1]
-                                    if _matches(candidate, product_map[task["product_id"]])
-                                ], source.decimal_separator) for task in tasks if task["id"] in best_by_task)
+                                _has_sufficient_evidence(
+                                    _matching(responses[best_by_task[task["id"]]][1], product_map[task["product_id"]],
+                                              match_cache), source.decimal_separator)
+                                for task in tasks if task["id"] in best_by_task)
                                 and len(best_by_task) == len(tasks))):
                             break
                     if not captured_responses and last.status in {"policy_denied", "needs_auth"}:
@@ -466,7 +487,7 @@ def execute(config: CollectionConfig, *, resume_id: str | None = None, new_run_i
                         fetched, candidates = responses[response_index]
                         evidence_path, digest = evidence_by_response[response_index]
                         product = product_map[task["product_id"]]
-                        matches = [c for c in candidates if _matches(c, product)]
+                        matches = _matching(candidates, product, match_cache)
                         rows = []
                         for candidate in matches:
                             index = candidate.derived_values.get('capture_snapshot_index')
