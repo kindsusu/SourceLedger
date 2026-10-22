@@ -1,22 +1,66 @@
-"""Explicit, revision-pinned page recipes; never inferred from untrusted HTML."""
+"""Explicit, revision-pinned page recipes; never inferred from untrusted HTML.
+
+A rule key is an exact plan candidate URL, or a site pattern
+``site:<host>/<path glob>`` (``*`` matches within the path) that covers
+several approved pages of one site, such as every category list. An exact
+URL rule wins over patterns; among patterns the longest (most specific) wins.
+"""
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
 import json
 from pathlib import Path
+import re
+from urllib.parse import urlsplit
+
+PATTERN_PREFIX = 'site:'
+_PATTERN = re.compile(r'site:([a-z0-9.-]+)(/[A-Za-z0-9/_.~%*+,;=:@!$\'()-]*)')
+
+
+def is_pattern(key: str) -> bool:
+    return isinstance(key, str) and key.startswith(PATTERN_PREFIX)
+
+
+def pattern_matches(key: str, url: str) -> bool:
+    match = _PATTERN.fullmatch(key)
+    parts = urlsplit(url)
+    return bool(match and (parts.hostname or '') == match.group(1)
+                and fnmatchcase(parts.path or '/', match.group(2)))
+
+
+def rules_for(rules: dict, urls) -> dict:
+    """The rules that apply to any of ``urls`` (exact keys and matching patterns)."""
+    urls = set(urls)
+    return {key: rule for key, rule in (rules or {}).items()
+            if key in urls or (is_pattern(key) and any(pattern_matches(key, url) for url in urls))}
+
+
+def _rule_key(raw_key, allowed_urls):
+    from .research_plans import canonical_url
+    if not is_pattern(raw_key):
+        url = canonical_url(raw_key)
+        if url not in allowed_urls:
+            raise ValueError('Collection rules must refer to a plan candidate URL')
+        return url
+    key = PATTERN_PREFIX + raw_key[len(PATTERN_PREFIX):].strip()
+    host, _, path = key[len(PATTERN_PREFIX):].partition('/')
+    key = f'{PATTERN_PREFIX}{host.lower()}/{path}'
+    if len(key) > 300 or not _PATTERN.fullmatch(key):
+        raise ValueError('Site rule patterns look like site:<host>/<path glob> (letters, digits, / . _ - ~ % *)')
+    if not any(pattern_matches(key, url) for url in allowed_urls):
+        raise ValueError('A site rule pattern must match at least one plan candidate URL')
+    return key
 
 
 def normalize_rules(value, allowed_urls):
-    from .research_plans import canonical_url
     from .collectors import _safe_step, _expand_options
     if not isinstance(value, dict) or len(value) > 50:
-        raise ValueError('collection_rules must map at most 50 selected URLs to reviewed rules')
+        raise ValueError('collection_rules must map at most 50 selected URLs or site patterns to reviewed rules')
     if len(json.dumps(value, ensure_ascii=False).encode('utf-8')) > 65536:
         raise ValueError('Collection rules exceed 64 KiB')
     result = {}
     for raw_url, rule in value.items():
-        url = canonical_url(raw_url)
-        if url not in allowed_urls:
-            raise ValueError('Collection rules must refer to a plan candidate URL')
+        url = _rule_key(raw_url, allowed_urls)
         if not isinstance(rule, dict) or set(rule) - {'recipe', 'selectors', 'row_selector', 'profile_dir'}:
             raise ValueError('Invalid collection rule fields')
         recipe = rule.get('recipe', [])
@@ -51,8 +95,16 @@ def normalize_rules(value, allowed_urls):
     return result
 
 
+def rule_for(rules, url):
+    """The exact rule for ``url``, else the most specific matching site pattern."""
+    if url in rules:
+        return rules[url]
+    patterns = sorted((key for key in rules if is_pattern(key) and pattern_matches(key, url)), key=len, reverse=True)
+    return rules[patterns[0]] if patterns else None
+
+
 def apply_rule(source, rules, root):
-    rule = rules.get(source.location)
+    rule = rule_for(rules, source.location)
     if not rule:
         return source
     from dataclasses import replace

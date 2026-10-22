@@ -277,3 +277,40 @@ def test_no_conditions_are_not_counted_as_matched(tmp_path):
                           collector=fake({(url, "http"): html_product("Oats", price="3", currency="USD")}, []))
     assert result["coverage"][0]["scope_counts"] == {"matched": 0, "unknown": 0, "excluded": 0, "not_checked": 1}
     assert result["coverage"][0]["scope_assessments"][0]["reason"] == "No structured product conditions were provided"
+
+
+def _shop_cards(currency_sign="₩"):
+    cards = "".join(f'<li class="product post-{i}"><a href="/p/{i}"><h2 class="woocommerce-loop-product__title">'
+                    f'Item {i}</h2><span class="price"><span class="amount">{currency_sign}{i},000</span></span></a></li>'
+                    for i in range(1, 3))
+    return f'<ul class="products">{cards}</ul>'.encode()
+
+
+def test_approved_pages_scope_lets_rendered_rows_verify_but_requests_alone_do_not(tmp_path):
+    url = "https://shop.example/list"
+    pages = {(url, "http"): _shop_cards(), (url, "playwright"): _shop_cards()}
+    unscoped = collect_plan(tmp_path / "a", plan([url]), output_dir=tmp_path / "a" / "out", max_pages=1,
+                            follow_links=False, collector=fake(pages, []))
+    assert {row["status"] for row in rows(unscoped["output_dir"], unscoped["run_id"])} == {"review"}
+    scoped = collect_plan(tmp_path / "b", {**plan([url]), "scope_mode": "approved_pages"},
+                          output_dir=tmp_path / "b" / "out", max_pages=1, follow_links=False,
+                          collector=fake(pages, []))
+    observations = rows(scoped["output_dir"], scoped["run_id"])
+    assert {(row["status"], row["comparable"], row["price_profile"]) for row in observations} == {("verified", True, "sale")}
+    filtered = collect_plan(tmp_path / "c", {**plan([url], includes=["Item 1"]), "scope_mode": "approved_pages"},
+                            output_dir=tmp_path / "c" / "out", max_pages=1, follow_links=False,
+                            collector=fake(pages, []))
+    assert {row["status"] for row in rows(filtered["output_dir"], filtered["run_id"])} == {"review"}
+
+
+def test_plan_market_resolves_dollar_sign_currency(tmp_path):
+    url = "https://shop.example/list"
+    pages = {(url, "playwright"): _shop_cards("$")}
+    snapshot = {**plan([url]), "scope_mode": "approved_pages"}
+    snapshot["topic"] = {**snapshot["topic"], "market": "United States"}
+    result = collect_plan(tmp_path, snapshot, output_dir=tmp_path / "out", max_pages=1, follow_links=False,
+                          collector=fake(pages, []))
+    observations = rows(result["output_dir"], result["run_id"])
+    assert {(row["currency"], row["status"]) for row in observations} == {("USD", "verified")}
+    proof = observations[0]["evidence"]["currency"]
+    assert proof["proof_kind"] == "marker_with_plan_market" and proof["marker"] == "$"

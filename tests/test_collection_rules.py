@@ -64,3 +64,24 @@ def test_catalog_uses_reviewed_rule_without_http_prefetch(tmp_path):
         assert store.observations(result['run_id'])[0]['raw_fields']['price'] == '12'
     finally:
         store.close()
+
+
+def test_site_pattern_rule_covers_many_pages_and_exact_url_wins():
+    from su_crawler.collection_rules import rule_for, rules_for
+    lists = [f'https://shop.example/category/{i}' for i in range(3)]
+    other = {'selectors': {'name': 'h1', 'price': '.price'}}
+    rules = normalize_rules({'site:Shop.example/category/*': RULE, lists[0]: other}, set(lists) | {URL})
+    assert set(rules) == {'site:shop.example/category/*', lists[0]}
+    assert rule_for(rules, lists[0]) == {'recipe': [], **other}
+    assert rule_for(rules, lists[2]) == RULE
+    assert rule_for(rules, URL) is None
+    # Batches keep only the rules that apply to their own URLs.
+    assert set(rules_for(rules, [lists[1]])) == {'site:shop.example/category/*'}
+    assert rules_for(rules, [URL]) == {}
+
+
+@pytest.mark.parametrize('key', ['site:other.example/category/*', 'site:shop.example/nothing/*',
+                                 'site:shop.example', 'site:shop.example/a b'])
+def test_site_patterns_must_be_wellformed_and_match_a_candidate(key):
+    with pytest.raises(ValueError):
+        normalize_rules({key: RULE}, {'https://shop.example/category/1'})

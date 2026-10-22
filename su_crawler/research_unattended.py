@@ -99,11 +99,15 @@ def collect_url_file(root: str | Path, *, urls_file: str | Path, industry: str, 
         plan = plans.create_plan(base, request)["plan"]
     else:
         plan = plans.get_plan(base, plan_id)["plan"]
+    # The operator approves the URL list itself, with no natural-language
+    # conditions: every product shown on those pages is in scope.
     reused = (not created and plan["state"] == "confirmed" and plan["topic"] == topic
-              and plans.selected_urls(plan) == urls)
+              and plans.selected_urls(plan) == urls and plan.get("scope_mode") == "approved_pages")
     if not reused:
+        changes = {"scope_mode": "approved_pages"}
         if plan["topic"] != topic:
-            plan = plans.revise_plan(base, plan["id"], plan["revision"], {"topic": topic})["plan"]
+            changes["topic"] = topic
+        plan = plans.revise_plan(base, plan["id"], plan["revision"], changes)["plan"]
         plan = plans.import_urls(base, plan["id"], plan["revision"], urls, replace=True)["plan"]
         plan = confirm_research(base, plan_id=plan["id"], expected_revision=plan["revision"],
                                 user_confirmed=True)["plan"]

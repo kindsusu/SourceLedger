@@ -28,6 +28,8 @@ from .collectors import browser_session
 from .collectors import (HttpClientPool, RobotsPolicyCache, active_job_resources, http_client_scope,
                          robots_policy_scope, _cards_digest)
 from .extraction import extract
+from .amounts import market_currency
+from .generic_extraction import apply_market_currency
 from .models import Candidate, CollectionConfig, FetchResult, Product, Source, stable_id
 from .pipeline import execute, _candidate_quality, _has_sufficient_evidence
 from .research import _atomic_write
@@ -152,8 +154,13 @@ def collection_rules_version():
     return digest.hexdigest()
 
 
-def _scope_candidates(candidates, includes, excludes, conditions):
+def _scope_candidates(candidates, includes, excludes, conditions, *, approved_pages=False):
     kept, assessments = [], []
+    # The user declared every product on the approved pages in scope
+    # (scope_mode approved_pages) and set no filter terms or conditions:
+    # there is nothing left to verify per row. Natural-language requests
+    # without that declaration keep their scope review.
+    page_scope = approved_pages and not includes and not excludes and not conditions
     for candidate in candidates:
         name = str(candidate.fields.get('name') or candidate.fields.get('model') or '')[:160]
         if not _term_match(candidate, includes, excludes):
@@ -166,6 +173,10 @@ def _scope_candidates(candidates, includes, excludes, conditions):
         if assessment['status'] == 'excluded':
             continue
         candidate.derived_values['scope_assessment'] = assessment
+        if page_scope:
+            candidate.derived_values['scope_assessment'] = {**assessment, 'scope': 'approved_pages'}
+            kept.append(candidate)
+            continue
         flag = 'Research-plan scope and natural-language conditions have not been independently verified'
         if flag not in candidate.review_flags:
             candidate.review_flags.append(flag)
@@ -177,7 +188,7 @@ def _scope_candidates(candidates, includes, excludes, conditions):
     return kept, assessments
 
 
-def _reanalyse(captures, coverage, includes, excludes, conditions):
+def _reanalyse(captures, coverage, includes, excludes, conditions, approved_pages=False):
     """Rebuild candidates from retained bytes; never refetch or alter capture times."""
     by_url = {page['url']: page for page in coverage}
     rebuilt = {}
@@ -198,7 +209,7 @@ def _reanalyse(captures, coverage, includes, excludes, conditions):
                 try:
                     candidates = extract(result, source) if source.adapter or source.selectors or getattr(result, 'variant_snapshots', []) else []
                     if not candidates:
-                        candidates = _jsonld_candidates(result)
+                        candidates = apply_market_currency(_jsonld_candidates(result), source.market_currency)
                     if result.backend == 'http':
                         raw_http_candidates = [asdict(candidate) for candidate in candidates]
                 except Exception as exc:
@@ -207,7 +218,8 @@ def _reanalyse(captures, coverage, includes, excludes, conditions):
                     result.message = f'Extraction needs review: {type(exc).__name__}'
                     result.trace.append({'code': 'extraction_error', 'type': type(exc).__name__})
             sections = _sections(result, candidates, source.adapter) if result.status == 'fetched' else []
-            candidates, assessments = _scope_candidates(candidates, includes, excludes, conditions)
+            candidates, assessments = _scope_candidates(candidates, includes, excludes, conditions,
+                                                        approved_pages=approved_pages)
             score = (result.status == 'fetched', bool(candidates), sum(s['status'] == 'complete' for s in sections),
                      max((_candidate_quality(c) for c in candidates), default=(-1,)), len(candidates))
             if best is None or score > best_score:
@@ -297,6 +309,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     if not isinstance(snapshot, dict) or snapshot.get("state") != "confirmed":
         raise ValueError("A confirmed plan snapshot is required")
     topic = snapshot.get("topic") or {}
+    plan_currency = market_currency(topic.get("market"))
     if not all(isinstance(topic.get(key), str) and topic[key].strip() for key in ("industry", "product", "market")):
         raise ValueError("Plan topic requires industry, product, and market")
     if not isinstance(max_pages, int) or isinstance(max_pages, bool) or not 1 <= max_pages <= 50:
@@ -319,6 +332,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
     includes = [normalize_text(x) for x in includes if x.strip()]
     excludes = [normalize_text(x) for x in excludes if x.strip()]
     conditions = normalize_conditions(snapshot.get("conditions", []))
+    approved_pages = snapshot.get("scope_mode") == "approved_pages"
     excluded_urls = {_url(x) for x in snapshot.get("excluded_urls", [])}
     selections = snapshot.get("candidates", [])
     if not isinstance(selections, list):
@@ -414,7 +428,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         # includes the rules version, so historical observations are preserved.
         old_version = state.get('rules_version', 'legacy')
         write_checkpoint(destination, checkpoint_id + '@' + old_version + '@' + stable_id(state), state)
-        state['captures'] = _reanalyse(state['captures'], state['coverage'], includes, excludes, conditions)
+        state['captures'] = _reanalyse(state['captures'], state['coverage'], includes, excludes, conditions,
+                                       approved_pages)
         state['result'] = None
         state['rules_version'] = rules_version
         reanalysed = True
@@ -445,7 +460,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         captures = {url: data for url, data in parent["captures"].items() if url not in targets}
         coverage = [item for item in parent["result"]["coverage"] if item["url"] not in targets]
         if parent.get('rules_version') != rules_version:
-            captures = _reanalyse(captures, coverage, includes, excludes, conditions)
+            captures = _reanalyse(captures, coverage, includes, excludes, conditions, approved_pages)
             reanalysed = True
         visited = set(captures)
         queue = deque((url, "retry") for url in sorted(targets))
@@ -526,7 +541,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         source_id = "catalog_source_" + stable_id(url)
         source = Source(source_id, host, "web", url, [], allowed_domains=[host], adapter=adapter,
                         max_attempts=1, backends=["http", "playwright"], min_interval_seconds=0,
-                        recipe=_ready_recipe(adapter, url))
+                        recipe=_ready_recipe(adapter, url), market_currency=plan_currency)
         source = apply_rule(source, collection_rules, base_dir)
         adapter = source.adapter
         responses = []
@@ -536,6 +551,7 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
         backends = (["playwright", *[b for b in source.backends if b != "playwright"]]
                     if prefer_browser else list(source.backends))
         fallback_reason = None
+        settle_hint = None
         sample_decision, http_rows, browser_rows = None, [], []
         for backend in backends:
             backend_started = time.monotonic()
@@ -547,7 +563,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 # Leave the HTTP fallback a chance near the end of the budget.
                 page_limit = min(page_limit, remaining - HTTP_FALLBACK_RESERVE_SECONDS)
             bounded = replace(source, timeout_seconds=max(0.001, min(page_limit, remaining)),
-                              recipe=source.recipe if backend == "playwright" else [])
+                              recipe=source.recipe if backend == "playwright" else [],
+                              settle_selector=settle_hint if backend == "playwright" else None)
 
             def fetch_once(backend=backend, bounded=bounded):
                 nonlocal browser_active, browser_peak
@@ -616,7 +633,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 try:
                     def extract_page(response, configured_source):
                         found = extract(response, configured_source) if adapter or configured_source.selectors or getattr(response, 'variant_snapshots', []) else []
-                        return found or _jsonld_candidates(response)
+                        return found or apply_market_currency(_jsonld_candidates(response),
+                                                              configured_source.market_currency)
 
                     saved_extraction = extraction_snapshot(source, backend) if not result.variant_snapshots else None
                     candidates = extract_current(result, source, saved_extraction, extract_page)
@@ -634,8 +652,13 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                 # Section discovery describes the public page. Scope exclusions
                 # affect retained observations, never the observed card count.
                 sections = _sections(result, candidates, adapter) if result.status == 'fetched' else []
+                if backend == 'http' and not adapter and not source.row_selector:
+                    # The product region found in static HTML scopes a browser
+                    # settlement retry if the whole page keeps changing.
+                    settle_hint = next((s['settle_selector'] for s in sections if s.get('settle_selector')), None)
                 unscoped = list(candidates)
-                candidates, assessments = _scope_candidates(candidates, includes, excludes, conditions)
+                candidates, assessments = _scope_candidates(candidates, includes, excludes, conditions,
+                                                            approved_pages=approved_pages)
                 if backend == 'playwright' and result.status == 'fetched':
                     browser_rows = unscoped
             responses.append((result, candidates))
@@ -859,7 +882,8 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
                         pre_source = Source("catalog_source_" + stable_id(page_url), host, "web", page_url, [],
                                             allowed_domains=[host], adapter=adapter, max_attempts=1,
                                             backends=["http", "playwright"], min_interval_seconds=0,
-                                            recipe=_ready_recipe(adapter, page_url))
+                                            recipe=_ready_recipe(adapter, page_url),
+                                            market_currency=plan_currency)
                         if ledger:
                             lease_seconds = 240 if adapter == "gongcar" else 60
                             ledger.set(page_url, "leased", lease_seconds=lease_seconds)

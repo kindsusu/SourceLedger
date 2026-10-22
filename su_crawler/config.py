@@ -9,6 +9,7 @@ import re
 
 from .models import CollectionConfig, Product, Source, resolve_path, stable_id
 from .browser_enumeration import validate_enumeration_step
+from .validation import SUPPORTED_CURRENCIES
 
 PRICE_PROFILES = frozenset({"unit", "rental", "sale", "recurring"})
 SOURCE_ADAPTERS = frozenset({"jetcar", "gongcar", "funrent", "amazoncar"})
@@ -47,6 +48,12 @@ def load_config(path: str | Path) -> CollectionConfig:
             raise ValueError(f"Unsupported source type: {source.kind}")
         if source.adapter is not None and (not isinstance(source.adapter, str) or source.adapter not in SOURCE_ADAPTERS):
             raise ValueError(f"Source {source.id}: adapter must be jetcar, gongcar, funrent, amazoncar, or null")
+        if source.settle_selector is not None and (not isinstance(source.settle_selector, str)
+                                                   or not source.settle_selector.strip()
+                                                   or len(source.settle_selector) > 1000):
+            raise ValueError(f"Source {source.id}: settle_selector must be a nonempty CSS selector")
+        if source.market_currency is not None and source.market_currency not in SUPPORTED_CURRENCIES:
+            raise ValueError(f"Source {source.id}: market_currency must be an ISO currency code or null")
         if not isinstance(source.incremental, bool):
             raise ValueError(f"Source {source.id}: incremental must be true or false")
         if not source.product_ids or set(source.product_ids) - product_ids:

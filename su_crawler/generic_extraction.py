@@ -508,7 +508,8 @@ def _platform_cards(page: _Page) -> dict | None:
                 row["fields"]["item_id"] = f"product_no={number}"
                 row["evidence"]["item_id"] = _identity_proof(f"css:li[{number}]", f"product_no={number}")
                 rows.append(row)
-        return _result("platform_cards", rows, len(cafe24), complete=True, platform="cafe24")
+        return _result("platform_cards", rows, len(cafe24), complete=True, platform="cafe24",
+                       settle_selector='li[id^="anchorBoxId_"]')
     woo: OrderedDict[str, tuple[Tag, Tag]] = OrderedDict()
     for card in page.soup.select("li.product"):
         title = card.select_one(".woocommerce-loop-product__title")
@@ -536,7 +537,8 @@ def _platform_cards(page: _Page) -> dict | None:
                 row["fields"]["item_id"] = f"post-{post}"
                 row["evidence"]["item_id"] = _identity_proof(f"css:li.post-{post}", f"post-{post}")
                 rows.append(row)
-        return _result("platform_cards", rows, len(woo), complete=True, platform="woocommerce")
+        return _result("platform_cards", rows, len(woo), complete=True, platform="woocommerce",
+                       settle_selector="li.product")
     return None
 
 
@@ -733,6 +735,7 @@ def _repeated_cards(page: _Page) -> dict | None:
     rule = ({"row_selector": f"{_css(parent_signature)} > {_css(card_signature)}", "selectors": selectors}
             if selectors else None)
     return _result("repeated_cards", rows, len(seen), complete=False, suggested_rule=rule,
+                   settle_selector=f"{_css(parent_signature)} > {_css(card_signature)}",
                    reason="heuristic_card_list")
 
 
@@ -859,7 +862,8 @@ def _section(method: str, observed: int | None, extracted: int, locators: list[s
 
 
 def _result(method: str, rows: list[dict], observed: int | None, *, complete: bool, platform: str | None = None,
-            suggested_rule: dict | None = None, reason: str | None = None) -> dict:
+            suggested_rule: dict | None = None, reason: str | None = None,
+            settle_selector: str | None = None) -> dict:
     """Platform card lists can be complete; heuristic and structured sections stay unknown."""
     if complete:
         status = "complete" if rows and len(rows) == observed else "partial"
@@ -869,6 +873,7 @@ def _result(method: str, rows: list[dict], observed: int | None, *, complete: bo
     return {"method": method, "platform": platform, "rows": rows, "trace": [],
             "section": _section(method, observed, len(rows), [row["locator"] for row in rows], status=status,
                                 reason=reason or "unknown", platform=platform, suggested_rule=suggested_rule,
+                                settle_selector=settle_selector,
                                 price_count=sum(row["fields"].get("price") is not None for row in rows))}
 
 
@@ -923,6 +928,30 @@ def extract_generic(result: FetchResult, source: Source | None = None) -> list[C
     return [Candidate(row["fields"], row["evidence"], row["locator"], row["method"], row["specs"],
                       source_visibility=row["visibility"], review_flags=row["review_flags"], evidence_mode=row["mode"])
             for row in copy.deepcopy(analysis["rows"])]
+
+
+def apply_market_currency(candidates: list[Candidate], code: str | None) -> list[Candidate]:
+    """Resolve "$" or "¥" with the currency of the plan's market, which the user approved.
+
+    Only a shown marker that names several currencies including ``code``
+    qualifies; the proof keeps both the marker and the market source.
+    """
+    if not code:
+        return candidates
+    for candidate in candidates:
+        proof = candidate.evidence.get("price") or {}
+        if candidate.fields.get("currency") is not None or not isinstance(proof.get("raw"), str):
+            continue
+        amount, _ = displayed_amount(proof["raw"])
+        codes = currency_codes(amount["marker"]) if amount else frozenset()
+        if len(codes) < 2 or code not in codes:
+            continue
+        candidate.fields["currency"] = code
+        candidate.evidence["currency"] = {"location": f"plan:topic.market + {proof.get('location')}", "raw": code,
+                                          "marker": amount["marker"], "display_state": proof.get("display_state"),
+                                          "proof_kind": "marker_with_plan_market"}
+        candidate.review_flags = [flag for flag in candidate.review_flags if flag != "currency_marker_ambiguous"]
+    return candidates
 
 
 def generic_sections(result: FetchResult) -> list[dict]:

@@ -56,6 +56,11 @@ class Source:
     unavailable_markers: list[str] = field(default_factory=lambda: ["가격 문의", "견적 문의", "문의 요망", "Contact for price", "Request a quote"])
     adapter: str | None = None
     incremental: bool = False
+    # ISO currency of the approved plan's market; resolves "$" or "¥" only.
+    market_currency: str | None = None
+    # Product-list region found in the static HTML. The browser watches it for
+    # stability only after the whole page failed to settle (rotating banners).
+    settle_selector: str | None = None
 
 
 @dataclass
