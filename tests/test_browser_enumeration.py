@@ -349,6 +349,10 @@ def test_collector_emits_option_snapshots_and_selected_values(tmp_path, monkeypa
     assert [c.fields["price"] for c in candidates] == ["100", "200"]
     assert [c.specs["selected_value:#o"] for c in candidates] == ["a", "b"]
     assert all("selection_price_settlement_unconfirmed" in c.review_flags for c in candidates)
+    # Without a reviewed price element the legacy evidence shape is unchanged.
+    assert all("price_settlement" not in s for s in result.variant_snapshots)
+    assert all("price_settlement" not in c.derived_values for c in candidates)
+    assert all("price_settlement_counts" not in e for e in result.trace if e.get("event") == "option_enumeration")
 
 
 def test_assertion_failure_retains_only_prior_option_captures(tmp_path, monkeypatch):
@@ -371,6 +375,12 @@ def test_assertion_failure_retains_only_prior_option_captures(tmp_path, monkeypa
     {"action": "enumerate_options", "selectors": ["#a", "#a"]},
     {"action": "enumerate_options", "selectors": ["#a"], "max_variants": 101},
     {"action": "paginate", "selector": "#list", "item_selector": ".item", "next_selector": ".next", "max_pages": 0},
+    {"action": "enumerate_options", "selectors": ["#a"], "price_selector": ""},
+    {"action": "enumerate_options", "selectors": ["#a"], "price_selector": "  "},
+    {"action": "enumerate_options", "selectors": ["#a"], "price_selector": None},
+    {"action": "enumerate_buttons", "selector": "#o", "option_selector": "button", "price_selector": 5},
+    {"action": "paginate", "selector": "#list", "item_selector": ".item", "next_selector": ".next",
+     "price_selector": "#price"},
 ])
 def test_invalid_enumeration_budgets_and_selectors(step):
     with pytest.raises(ValueError):
@@ -442,3 +452,182 @@ def test_paginate_disabled_next_must_stay_disabled_through_the_window(page):
              lambda labels, values, expected: selected.append(labels), trace)
     assert [entry["page"] for entry in selected] == ["1", "2"]
     assert (trace[-1]["status"], trace[-1]["reason"]) == ("complete", "next_absent")
+
+
+# Synthetic quotes keyed by (plan, term); the "same" variant repeats a quote.
+_QUOTES = {("a", "12"): "KRW 1,200", ("a", "24"): "KRW 2,400", ("b", "36"): "KRW 3,600",
+           ("b", "12"): "KRW 3,000"}
+
+_QUOTE_FORM = b"""<!doctype html><html><body>
+<select id=model><option value=''>Choose</option><option value=a>Synthetic A</option>
+<option value=b>Synthetic B</option></select>
+<select id=term><option value=''>Choose</option></select>
+<strong id=price>Choose a model</strong>
+<script>
+const variant = new URLSearchParams(location.search).get('v') || '';
+const model = document.querySelector('#model'), term = document.querySelector('#term');
+const price = document.querySelector('#price');
+const terms = {a: ['12', '24'], b: ['36']};
+model.onchange = () => {
+  term.innerHTML = "<option value=''>Choose</option>" +
+    (terms[model.value] || []).map(t => `<option value=${t}>${t} months</option>`).join('');
+  price.textContent = 'Choose a term for ' + model.value;
+};
+term.onchange = () => {
+  if (!term.value) return;
+  fetch(`/price?m=${model.value}&t=${term.value}&v=${variant}`)
+    .then(r => r.text()).then(text => { price.textContent = text; });
+};
+</script></body></html>"""
+
+_QUOTE_BUTTONS = b"""<!doctype html><html><body>
+<div id=options><button type=button data-value=a>Plan A</button>
+<button type=button data-value=b>Plan B</button></div><strong id=price>Pick a plan</strong>
+<script>document.querySelectorAll('#options button').forEach(button => button.onclick = () =>
+  fetch('/price?m=' + button.dataset.value + '&t=12').then(r => r.text())
+    .then(text => { document.querySelector('#price').textContent = text; }));</script></body></html>"""
+
+
+@contextmanager
+def _quote_server():
+    from urllib.parse import parse_qs, urlsplit
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            parts = urlsplit(self.path)
+            if parts.path == "/price":
+                time.sleep(0.2)  # the quote arrives after the selection event
+                query = {key: values[0] for key, values in parse_qs(parts.query).items()}
+                key = (query.get("m", ""), query.get("t", ""))
+                body = ("KRW 1,200" if query.get("v") == "same" and key == ("a", "24")
+                        else _QUOTES.get(key, "KRW 9,900")).encode("utf-8")
+                content_type = "text/plain; charset=utf-8"
+            else:
+                body = _QUOTE_BUTTONS if parts.path == "/buttons" else _QUOTE_FORM
+                content_type = "text/html; charset=utf-8"
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except OSError:
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    httpd.daemon_threads = True
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}"
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+
+def _settlement_capture(page, snapshots):
+    def capture(selected, values, price_settlement=None):
+        snapshots.append({"content": _evidence_html_snapshot(page), "final_url": "https://example.org/p",
+                          "selections": selected, "selection_values": values,
+                          "price_settlement": price_settlement})
+    return capture
+
+
+def _quote_candidates(snapshots):
+    source = Source("s", "S", "web", "https://example.org/p", ["p"], selectors={"price": "#price"})
+    return extract(FetchResult("s", "fetched", "playwright", variant_snapshots=snapshots), source)
+
+
+def test_price_selector_accepts_reviewed_selector():
+    validate_enumeration_step({"action": "enumerate_options", "selectors": ["#a"], "price_selector": "#price"})
+    validate_enumeration_step({"action": "enumerate_buttons", "selector": "#o", "option_selector": "button",
+                               "price_selector": ".quote"})
+
+
+def test_collector_confirms_async_price_change_for_each_dependent_option(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOURCELEDGER_HEADLESS", "1")
+    with _quote_server() as base:
+        source = Source("s", "S", "web", base + "/form", ["p"], selectors={"price": "#price"},
+                        allowed_domains=["127.0.0.1"], internal=True, respect_robots=False,
+                        timeout_seconds=30, recipe=[{"action": "enumerate_options",
+                                                     "selectors": ["#model", "#term"],
+                                                     "price_selector": "#price",
+                                                     "progress_wait_seconds": 0.2}])
+        result = collect(source, str(tmp_path), "playwright")
+    assert result.status == "fetched", result.message
+    assert [s["selection_values"]["#term"] for s in result.variant_snapshots] == ["12", "24", "36"]
+    assert [s["price_settlement"]["status"] for s in result.variant_snapshots] == ["changed"] * 3
+    assert all(s["price_settlement"]["selector"] == "#price" and len(s["price_settlement"]["text_sha256"]) == 64
+               for s in result.variant_snapshots)
+    event = next(e for e in result.trace if e.get("event") == "option_enumeration")
+    assert (event["status"], event["price_settlement_counts"]) == ("complete", {"changed": 3})
+    candidates = extract(result, source)
+    assert [c.fields["price"] for c in candidates] == ["KRW 1,200", "KRW 2,400", "KRW 3,600"]
+    assert all("selection_price_settlement_unconfirmed" not in c.review_flags for c in candidates)
+    assert all("identical_amounts_after_network_quiet_review" not in c.review_flags for c in candidates)
+    assert [c.derived_values["price_settlement"] for c in candidates] == ["changed"] * 3
+
+
+def test_unchanged_quote_after_quiet_network_is_flagged_for_review(page):
+    from su_crawler.browser_settlement import install_tracker_sync
+    with _quote_server() as base:
+        install_tracker_sync(page)
+        page.goto(base + "/form?v=same", wait_until="domcontentloaded")
+        snapshots, trace = [], []
+        enumerate_options(page, {"action": "enumerate_options", "selectors": ["#model", "#term"],
+                                 "price_selector": "#price", "progress_wait_seconds": 0.2},
+                          _remaining(30), _settlement_capture(page, snapshots), trace)
+    assert [s["price_settlement"]["status"] for s in snapshots] == ["changed", "identical_after_quiet", "changed"]
+    assert trace[-1]["price_settlement_counts"] == {"changed": 2, "identical_after_quiet": 1}
+    candidates = _quote_candidates(snapshots)
+    assert [c.fields["price"] for c in candidates] == ["KRW 1,200", "KRW 1,200", "KRW 3,600"]
+    assert candidates[1].review_flags == ["identical_amounts_after_network_quiet_review"]
+    assert candidates[1].derived_values["price_settlement"] == "identical_after_quiet"
+    assert candidates[0].review_flags == [] and candidates[2].review_flags == []
+
+
+def test_custom_buttons_confirm_async_price_change(page):
+    from su_crawler.browser_settlement import install_tracker_sync
+    with _quote_server() as base:
+        install_tracker_sync(page)
+        page.goto(base + "/buttons", wait_until="domcontentloaded")
+        snapshots, trace = [], []
+        enumerate_buttons(page, {"action": "enumerate_buttons", "selector": "#options", "option_selector": "button",
+                                 "price_selector": "#price", "progress_wait_seconds": 0.2},
+                          _remaining(20), _settlement_capture(page, snapshots), trace)
+    assert [s["price_settlement"]["status"] for s in snapshots] == ["changed", "changed"]
+    assert (trace[-1]["status"], trace[-1]["price_settlement_counts"]) == ("complete", {"changed": 2})
+    candidates = _quote_candidates(snapshots)
+    assert [c.fields["price"] for c in candidates] == ["KRW 1,200", "KRW 3,000"]
+    assert all(c.review_flags == [] for c in candidates)
+
+
+def test_missing_price_element_keeps_unconfirmed_flag(page):
+    from su_crawler.browser_settlement import install_tracker_sync
+    with _quote_server() as base:
+        install_tracker_sync(page)
+        page.goto(base + "/buttons", wait_until="domcontentloaded")
+        snapshots, trace = [], []
+        enumerate_buttons(page, {"action": "enumerate_buttons", "selector": "#options",
+                                 "option_selector": "button[data-value=a]", "price_selector": "#missing-quote",
+                                 "progress_wait_seconds": 0.2},
+                          _remaining(20), _settlement_capture(page, snapshots), trace)
+    assert [s["price_settlement"] for s in snapshots] == [{"status": "no_price_displayed", "selector": "#missing-quote"}]
+    assert trace[-1]["price_settlement_counts"] == {"no_price_displayed": 1}
+    candidates = _quote_candidates(snapshots)
+    assert candidates[0].review_flags == ["selection_price_settlement_unconfirmed"]
+    assert candidates[0].derived_values["price_settlement"] == "no_price_displayed"
+
+
+def test_untracked_page_cannot_confirm_price_change(page):
+    page.set_content("""<select id=o><option value=''>Choose</option><option value=a>A</option></select>
+      <strong id=price>none</strong><script>document.querySelector('#o').onchange=()=>{
+      document.querySelector('#price').textContent='KRW 100'}</script>""")
+    snapshots, trace = [], []
+    enumerate_options(page, {"action": "enumerate_options", "selectors": ["#o"], "price_selector": "#price",
+                             "progress_wait_seconds": 0.05}, _remaining(), _settlement_capture(page, snapshots), trace)
+    assert [s["price_settlement"]["status"] for s in snapshots] == ["untracked"]
+    assert _quote_candidates(snapshots)[0].review_flags == ["selection_price_settlement_unconfirmed"]

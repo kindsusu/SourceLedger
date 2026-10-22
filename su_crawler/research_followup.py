@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from . import assistant_runtime as runtime
 from .assistant_workspace import workspace_root, _managed_output, relative_file
 from .models import Candidate, CollectionConfig, Product, Source, stable_id
+from .host_capture_policy import check_host_capture
 from .research_plans import canonical_url, confirmed_snapshot
 from .storage import Store, workspace_lock
 from .scope_conditions import assess_conditions
@@ -378,13 +379,15 @@ def _browser_price_profile(config, source, normalized):
 
 
 def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields, locator,
-                            screenshot_path=None):
+                            screenshot_path=None, final_url=None):
     """Validate literal field support; never promote host assertions to verified prices."""
     job, result, output = completed(root, job_id)
     url = canonical_url(url)
     pages = result["result"]["coverage"]
-    if url not in {page["url"] for page in pages if page["status"] != "excluded"}:
+    page = next((page for page in pages if page["url"] == url and page["status"] != "excluded"), None)
+    if page is None:
         raise ValueError("Evidence URL must be an approved page recorded in this job's coverage")
+    policy = check_host_capture(page, url, final_url)
     if not isinstance(page_text, str) or not 1 <= len(page_text) <= 200_000:
         raise ValueError("page_text must contain 1 to 200000 characters of browser-captured text")
     if not isinstance(locator, str) or not 1 <= len(locator.strip()) <= 500:
@@ -413,7 +416,8 @@ def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields
         if not screenshot.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ValueError("Screenshot must be a PNG capture")
     snapshot = confirmed_snapshot(root, job["arguments"]["plan_id"], job["arguments"]["expected_revision"])
-    payload = {"url": url, "captured_at": captured_at, "page_text": page_text, "fields": fields,
+    payload = {"url": url, "final_url": policy["final_url"], "capture_policy": policy,
+               "captured_at": captured_at, "page_text": page_text, "fields": fields,
                "locator": locator, "screenshot_sha256": hashlib.sha256(screenshot).hexdigest() if screenshot else None}
     submission_id = "browser_" + stable_id(result["run_id"], payload)
     with workspace_lock(output):
@@ -434,9 +438,11 @@ def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields
                 proof = {key: {"raw": value, "location": locator, "display_state": "unconfirmed",
                                "proof_kind": "assistant_supplied_text"} for key, value in fields.items()}
                 normalized, price_kind, currency_marker = _literal_interpretations(fields)
+                review_flags = ["Browser text and field association supplied by host AI; independent verification pending"]
+                if not policy["final_url_reported"]:
+                    review_flags.append("Host did not report the final URL; redirects were not checked")
                 candidate = Candidate(dict(fields), proof, locator, "host_browser_submission",
-                                      review_flags=["Browser text and field association supplied by host AI; independent verification pending"],
-                                      evidence_mode="document_text")
+                                      review_flags=review_flags, evidence_mode="document_text")
                 candidate.derived_values["scope_assessment"] = assess_conditions(candidate, snapshot.get("conditions", []))
                 candidate.derived_values["literal_interpretations"] = normalized
                 if price_kind:
@@ -454,7 +460,7 @@ def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields
                                        collected_at=captured_at, source_url=url)
                 row = observation.to_dict()
                 row.update(id=submission_id, status="review", verification_level="review", comparable=False,
-                           comparison_key=None)
+                           comparison_key=None, host_capture_policy=policy)
                 if "price" in normalized:
                     row["amount"] = normalized["price"]
                     row["reason"] = row["reason"].replace("price is not one valid non-negative decimal", "displayed amount normalized for review")

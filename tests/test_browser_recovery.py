@@ -55,6 +55,15 @@ def test_access_report_requires_evidence_and_does_not_resolve_or_create_prices(t
         store.close()
 
 
+@pytest.mark.parametrize('final', ['https://user:pw@example.test/item', 'ftp://example.test/item', 'https://example.test:8443@evil.test/item'])
+def test_access_report_rejects_credentialed_or_non_http_final_url(tmp_path, issue, final):
+    args = (tmp_path, 'job', issue['id'])
+    attempt = recovery.begin_browser_recovery(*args, browser_available=True, challenge_interaction_supported=True)['attempt_id']
+    with pytest.raises(ValueError):
+        recovery.finish_browser_recovery(*args, attempt, outcome='accessible', final_url=final, evidence_text='Product X: USD 10')
+    assert recovery.prepare_browser_recovery(*args)['status'] != 'access_reported'
+
+
 def test_wrong_job_and_nonchallenge_rejected(tmp_path, issue):
     with pytest.raises(ValueError, match='belonging'):
         recovery.prepare_browser_recovery(tmp_path, 'other', issue['id'])

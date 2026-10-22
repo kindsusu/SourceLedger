@@ -126,6 +126,51 @@ def validate_enumeration_step(step: dict[str, Any]) -> None:
     ready = step.get("ready_selector")
     if ready is not None and (not isinstance(ready, str) or not ready.strip()):
         raise ValueError("ready_selector must be a nonempty selector")
+    if "price_selector" in step and (action not in {"enumerate_options", "enumerate_buttons"} or not isinstance(
+            step["price_selector"], str) or not step["price_selector"].strip() or len(step["price_selector"]) > 1000):
+        raise ValueError("price_selector must be a nonempty selector on enumerate_options or enumerate_buttons")
+
+
+def _price_reader(page: Any, selector: str) -> Callable[[], str]:
+    # Hidden copies (e.g. templates for other options) are not the quoted price.
+    locator = page.locator(selector)
+    return lambda: "\n".join(" ".join(text.split()) for text in locator.evaluate_all(
+        """els => els.filter(el => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')
+                  .map(el => el.innerText || '')""") if text.strip())
+
+
+def _settle_price(page: Any, remaining_ms: Callable[[], float], wait_ms: int,
+                  read: Callable[[], str], previous: str) -> tuple[str, str]:
+    """Classify whether the displayed price refreshed after one selection.
+
+    A change is accepted only once the tracked network and the price text are
+    quiet. An unchanged price is accepted as identical only after a second
+    quiet window; it may still be a stale value, so callers flag it for review.
+    """
+    first = _after_action(page, remaining_ms, wait_ms, read=read, previous=previous, require_change=True)
+    value = read()
+    if first["status"] == "settled" and value and value != previous:
+        return "changed", value
+    second = first
+    if first["status"] != "untracked" and remaining_ms() > 1200:
+        # A full quiet window must fit inside this wait even for short steps.
+        second = _after_action(page, remaining_ms, max(wait_ms, 2 * ACTION_QUIET_MS), read=read)
+        value = read()
+    if not value:
+        return "no_price_displayed", value
+    if second["status"] == "untracked":
+        return "untracked", value
+    if second["status"] == "settled":
+        # A late but quiet refresh is still a confirmed change.
+        return ("identical_after_quiet" if value == previous else "changed"), value
+    return "timeout", value
+
+
+def _price_evidence(status: str, selector: str, value: str) -> dict[str, str]:
+    evidence = {"status": status, "selector": selector}
+    if value:
+        evidence["text_sha256"] = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return evidence
 
 
 def _options(select: Any) -> list[dict[str, str]]:
@@ -155,9 +200,14 @@ def enumerate_options(
     status, reason = "unknown", "no_options"
     start_url = page.url
     seen: set[tuple[tuple[str, str], ...]] = set()
+    price_selector = step.get("price_selector")
+    read_price = _price_reader(page, price_selector) if price_selector else None
+    last_price = ""
+    price_counts: dict[str, int] = {}
 
-    def descend(depth: int, selections: dict[str, str], values: dict[str, str]) -> None:
-        nonlocal captured, unavailable, status, reason
+    def descend(depth: int, selections: dict[str, str], values: dict[str, str],
+                settlement: dict[str, str] | None = None) -> None:
+        nonlocal captured, unavailable, status, reason, last_price
         if remaining_ms() <= 1200:
             status, reason = ("partial" if captured else "unknown"), "deadline"
             return
@@ -168,7 +218,11 @@ def enumerate_options(
             key = tuple(values.items())
             if key not in seen:
                 seen.add(key)
-                capture(dict(selections), dict(values))
+                if settlement is None:
+                    capture(dict(selections), dict(values))
+                else:
+                    capture(dict(selections), dict(values), price_settlement=dict(settlement))
+                    price_counts[settlement["status"]] = price_counts.get(settlement["status"], 0) + 1
                 captured += 1
             return
         selector = selectors[depth]
@@ -198,7 +252,14 @@ def enumerate_options(
                 status, reason = ("partial" if captured else "unknown"), "deadline"
                 return
             loc.select_option(choice["value"], timeout=remaining_ms())
-            _after_action(page, remaining_ms, wait_ms)
+            observed = None
+            if read_price is None:
+                _after_action(page, remaining_ms, wait_ms)
+            else:
+                # Parent selections update the baseline too, so a leaf is
+                # compared with the price shown immediately before it.
+                outcome, last_price = _settle_price(page, remaining_ms, wait_ms, read_price, last_price)
+                observed = _price_evidence(outcome, price_selector, last_price)
             if step.get("ready_selector"):
                 page.locator(step["ready_selector"]).wait_for(state="visible", timeout=remaining_ms())
             if loc.input_value(timeout=remaining_ms()) != choice["value"]:
@@ -208,11 +269,13 @@ def enumerate_options(
                 status, reason = ("partial" if captured else "unknown"), "dependent_selection_reset"
                 return
             # Dependent choices are read only after the preceding selection settles.
-            descend(depth + 1, {**selections, selector: label}, {**values, selector: choice["value"]})
+            descend(depth + 1, {**selections, selector: label}, {**values, selector: choice["value"]}, observed)
             if status in {"partial", "unknown"} and reason != "no_options":
                 return
 
     try:
+        if read_price is not None:
+            last_price = read_price()
         descend(0, {}, {})
         if reason == "no_options" and captured:
             status, reason = "complete", "options_exhausted"
@@ -222,10 +285,13 @@ def enumerate_options(
         status, reason = ("partial" if captured else "unknown"), (
             "action_timeout" if type(exc).__name__.endswith("TimeoutError") else "browser_error"
         )
-    trace.append({"event": "option_enumeration", "status": status, "reason": reason,
-                  "captured_count": captured, "unavailable_count": unavailable,
-                  "unavailable_labels": unavailable_labels[:100],
-                  "skipped_options": skipped_options[:100]})
+    event = {"event": "option_enumeration", "status": status, "reason": reason,
+             "captured_count": captured, "unavailable_count": unavailable,
+             "unavailable_labels": unavailable_labels[:100],
+             "skipped_options": skipped_options[:100]}
+    if price_selector:
+        event["price_settlement_counts"] = price_counts
+    trace.append(event)
 
 
 def paginate(
@@ -386,10 +452,15 @@ def enumerate_buttons(
     skipped: list[dict[str, str]] = []
     markers = [value.casefold() for value in (unavailable_markers or []) if value]
     start_url = page.url
+    price_selector = step.get("price_selector")
+    read_price = _price_reader(page, price_selector) if price_selector else None
+    price_counts: dict[str, int] = {}
+    wait_ms = int(step.get("progress_wait_seconds", 1) * 1000)
     try:
         if container.count() != 1:
             reason = "ambiguous_container"
         else:
+            last_price = read_price() if read_price is not None else ""
             choices = container.locator(step["option_selector"]).evaluate_all("""els => els.map(el => ({
               value:el.getAttribute('data-value') || '', label:(el.innerText || '').trim(),
               allowed:el.tagName === 'BUTTON' && el.type === 'button' && !el.disabled &&
@@ -413,7 +484,12 @@ def enumerate_buttons(
                     status, reason = ("partial" if count else "unknown"), "ambiguous_option"
                     break
                 matches.nth(choice_index).click(timeout=remaining_ms())
-                _after_action(page, remaining_ms, int(step.get("progress_wait_seconds", 1) * 1000))
+                observed = None
+                if read_price is None:
+                    _after_action(page, remaining_ms, wait_ms)
+                else:
+                    outcome, last_price = _settle_price(page, remaining_ms, wait_ms, read_price, last_price)
+                    observed = _price_evidence(outcome, price_selector, last_price)
                 if step.get("ready_selector"):
                     page.locator(step["ready_selector"]).wait_for(state="visible", timeout=remaining_ms())
                 if matches.nth(choice_index).get_attribute("data-value") != choice["value"] or not matches.nth(choice_index).is_visible():
@@ -422,7 +498,12 @@ def enumerate_buttons(
                 if page.url != start_url:
                     status, reason = ("partial" if count else "unknown"), "unexpected_navigation"
                     break
-                capture({step["selector"]: choice["label"]}, {step["selector"]: choice["value"]})
+                if observed is None:
+                    capture({step["selector"]: choice["label"]}, {step["selector"]: choice["value"]})
+                else:
+                    capture({step["selector"]: choice["label"]}, {step["selector"]: choice["value"]},
+                            price_settlement=observed)
+                    price_counts[observed["status"]] = price_counts.get(observed["status"], 0) + 1
                 count += 1
             else:
                 if count:
@@ -433,5 +514,8 @@ def enumerate_buttons(
         status, reason = ("partial" if count else "unknown"), (
             "action_timeout" if type(exc).__name__.endswith("TimeoutError") else "browser_error"
         )
-    trace.append({"event": "button_enumeration", "status": status, "reason": reason,
-                  "captured_count": count, "skipped_options": skipped[:100]})
+    event = {"event": "button_enumeration", "status": status, "reason": reason,
+             "captured_count": count, "skipped_options": skipped[:100]}
+    if price_selector:
+        event["price_settlement_counts"] = price_counts
+    trace.append(event)

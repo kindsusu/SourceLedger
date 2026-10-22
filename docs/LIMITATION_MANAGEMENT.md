@@ -17,6 +17,7 @@ Use `update_research_plan` (or the web UI's advanced collection rules) to add `c
         "action": "enumerate_options",
         "selectors": ["#size", "#color"],
         "ready_selector": "#price[data-ready='true']",
+        "price_selector": "#price",
         "max_variants": 50,
         "progress_wait_seconds": 1
       }]
@@ -30,6 +31,14 @@ Selectors and readiness signals must be checked against the real site. A price s
 `paginate` accepts `selector`, `item_selector`, `next_selector`, and `max_pages`. `expand_list` handles reviewed more/scroll controls. Missing controls, stalls, repeated pages, and exhausted budgets are distinct outcomes; unchanged item counts alone cannot prove a whole site is complete.
 
 `scroll_list` supports bounded append-only lists and an explicit `end_selector`; a replaced or virtualized list remains partial. `enumerate_buttons` supports one reviewed group of non-submit buttons with `data-value`. Earlier pagination captures also participate in same-host link discovery. Selected-state counts are not unique-product counts. A visible readiness selector alone cannot prove that an asynchronous price has settled, so option-derived candidates retain a review flag.
+
+`enumerate_options` and `enumerate_buttons` accept an optional `price_selector`: the element(s) showing the quoted price that the field selectors read. After each selection the collector compares the visible text of that element with the text shown just before the selection (for nested selects, after the parent choice) and waits for the tracked network and the text to go quiet:
+
+- `changed`: the price text changed and settled. The candidate carries no settlement review flag.
+- `identical_after_quiet`: the text stayed the same after a further quiet window. The candidate is flagged `identical_amounts_after_network_quiet_review`, because two choices may share a price or the page may not have refreshed.
+- anything else (`no_price_displayed`, `untracked`, `timeout`): the candidate keeps `selection_price_settlement_unconfirmed`.
+
+Each capture records `price_settlement` (status, selector, text hash) and the step trace counts each outcome. Without `price_selector`, behavior is unchanged and every option-derived candidate keeps `selection_price_settlement_unconfirmed`.
 
 ## Access and recovery
 
