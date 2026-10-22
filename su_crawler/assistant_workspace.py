@@ -230,6 +230,7 @@ def validate_job_args(root: str | Path, operation: str, args: dict[str, Any]) ->
     if not isinstance(args, dict):
         raise ValueError("job arguments must be an object")
     clean = dict(args)
+    # Older stored jobs may carry max_model_calls; only 0 is accepted and it is ignored.
     if clean.get("max_model_calls", 0) != 0 or clean.get("model_config") or clean.get("search_config"):
         raise ValueError("Providers and model calls are not enabled for the local assistant connector")
     for forbidden in ("command", "executable", "cwd", "output_dir", "run_dir", "receipt_path"):
@@ -243,7 +244,6 @@ def validate_job_args(root: str | Path, operation: str, args: dict[str, Any]) ->
         if not isinstance(clean.get("source_id"), str) or not clean["source_id"].strip():
             raise ValueError("source_id is required")
         clean["timeout_seconds"] = _positive_number(clean.get("timeout_seconds", 30), "timeout_seconds", 300)
-        clean["max_model_calls"] = 0
     elif operation == "agent":
         clean["max_sources"] = _bounded_int(clean.get("max_sources", 3), "max_sources", MAX_SOURCE_COUNT)
         clean["max_seconds"] = _positive_number(clean.get("max_seconds", 120), "max_seconds")
@@ -254,7 +254,6 @@ def validate_job_args(root: str | Path, operation: str, args: dict[str, Any]) ->
                                        len(source_ids) > MAX_SOURCE_COUNT or
                                        any(not isinstance(item, str) or not item.strip() for item in source_ids)):
             raise ValueError(f"source_ids must contain 1 to {MAX_SOURCE_COUNT} source IDs")
-        clean["max_model_calls"] = 0
     elif operation == "collect_sites":
         clean["max_pages"] = _bounded_int(clean.get("max_pages", 5), "max_pages", MAX_PAGE_COUNT)
         clean["max_seconds"] = _positive_number(clean.get("max_seconds", 120), "max_seconds")
@@ -349,13 +348,13 @@ def execute_job(root: str | Path, operation: str, args: dict[str, Any], *, job_i
         elif operation == "propose":
             from .proposals import propose_source
             result = propose_source(workspace, source_id=clean["source_id"], output_dir=attempt_dir / "proposal",
-                                    max_model_calls=0, timeout_seconds=clean["timeout_seconds"])
+                                    timeout_seconds=clean["timeout_seconds"])
         elif operation == "agent":
             from .agent import run_agent
             _managed_output(base, base / "outputs", "agent collection output")
             _managed_output(base, job_dir / "agent", "agent checkpoint directory")
             result = run_agent(workspace, run_dir=job_dir / "agent", source_ids=clean.get("source_ids"),
-                               max_sources=clean["max_sources"], max_model_calls=0,
+                               max_sources=clean["max_sources"],
                                max_seconds=clean["max_seconds"], max_steps=clean.get("max_steps"), activate=False,
                                resume=agent_resume)
         elif operation == "collect_sites":

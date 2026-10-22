@@ -48,12 +48,12 @@ sheet. See [collection reliability](COLLECTION_RELIABILITY.md) and
 - **Local MCP operation:** a local MCP server registers configured jobs for an independently started worker. Bounded discovery and research workspaces are separate from active `run` configuration; running a configured collection does not require activation.
 - **Local assistant connector:** `connect` generates a Codex, Claude Code, or Claude Desktop stdio MCP setting and can explicitly merge it without replacing unrelated settings. `assistant start|status|stop|jobs|job|resume` manages a single independent worker and persisted bounded jobs. The assistant server owns onboarding/source operations and queues discovery, proposals, bounded agent work, supported-site collection, verification, runs, and XLSX export. [Local assistant connections](ASSISTANT_CONNECTIONS.md) documents its settings and limits.
 - **Keyword search:** opt-in SearXNG JSON API, one bounded request, explicit provider settings, URL filtering, and candidate provenance. No configured provider means zero search calls.
-- **Rule proposals:** structured-data and semantic HTML extraction proposals, optional local Ollama selector-only output, DOM checks, exact identifiers, retained evidence and previews. Missing conditions remain unobserved.
+- **Rule proposals:** deterministic structured-data (JSON-LD) and semantic HTML extraction proposals (rule proposals from a connected host assistant through MCP are optional), DOM checks, exact identifiers, retained evidence and previews. Missing conditions remain unobserved.
 - **Bounded controller:** `agent` checkpoints source tasks, preserves scope and budgets across resume, proposes each source, and performs one fresh combined collection into the shared SQLite ledger and XLSX. Optional automatic activation requires known samples for every selected source/product. Partial sources remain visible.
 
 ## Validation scope
 
-Version 0.3 passed **110 tests** on Windows (2026-09-17). The added coverage includes the SearXNG-to-agent flow with controlled HTTP responses, local HTTP collection through the CLI, rule and model-response validation, saved budgets, pause/resume, modified-draft rejection, and sample-gated activation. No live SearXNG/Ollama server or model was installed or invoked.
+Version 0.3 passed **110 tests** on Windows (2026-09-17). The added coverage includes the SearXNG-to-agent flow with controlled HTTP responses, local HTTP collection through the CLI, rule validation, saved budgets, pause/resume, modified-draft rejection, and sample-gated activation. No live SearXNG server was installed or invoked.
 
 The 0.2 integrated Windows baseline passed **74 tests** (`python -m pytest tests -q`). This includes a real local HTTP onboarding-to-collection flow, actual local browser actions, MCP disconnection recovery, and XLSX checks. Browser fallback after a simulated HTTP block is covered by a controlled test; real-site block recovery is not established.
 
@@ -65,7 +65,7 @@ Demo values are synthetic and are not market prices. Representative live-site ac
 
 ## Not implemented or not verified
 
-- Live SearXNG/Ollama server and actual model validation; current provider tests use controlled HTTP responses
+- Live SearXNG server validation; current provider tests use controlled HTTP responses
 - Arbitrary browser action planning, recipe repair, and unattended self-repair of existing rules
 - Scheduling, service deployment, alerts, and ongoing unattended operations
 - Live Codex, Claude Code, or Claude Desktop GUI connection verification, and remote artifact delivery
@@ -74,4 +74,4 @@ Demo values are synthetic and are not market prices. Representative live-site ac
 
 Crawl4AI is optional and unverified against live sites in this environment. Agent-Reach informed diagnostics and routing design, but is not a direct runtime dependency. ego-lite is not directly integrated on Windows. UCP, commerce-agents, insane-search, and paid Ultimate Web Scraper MCP remain design references or unconnected services.
 
-See the [automation guide](AUTOMATION.md) for 0.3 research commands and provider prerequisites, and [local assistant connections](ASSISTANT_CONNECTIONS.md) for 0.4 connection commands. The time budget is cooperative with bounded external request timeouts; it is not a process-kill guarantee. Ollama must run with cloud features disabled; a loopback endpoint alone does not attest to server behavior.
+See the [automation guide](AUTOMATION.md) for 0.3 research commands and provider prerequisites, and [local assistant connections](ASSISTANT_CONNECTIONS.md) for 0.4 connection commands. The time budget is cooperative with bounded external request timeouts; it is not a process-kill guarantee.

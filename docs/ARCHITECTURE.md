@@ -26,9 +26,9 @@ The collection pipeline performs bounded, resumable source/product tasks, saves 
 ## Scope and provider status
 
 - SearXNG search is opt-in. Without a provider configuration, it makes zero search requests; returned snippets are candidate provenance, never prices.
-- Selector proposals use deterministic rules by default. A configured local Ollama endpoint may propose selectors only, and its output still requires fresh source verification.
+- Rule proposals are deterministic (semantic HTML and JSON-LD). A connected host assistant (Claude through MCP) may optionally propose rules, and any proposal still requires fresh source verification.
 - HTTP collection and configured Playwright fallback are implemented local collection paths.
-- Live SearXNG servers and Ollama models have not been validated in this project. Crawl4AI live-site use is optional and unvalidated. Paid Ultimate Web Scraper MCP and other cited research tools are not connected runtime services.
+- Live SearXNG servers have not been validated in this project. Crawl4AI live-site use is optional and unvalidated. Paid Ultimate Web Scraper MCP and other cited research tools are not connected runtime services.
 
 See [status](STATUS.md) and [automation](AUTOMATION.md) for the tested scope and provider prerequisites.
 

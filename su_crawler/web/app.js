@@ -1721,10 +1721,10 @@ function installEvents() {
     if (state.sourceActionPending.has(actionKey)) return;
     state.sourceActionPending.add(actionKey);
     button.disabled = true;
-    api("/api/jobs", { method: "POST", body: { operation, arguments: operation === "discover" ? { source_id: button.dataset.sourceId, limit: 100 } : { source_id: button.dataset.sourceId, timeout_seconds: 30, max_model_calls: 0 } } })
+    api("/api/jobs", { method: "POST", body: { operation, arguments: operation === "discover" ? { source_id: button.dataset.sourceId, limit: 100 } : { source_id: button.dataset.sourceId, timeout_seconds: 30 } } })
       .then(() => { toast(t(operation === "discover" ? "discoverQueued" : "proposeQueued")); return loadBootstrap({ quiet: true }); }).catch((error) => toast(error.message, true)).finally(() => { state.sourceActionPending.delete(actionKey); renderSourceList(true); });
   });
-  byId("agent-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; const sourceIds = selectedSourceIds(); if (!sourceIds.length || sourceIds.length > 50) { showFormError(form, t("needSourceRange")); return; } submit(form, () => api("/api/jobs", { method: "POST", body: { operation: "agent", arguments: { source_ids: sourceIds, max_sources: sourceIds.length, max_seconds: 120, max_model_calls: 0 } } }), t("researchQueued")); });
+  byId("agent-form").addEventListener("submit", (event) => { event.preventDefault(); const form = event.currentTarget; const sourceIds = selectedSourceIds(); if (!sourceIds.length || sourceIds.length > 50) { showFormError(form, t("needSourceRange")); return; } submit(form, () => api("/api/jobs", { method: "POST", body: { operation: "agent", arguments: { source_ids: sourceIds, max_sources: sourceIds.length, max_seconds: 120 } } }), t("researchQueued")); });
   byId("advanced-operation").addEventListener("change", advancedFields);
   byId("advanced-form").addEventListener("submit", (event) => {
     event.preventDefault();

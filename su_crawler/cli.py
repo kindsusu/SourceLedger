@@ -88,18 +88,14 @@ def main(argv: list[str] | None = None) -> int:
     proposal.add_argument("--workspace", default=DEFAULT_WORKSPACE)
     proposal.add_argument("--source-id", required=True)
     proposal.add_argument("--output-dir", required=True)
-    proposal.add_argument("--model-config")
-    proposal.add_argument("--max-model-calls", type=int, default=0)
     proposal.add_argument("--timeout", type=float, default=30)
     agent = sub.add_parser("agent", help="Run or resume a bounded search, proposal, and verification batch.")
     agent.add_argument("--workspace", default=DEFAULT_WORKSPACE)
     agent.add_argument("--run-dir", required=True)
     agent.add_argument("--search-config")
-    agent.add_argument("--model-config")
     agent.add_argument("--samples")
     agent.add_argument("--source-id", action="append")
     agent.add_argument("--max-sources", type=int, default=3)
-    agent.add_argument("--max-model-calls", type=int, default=0)
     agent.add_argument("--max-seconds", type=float, default=120)
     agent.add_argument("--max-steps", type=int)
     agent.add_argument("--activate", action="store_true")
@@ -269,13 +265,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "propose":
             from .proposals import propose_source
             result = propose_source(args.workspace, source_id=args.source_id, output_dir=args.output_dir,
-                                    model_config_path=args.model_config, timeout_seconds=args.timeout,
-                                    max_model_calls=args.max_model_calls)
+                                    timeout_seconds=args.timeout)
         elif args.command == "agent":
             from .agent import run_agent
             result = run_agent(args.workspace, run_dir=args.run_dir, search_config_path=args.search_config,
-                               model_config_path=args.model_config, samples_path=args.samples, source_ids=args.source_id,
-                               max_sources=args.max_sources, max_model_calls=args.max_model_calls,
+                               samples_path=args.samples, source_ids=args.source_id,
+                               max_sources=args.max_sources,
                                max_seconds=args.max_seconds, max_steps=args.max_steps,
                                activate=args.activate, resume=args.resume)
         elif args.command == "verify":

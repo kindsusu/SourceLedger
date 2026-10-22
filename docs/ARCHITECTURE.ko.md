@@ -26,9 +26,9 @@ SourceLedger는 근거와 수집 결과를 탐색·규칙 제안과 분리합니
 ## 범위와 공급자 상태
 
 - SearXNG 검색은 선택 사항입니다. 공급자 설정이 없으면 검색 요청은 0회이며, 반환 snippet은 후보의 발견 근거일 뿐 가격이 아닙니다.
-- 규칙 제안은 기본적으로 결정적 규칙을 사용합니다. 설정된 로컬 Ollama endpoint는 selector만 제안할 수 있고, 출력은 새 출처 검증을 다시 통과해야 합니다.
+- 규칙 제안은 결정적입니다(의미가 명시된 HTML, JSON-LD). 연결된 호스트 도우미(MCP를 통한 Claude)가 선택적으로 규칙을 제안할 수 있으며, 어떤 제안이든 새 출처 검증을 다시 통과해야 합니다.
 - HTTP 수집과 설정된 Playwright fallback은 구현된 로컬 수집 경로입니다.
-- 실제 SearXNG 서버와 Ollama 모델은 이 프로젝트에서 검증하지 않았습니다. Crawl4AI의 실사이트 사용은 선택 기능이며 미검증입니다. 유료 Ultimate Web Scraper MCP와 다른 참고 도구는 연결된 런타임 서비스가 아닙니다.
+- 실제 SearXNG 서버는 이 프로젝트에서 검증하지 않았습니다. Crawl4AI의 실사이트 사용은 선택 기능이며 미검증입니다. 유료 Ultimate Web Scraper MCP와 다른 참고 도구는 연결된 런타임 서비스가 아닙니다.
 
 검증 범위와 공급자 준비 조건은 [상태](IMPLEMENTATION_STATUS.md), [자동화](AUTOMATION.ko.md)를 보세요.
 

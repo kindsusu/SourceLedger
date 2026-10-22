@@ -37,7 +37,7 @@ def test_assistant_mcp_onboarding_and_offline_queue(tmp_path):
     queued = _call(server, "queue_source_proposal", {"source_id": source["id"]})
     assert queued["status"] == "queued"
     assert queued["worker"]["status"] == "stopped"
-    assert queued["arguments"]["max_model_calls"] == 0
+    assert "max_model_calls" not in queued["arguments"]
     assert _call(server, "get_job_status", {"job_id": queued["id"]})["status"] == "queued"
     progress = _call(server, "get_research_progress", {"job_id": queued["id"]})
     assert progress["status"] == "queued" and progress["page_counts"] is None

@@ -23,7 +23,7 @@ def _proposal(task_dir: Path, source_id: str) -> dict:
     draft = task_dir / "collection.draft.json"
     task_dir.mkdir(parents=True, exist_ok=True)
     draft.write_text(json.dumps({"sources": []}), encoding="utf-8")
-    return {"eligible_for_verification": False, "draft_path": str(draft), "model_calls": 0,
+    return {"eligible_for_verification": False, "draft_path": str(draft),
             "reason": "comparison conditions absent"}
 
 
@@ -36,22 +36,6 @@ def test_agent_pins_workspace_and_refuses_changed_topic_or_source(tmp_path, monk
     research.set_product(workspace, identifiers={"model": "CHANGED"})
     with pytest.raises(ValueError, match="topic or product changed"):
         agent.run_agent(workspace, run_dir=tmp_path / "run", resume=True)
-
-
-def test_agent_reserves_no_model_call_without_model_config(tmp_path, monkeypatch):
-    workspace, source_ids = _workspace(tmp_path, "https://vendor.example/a")
-    seen = []
-
-    def propose(*args, **kwargs):
-        seen.append(kwargs["max_model_calls"])
-        return _proposal(Path(kwargs["output_dir"]), kwargs["source_id"])
-
-    monkeypatch.setattr("su_crawler.proposals.propose_source", propose)
-    monkeypatch.setattr(agent, "_aggregate", lambda *args: None)
-    state = agent.run_agent(workspace, run_dir=tmp_path / "run", source_ids=source_ids, max_model_calls=0)
-    assert seen == [0]
-    assert state["usage"]["model_calls"] == 0
-    assert state["status"] == "needs_review"
 
 
 def test_agent_activation_requires_samples_before_any_source_work(tmp_path, monkeypatch):
@@ -68,24 +52,22 @@ def test_agent_enforces_selected_source_limit(tmp_path):
         agent.run_agent(workspace, run_dir=tmp_path / "run", source_ids=source_ids, max_sources=1)
 
 
-def test_agent_resume_uses_the_saved_model_budget_not_new_defaults(tmp_path, monkeypatch):
+def test_agent_resume_continues_a_paused_run(tmp_path, monkeypatch):
     workspace, source_ids = _workspace(tmp_path, "https://vendor.example/a")
-    model = tmp_path / "model.json"
-    model.write_text("{}", encoding="utf-8")
     seen = []
 
     def propose(*args, **kwargs):
-        seen.append(kwargs["max_model_calls"])
+        seen.append(kwargs["source_id"])
         return _proposal(Path(kwargs["output_dir"]), kwargs["source_id"])
 
     monkeypatch.setattr("su_crawler.proposals.propose_source", propose)
     monkeypatch.setattr(agent, "_aggregate", lambda *args: None)
-    paused = agent.run_agent(workspace, run_dir=tmp_path / "run", source_ids=source_ids,
-                             model_config_path=model, max_model_calls=1, max_steps=0)
+    paused = agent.run_agent(workspace, run_dir=tmp_path / "run", source_ids=source_ids, max_steps=0)
     assert paused["status"] == "paused"
+    assert seen == []
     resumed = agent.run_agent(workspace, run_dir=tmp_path / "run", resume=True)
-    assert seen == [1]
-    assert resumed["usage"]["model_calls"] == 0
+    assert seen == source_ids
+    assert resumed["status"] == "needs_review"
 
 
 def test_agent_rejects_a_proposed_draft_changed_before_aggregate(tmp_path):

@@ -67,10 +67,9 @@ def test_agent_search_to_verified_shared_ledger_and_xlsx(tmp_path, monkeypatch):
     monkeypatch.setattr("su_crawler.collectors.collect", fixture_collect)
 
     state = agent.run_agent(workspace, run_dir=tmp_path / "run", search_config_path=provider,
-                            max_sources=3, max_model_calls=0, max_seconds=30)
+                            max_sources=3, max_seconds=30)
 
     assert state["status"] == "completed"
-    assert state["usage"]["model_calls"] == 0
     assert state["search"]["status"] == "searched"
     assert queries == ["Industrial pumps Process pump South Korea PX-100"]
     saved = research.load_workspace(workspace)["sources"]
