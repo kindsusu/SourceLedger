@@ -879,7 +879,12 @@ def _result(method: str, rows: list[dict], observed: int | None, *, complete: bo
 
 @lru_cache(maxsize=4)
 def _analyse(content: bytes, url: str, backend: str) -> dict:
+    from .network_evidence import inline_json
     page = _Page(content, url, backend)
+    return {**_run_steps(page, content, backend), "inline_json": inline_json(page.soup)}
+
+
+def _run_steps(page: _Page, content: bytes, backend: str) -> dict:
     platform = _platform_cards(page)
     if platform is not None and platform["rows"]:
         return platform
@@ -925,9 +930,12 @@ def extract_generic(result: FetchResult, source: Source | None = None) -> list[C
         return []
     analysis = _analysis(result, source)
     result.trace.extend(copy.deepcopy(analysis["trace"]))
-    return [Candidate(row["fields"], row["evidence"], row["locator"], row["method"], row["specs"],
-                      source_visibility=row["visibility"], review_flags=row["review_flags"], evidence_mode=row["mode"])
-            for row in copy.deepcopy(analysis["rows"])]
+    candidates = [Candidate(row["fields"], row["evidence"], row["locator"], row["method"], row["specs"],
+                            source_visibility=row["visibility"], review_flags=row["review_flags"],
+                            evidence_mode=row["mode"])
+                  for row in copy.deepcopy(analysis["rows"])]
+    from .network_evidence import corroborate
+    return corroborate(candidates, result, analysis["inline_json"])
 
 
 def apply_market_currency(candidates: list[Candidate], code: str | None) -> list[Candidate]:

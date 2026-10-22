@@ -177,17 +177,28 @@ def _save_evidence(directory: Path, result: FetchResult, source: Source) -> tupl
         suffix = '.jpg' if result.screenshot.startswith(b'\xff\xd8\xff') else '.png'
         screenshot, screenshot_digest = _store_capture(directory, result.screenshot, suffix)
         artifacts["screenshot"] = {"path": str(screenshot), "sha256": screenshot_digest}
+    # JSON responses the page loaded are listed in the hashed receipt only;
+    # observation artifacts keep their content/receipt/screenshot contract.
+    network = []
+    for item in result.network_responses:
+        body = item.get("body")
+        if isinstance(body, bytes) and body:
+            body_path, body_digest = _store_capture(directory, body, ".json")
+            network.append({"url": item.get("url"), "status": item.get("status"),
+                            "content_type": item.get("content_type"), "size": len(body),
+                            "path": str(body_path), "sha256": body_digest})
     receipt.write_text(json.dumps({"source_id": source.id, "url": result.final_url, "at": result.fetched_at,
         "backend": result.backend, "hash": digest, "recipe_version": source.recipe_version, "account_scope": source.account_scope,
         "trace": result.trace, "http_metadata": result.http_metadata,
-        "artifacts": artifacts}, ensure_ascii=False, indent=2), encoding="utf-8")
+        "artifacts": artifacts, **({"network_responses": network} if network else {})},
+        ensure_ascii=False, indent=2), encoding="utf-8")
     artifacts["receipt"] = {"path": str(receipt), "sha256": hashlib.sha256(receipt.read_bytes()).hexdigest()}
     result.evidence_artifacts = artifacts
     for snapshot in result.variant_snapshots:
         captured = replace(result, content=snapshot['content'],
                            final_url=snapshot.get('final_url', result.final_url),
                            fetched_at=snapshot.get('fetched_at', result.fetched_at),
-                           screenshot=snapshot.get('screenshot'), variant_snapshots=[],
+                           screenshot=snapshot.get('screenshot'), variant_snapshots=[], network_responses=[],
                            trace=snapshot.get('trace', []) + [{'event': 'captured_selection',
                                                              'selections': snapshot.get('selections', {})}])
         _save_evidence(directory, captured, source)
