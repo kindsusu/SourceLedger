@@ -20,7 +20,7 @@ Read the [collection reliability changes](docs/CROSS_SITE_RELIABILITY_2026-10-14
 
 [![SourceLedger collection architecture](docs/architecture/sourceledger.png)](docs/ARCHITECTURE.md)
 
-The bounded agent turns source candidates into extraction proposals, collects fresh evidence, and records validated observations in SQLite before producing an XLSX report. Missing values remain missing. Optional search, model assistance, and activation have explicit limits.
+The bounded agent turns source candidates into extraction proposals, collects fresh evidence, and records validated observations in SQLite before producing an XLSX report. Missing values remain missing. Optional search and activation have explicit limits.
 
 Read the [architecture and Archify guide](docs/ARCHITECTURE.md) ([한국어](docs/ARCHITECTURE.ko.md)) for the code-backed flow, skill setup, and rebuild commands. Download [the interactive HTML](docs/architecture/sourceledger.html) and open it locally; GitHub shows its source rather than running the viewer. [Archify](https://github.com/tt-a1i/archify) is a documentation tool used to create this map.
 
@@ -80,7 +80,7 @@ Preview references are unverified and never become price observations. Add, remo
 
 Research plans ask for a missing research region before suggesting sources. Editable product conditions are separate from optional literal filters; collection reports matched, unknown, excluded, and unchecked products without inventing missing evidence. The start button shows missing requirements, and source candidates are clearly separated from product checks.
 
-The advanced guided-research path uses only registered sources you select (up to 50) and has a 120-second budget. Plan collection uses a separate page budget (10 by default). Existing collection model calls remain opt-in and default to zero; the CLI agent example below retains its separate default of three sources.
+The advanced guided-research path uses only registered sources you select (up to 50) and has a 120-second budget. Plan collection uses a separate page budget (10 by default). The CLI agent example below retains its separate default of three sources.
 
 Start and stop the independent worker from the UI when queued work is needed. Closing the browser tab or the UI web server does not cancel jobs already owned by that worker. The UI and Codex/Claude MCP connector can share the same workspace and job history. A job marked `succeeded` completed its program execution; inspect its separate evidence status before treating a price as verified.
 
@@ -135,7 +135,7 @@ Version 0.3 added optional SearXNG keyword search, source-backed selector propos
 
 The agent proposes rules for selected sources, then performs a fresh combined collection and verification into SQLite and XLSX. Incomplete sources remain visible. `--resume` preserves saved scope and budgets; `--max-steps` pauses at a source boundary. External operations use bounded timeouts; the overall time budget is cooperative, not a hard process kill.
 
-Keyword search requires an explicitly configured SearXNG server. Optional Ollama assistance accepts a configured loopback server with cloud disabled and an installed local model; model calls default to zero. Models return selectors only. Automatic activation additionally requires `--activate` and known samples covering every selected source. See the [automation guide](docs/AUTOMATION.md) for configuration, limits, and tested scope.
+Keyword search requires an explicitly configured SearXNG server. Rule proposals are deterministic (semantic HTML and JSON-LD), with optional host-assistant (Claude through MCP) proposals. Automatic activation additionally requires `--activate` and known samples covering every selected source. See the [automation guide](docs/AUTOMATION.md) for configuration, limits, and tested scope.
 
 Configuration is JSON. Each product has `identifiers` to match against source material; each source has a fixed `location` and `product_ids`. A web source must list its URL host in `allowed_domains`. Internal material is limited to local file sources under `file_root`, or to authorized internal web sources. A file source may read only from its base directory or explicitly configured `file_root`.
 
@@ -264,8 +264,8 @@ MCP rejects a collection request when it cannot see a worker heartbeat. Its tool
 For opt-in, bounded connected-AI assistance on CAPTCHA/access challenges, see [browser recovery](docs/BROWSER_RECOVERY.md). This is not a built-in solver or automatic browser-session transfer.
 
 - Keyword search requires your configured SearXNG instance. No shared/public search endpoint is silently chosen.
-- Selector proposals support structured data and semantic HTML, with optional local model assistance. Reviewed browser recipes can be entered through MCP or the web UI; unattended recipe generation, automated login, and unattended rule self-repair are not implemented.
-- SearXNG/Ollama request paths are tested with controlled responses; actual servers, models, and representative live sites remain to be validated. Loopback transport alone does not establish where a proxy executes a model; configure Ollama with cloud disabled.
+- Selector proposals support structured data and semantic HTML. Reviewed browser recipes can be entered through MCP or the web UI; unattended recipe generation, automated login, and unattended rule self-repair are not implemented.
+- The SearXNG request path is tested with controlled responses; an actual server and representative live sites remain to be validated.
 - The local connector's CLI and SDK contract are covered by offline tests; live Codex, Claude Code, and Claude Desktop GUI connections have not been verified. ChatGPT web/mobile use would require an authenticated remote deployment and an artifact download path.
 - Crawl4AI is optional and has not been installed or validated against live sites in this environment.
 - Services that incur cost or external transfer, including UWS, Jina, and Exa, are not connected.

@@ -106,8 +106,8 @@ def _aggregate(state: dict, directory: Path, workspace: dict, seconds: float) ->
         state["collection"]["activation"] = activate_config(config_path, receipt_path=receipt_path, output_path=active)
 
 
-def run_agent(workspace_path, *, run_dir, search_config_path=None, model_config_path=None,
-              samples_path=None, source_ids=None, max_sources=3, max_model_calls=0,
+def run_agent(workspace_path, *, run_dir, search_config_path=None,
+              samples_path=None, source_ids=None, max_sources=3,
               max_seconds=120, activate=False, resume=False, max_steps=None) -> dict:
     """Run one bounded batch; resume reuses saved budgets and pinned source scope.
 
@@ -119,7 +119,6 @@ def run_agent(workspace_path, *, run_dir, search_config_path=None, model_config_
     from .search import search_workspace
 
     _integer(max_sources, "max_sources", 1, 50)
-    _integer(max_model_calls, "max_model_calls", 0, 50)
     if max_steps is not None:
         _integer(max_steps, "max_steps", 0, 50)
     if isinstance(max_seconds, bool) or not isinstance(max_seconds, (int, float)) or not math.isfinite(max_seconds) or not 1 <= max_seconds <= 3600:
@@ -153,7 +152,7 @@ def run_agent(workspace_path, *, run_dir, search_config_path=None, model_config_
             if activate and samples_path is None:
                 raise ValueError("Automatic activation requires a known samples file")
             inputs = {}
-            for key, value in (("search", search_config_path), ("model", model_config_path), ("samples", samples_path)):
+            for key, value in (("search", search_config_path), ("samples", samples_path)):
                 path = Path(value).resolve() if value is not None else None
                 if path == state_path:
                     raise ValueError("An agent input cannot be the run state")
@@ -173,8 +172,8 @@ def run_agent(workspace_path, *, run_dir, search_config_path=None, model_config_
                 "schema": SCHEMA, "id": uuid.uuid4().hex, "workspace_path": str(workspace_file),
                 "topic_fingerprint": _topic(workspace), "created_at": utc_now(), "status": "running",
                 "inputs": inputs, "activate": bool(activate), "requested_source_ids": requested,
-                "limits": {"max_sources": max_sources, "max_model_calls": max_model_calls, "max_seconds": max_seconds},
-                "usage": {"model_calls": 0, "search_calls": 0, "elapsed_seconds": 0.0},
+                "limits": {"max_sources": max_sources, "max_seconds": max_seconds},
+                "usage": {"search_calls": 0, "elapsed_seconds": 0.0},
                 "search": None, "tasks": [], "selection_complete": False,
             }
             _checkpoint(state_path, state)
@@ -248,19 +247,12 @@ def run_agent(workspace_path, *, run_dir, search_config_path=None, model_config_
                 if _topic(current) != state["topic_fingerprint"] or source is None or stable_id(source) != task["source_fingerprint"]:
                     raise ValueError("Selected source or product changed; start a new agent run")
                 task_dir = directory / "sources" / task["source_id"] / ("attempt-" + uuid.uuid4().hex)
-                model_path = state["inputs"]["model"]["path"]
-                allowance = int(bool(model_path) and state["usage"]["model_calls"] < state["limits"]["max_model_calls"])
-                state["usage"]["model_calls"] += allowance
                 task.update(status="running", attempt_dir=str(task_dir))
                 state["in_flight_seconds"] = min(30, remaining())
                 save()
                 try:
                     proposal = propose_source(workspace_file, source_id=task["source_id"], output_dir=task_dir,
-                                              model_config_path=model_path, timeout_seconds=min(30, remaining()), max_model_calls=allowance)
-                    actual_calls = proposal.get("model_calls", allowance)
-                    if actual_calls not in (0, 1) or actual_calls > allowance:
-                        raise RuntimeError("Proposal exceeded its model-call allowance")
-                    state["usage"]["model_calls"] -= allowance - actual_calls
+                                              timeout_seconds=min(30, remaining()))
                     task["proposal"] = proposal
                     state.pop("in_flight_seconds", None)
                     if proposal.get("draft_path"):

@@ -416,15 +416,14 @@ def build_assistant_server(root: str | Path, *, legacy_tools: bool = False):
 
     @legacy_tool(annotations=open_world)
     def queue_source_proposal(source_id: str, timeout_seconds: float = 30) -> dict[str, Any]:
-        """Queue an evidence-backed extraction proposal with external model calls disabled."""
-        return queue("propose", {"source_id": source_id, "timeout_seconds": timeout_seconds, "max_model_calls": 0})
+        """Queue an evidence-backed extraction proposal."""
+        return queue("propose", {"source_id": source_id, "timeout_seconds": timeout_seconds})
 
     @legacy_tool(annotations=open_world)
     def queue_research_agent(source_ids: list[str] | None = None, max_sources: int = 3,
                              max_seconds: float = 120, max_steps: int | None = None) -> dict[str, Any]:
-        """Queue the bounded checkpointed agent with search and model providers disabled."""
-        arguments: dict[str, Any] = {"max_sources": max_sources, "max_seconds": max_seconds,
-                                     "max_model_calls": 0}
+        """Queue the bounded checkpointed agent with search providers disabled."""
+        arguments: dict[str, Any] = {"max_sources": max_sources, "max_seconds": max_seconds}
         if source_ids is not None:
             arguments["source_ids"] = source_ids
         if max_steps is not None:

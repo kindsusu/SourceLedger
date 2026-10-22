@@ -16,7 +16,6 @@ from bs4 import BeautifulSoup
 
 from .collectors import collect
 from .extraction import extract
-from .model_provider import load_model_config, propose_with_ollama
 from .models import FetchResult, Product, Source
 from .research import load_workspace
 from .validation import validate
@@ -203,14 +202,11 @@ def _draft(workspace_path: Path, workspace: dict[str, Any], source_record: dict[
 
 def propose_source(
     workspace_path: str | Path, *, source_id: str, output_dir: str | Path,
-    model_config_path: str | Path | None = None, timeout_seconds: float = 30,
-    max_model_calls: int = 1,
+    timeout_seconds: float = 30,
 ) -> dict[str, Any]:
     """Propose review-only extraction rules without altering the workspace or live data."""
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 120:
         raise ValueError("timeout_seconds must be finite and between 0 and 120")
-    if isinstance(max_model_calls, bool) or not isinstance(max_model_calls, int) or not 0 <= max_model_calls <= 1:
-        raise ValueError("max_model_calls must be 0 or 1")
     workspace_file = Path(workspace_path).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     workspace = load_workspace(workspace_file)
@@ -238,8 +234,6 @@ def propose_source(
     fetched: FetchResult | None = None
     rules: dict[str, Any] | None = None
     method = "none"
-    model_calls = 0
-    model_usage = None
     errors: list[dict[str, str]] = []
     allowed_fields = _allowed_fields(workspace)
     previews: list[dict[str, Any]] = []
@@ -318,24 +312,6 @@ def propose_source(
         evidence_path_value = str((output / f"evidence.{fetched.backend}.html").resolve())
         evidence_hash_value = hashlib.sha256(fetched.content).hexdigest()
 
-    if rules is None and fetched is not None and model_config_path is not None and max_model_calls > 0:
-        remaining = timeout_seconds - (time.monotonic() - started)
-        if remaining > 0:
-            try:
-                config = load_model_config(model_config_path)
-                model_calls = 1
-                candidate_rules, model_usage = propose_with_ollama(
-                    fetched.content.decode("utf-8", errors="replace"), config=config,
-                    allowed_fields=allowed_fields, identifiers=identifiers, timeout_seconds=remaining,
-                )
-                _, previews = _validate_rules(
-                    fetched, source, product, candidate_rules,
-                    evidence_path=evidence_path_value or "", evidence_sha256=evidence_hash_value or "",
-                )
-                rules, method = candidate_rules, "ollama"
-            except Exception as exc:
-                errors.append({"type": type(exc).__name__, "message": _safe_reason(str(exc))})
-
     terminal_policy = bool(attempts and attempts[-1]["status"] == "policy_denied")
     draft_path = None
     if rules is not None:
@@ -345,8 +321,6 @@ def propose_source(
         eligible = comparable
         status = "proposed" if eligible else "needs_review"
         reason = "Extraction rules proposed; fresh source and known-sample verification are required."
-        if method == "ollama":
-            reason += " Model-proposed rules require source/sample verification before any activation decision."
         if missing:
             reason += " Comparison conditions remain unobserved: " + ", ".join(missing)
     elif terminal_policy:
@@ -361,8 +335,8 @@ def propose_source(
         "source_id": source_id, "source_url": record["location"], "source_scope": record["scope"],
         "rules": rules, "evidence_path": evidence_path_value, "evidence_sha256": evidence_hash_value,
         "capture": {"backend": fetched.backend, "fetched_at": fetched.fetched_at, "final_url": fetched.final_url} if fetched else None,
-        "preview_observations": previews, "draft_path": draft_path, "model_calls": model_calls,
-        "model_usage": model_usage, "fetch_attempts": attempts, "errors": errors,
+        "preview_observations": previews, "draft_path": draft_path,
+        "fetch_attempts": attempts, "errors": errors,
         "reason": reason, "eligible_for_verification": bool(draft_path is not None and locals().get("eligible", False)),
     }
     proposal_path = output / "proposal.json"

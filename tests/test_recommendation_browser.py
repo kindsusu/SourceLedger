@@ -146,7 +146,7 @@ def test_recommendation_selection_and_guided_run(tmp_path):
             page.get_by_role("button", name="Queue research run").click()
             assert ("jobs", {"operation": "agent", "arguments": {
                 "source_ids": ["source-a"], "max_sources": 1,
-                "max_seconds": 120, "max_model_calls": 0,
+                "max_seconds": 120,
             }}) in captured
             page.locator('nav a[data-route="sources"]').click()
             for width in (375, 768, 1024, 1440):

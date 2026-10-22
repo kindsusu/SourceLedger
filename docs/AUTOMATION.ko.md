@@ -2,9 +2,9 @@
 
 [English](AUTOMATION.md)
 
-SourceLedger v0.3에는 범위가 제한된 `search`, `propose`, `agent` 명령이 있습니다. 공개 또는 명시적으로 승인한 내부 웹 출처의 규칙을 준비·검증하며 검색 결과는 공개 후보로만 저장합니다. 검색 요약이나 모델 출력은 가격으로 취급하지 않습니다. SourceLedger가 유료 API 키, 호스팅 서비스, 모델 다운로드, 스케줄러, 외부 서비스를 설치하지 않습니다.
+SourceLedger v0.3에는 범위가 제한된 `search`, `propose`, `agent` 명령이 있습니다. 공개 또는 명시적으로 승인한 내부 웹 출처의 규칙을 준비·검증하며 검색 결과는 공개 후보로만 저장합니다. 검색 요약이나 도우미 출력은 가격으로 취급하지 않습니다. SourceLedger가 유료 API 키, 호스팅 서비스, 모델 다운로드, 스케줄러, 외부 서비스를 설치하지 않습니다.
 
-실제 SearXNG 및 Ollama 서버 연동은 이 프로젝트에서 아직 검증하지 않았습니다. 현재는 모의 프로토콜 테스트만 통과했습니다. 운영하는 서버는 사용 전에 직접 확인해야 합니다.
+실제 SearXNG 서버 연동은 이 프로젝트에서 아직 검증하지 않았습니다. 현재는 모의 프로토콜 테스트만 통과했습니다. 운영하는 서버는 사용 전에 직접 확인해야 합니다.
 
 ## 1. 작업공간 준비
 
@@ -32,43 +32,26 @@ source-ledger research-status
 
 SearXNG 서버에서 JSON 검색 API를 켜야 합니다. API는 `q`, `format=json`을 받고, `403`은 다른 서비스로 재시도하지 않고 사용 불가로 보고됩니다. [SearXNG Search API 문서](https://docs.searxng.org/dev/search_api.html)를 참고하세요.
 
-## 3. 선택 사항: 로컬 Ollama 선택자 제안
+## 3. 출처 기반 규칙 제안
 
-`propose`는 저장된 출처 하나를 읽어 검토용 초안을 만듭니다. `--model-config`가 없거나 `--max-model-calls 0`이면 결정적 HTML/구조화 데이터 규칙만 사용합니다. 모델은 CSS 선택자만 제안합니다. 가격 값, JavaScript, 클릭, 브라우저 recipe, 명령, 활성화 결정을 낼 수 없습니다.
-
-[model.ollama.json](../examples/model.ollama.json)을 복사해 `YOUR_INSTALLED_LOCAL_MODEL`을 이미 본인의 Ollama 서버에 설치한 모델명으로 바꿉니다. 모델 설정은 명시적이며 로컬 전용입니다.
-
-```json
-{
-  "provider": "ollama",
-  "endpoint": "http://127.0.0.1:11434/api/chat",
-  "model": "YOUR_INSTALLED_LOCAL_MODEL",
-  "local_only": true,
-  "timeout_seconds": 30,
-  "max_input_chars": 30000,
-  "num_predict": 1200
-}
-```
-
-Ollama 서버가 실행되는 장비에서 `OLLAMA_NO_CLOUD=1`을 설정하고 서버를 수동으로 다시 시작하세요. 루프백 URL만으로는 공급자가 로컬임을 증명할 수 없습니다. SourceLedger는 임의의 모델 프록시를 허용하지 않습니다.
+`propose`는 저장된 출처 하나를 읽어 검토용 초안을 만듭니다. 제안은 결정적입니다. 구조화된 데이터(JSON-LD)와 의미가 명시된 HTML 규칙을 가져온 페이지에서 검증하며, 관측하지 못한 조건은 비워 둡니다. 선택적으로 연결된 호스트 도우미(MCP를 통한 Claude)가 규칙을 제안할 수 있으며, 어떤 제안이든 활성화 전에 새 출처·정답 표본 검증을 거쳐야 합니다.
 
 ```powershell
-source-ledger propose --source-id SOURCE_ID --output-dir .sourceledger/proposals/SOURCE_ID --max-model-calls 0
-source-ledger propose --source-id SOURCE_ID --output-dir .sourceledger/proposals/SOURCE_ID-model --model-config .sourceledger/model.ollama.json --max-model-calls 1
+source-ledger propose --source-id SOURCE_ID --output-dir .sourceledger/proposals/SOURCE_ID
 ```
 
-매번 새 출력 디렉터리를 사용합니다. 결과는 검토용 미리보기/초안이며 검증되거나 활성화된 것이 아닙니다. 요청 형식은 [Ollama chat API](https://docs.ollama.com/api/chat), 서버 운영은 [Ollama FAQ](https://docs.ollama.com/faq/)를 참고하세요.
+매번 새 출력 디렉터리를 사용합니다. 결과는 검토용 미리보기/초안이며 검증되거나 활성화된 것이 아닙니다.
 
 ## 4. 제한된 배치 실행
 
-에이전트는 실행 상태를 체크포인트로 저장합니다. 기본 모델 호출 횟수는 0회입니다. `--max-steps`는 제한된 출처 단계 뒤에 멈추며 `--resume`은 변경된 인자를 받지 않고 저장된 입력과 예산을 다시 사용합니다. `--max-seconds`는 협조적으로 적용하는 총 작업 시간 한도이며 프로세스를 강제 종료하지는 않습니다.
+에이전트는 실행 상태를 체크포인트로 저장합니다. `--max-steps`는 제한된 출처 단계 뒤에 멈추며 `--resume`은 변경된 인자를 받지 않고 저장된 입력과 예산을 다시 사용합니다. `--max-seconds`는 협조적으로 적용하는 총 작업 시간 한도이며 프로세스를 강제 종료하지는 않습니다.
 
 ```powershell
 source-ledger agent --run-dir .sourceledger/runs/run-001 --max-sources 3 --max-seconds 120
 source-ledger agent --run-dir .sourceledger/runs/run-001 --resume
 ```
 
-같은 배치에서 먼저 검색하려면 `--search-config .sourceledger/search.searxng.json`을 추가합니다. 로컬 모델 호출을 하나 허용하려면 `--model-config .sourceledger/model.ollama.json --max-model-calls 1`을 함께 추가합니다. 검색 대신 저장된 출처 ID를 하나 이상 지정할 수 있습니다.
+같은 배치에서 먼저 검색하려면 `--search-config .sourceledger/search.searxng.json`을 추가합니다. 검색 대신 저장된 출처 ID를 하나 이상 지정할 수 있습니다.
 
 ```powershell
 source-ledger agent --run-dir .sourceledger/runs/run-002 --source-id SOURCE_ID --max-sources 1 --max-seconds 120

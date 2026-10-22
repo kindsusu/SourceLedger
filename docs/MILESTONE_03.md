@@ -7,7 +7,7 @@ Objective: reduce manual URL discovery and first-time extraction setup while pre
 Scope:
 
 - An explicitly configured SearXNG JSON search endpoint, with bounded requests and candidate provenance.
-- Deterministic structured-data/semantic-HTML rule proposals, optionally assisted by a local Ollama model. Models propose selectors only, never price values or executable actions.
+- Deterministic structured-data/semantic-HTML rule proposals, with optional host-assistant (Claude through MCP) rule proposals that still require source verification.
 - A bounded controller that checkpoints source processing, verifies proposed configs, and optionally activates configs only with matching known samples.
 - English interfaces and documentation, with a Korean guide. SQLite remains authoritative and XLSX remains the report format.
 

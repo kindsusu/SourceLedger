@@ -2,9 +2,9 @@
 
 [한국어](AUTOMATION.ko.md)
 
-SourceLedger v0.3 has bounded `search`, `propose`, and `agent` commands. They prepare and verify collection rules for public or explicitly authorized internal web sources; search results are always public candidates. They do not treat search snippets or model output as prices. No paid API key, hosted service, model download, scheduler, or external service is installed by SourceLedger.
+SourceLedger v0.3 has bounded `search`, `propose`, and `agent` commands. They prepare and verify collection rules for public or explicitly authorized internal web sources; search results are always public candidates. They do not treat search snippets or assistant output as prices. No paid API key, hosted service, model download, scheduler, or external service is installed by SourceLedger.
 
-Live SearXNG and Ollama servers have **not** been tested in this project. The protocol paths are covered by mocked tests only. Verify a server you operate before relying on it.
+A live SearXNG server has **not** been tested in this project. The protocol paths are covered by mocked tests only. Verify a server you operate before relying on it.
 
 ## 1. Prepare the workspace
 
@@ -32,43 +32,26 @@ source-ledger research-status
 
 SearXNG must have its JSON search API enabled. Its API accepts `q` and `format=json`; a `403` is reported as unavailable rather than retried as an alternative service. See the [SearXNG Search API documentation](https://docs.searxng.org/dev/search_api.html).
 
-## 3. Optional local Ollama selector proposals
+## 3. Source-backed rule proposals
 
-`propose` can inspect one saved source and write a review-only draft. Without `--model-config`, or with `--max-model-calls 0`, it uses deterministic HTML/structured-data rules only. A model can propose CSS selectors only: it cannot return price values, JavaScript, clicks, browser recipes, commands, or activation decisions.
-
-Copy and edit [model.ollama.json](../examples/model.ollama.json), replacing `YOUR_INSTALLED_LOCAL_MODEL` with a model already installed on your own Ollama server. The intended model configuration is explicit and local-only:
-
-```json
-{
-  "provider": "ollama",
-  "endpoint": "http://127.0.0.1:11434/api/chat",
-  "model": "YOUR_INSTALLED_LOCAL_MODEL",
-  "local_only": true,
-  "timeout_seconds": 30,
-  "max_input_chars": 30000,
-  "num_predict": 1200
-}
-```
-
-Set `OLLAMA_NO_CLOUD=1` on the machine running the Ollama server and restart that server manually. A loopback URL alone does not prove that a provider is local. SourceLedger accepts no arbitrary model proxy.
+`propose` inspects one saved source and writes a review-only draft. Proposals are deterministic: structured data (JSON-LD) and semantic HTML rules are validated against the fetched page, and conditions that are not observed stay empty. Optionally, a connected host assistant (Claude through MCP) can propose rules; any proposed rule still requires fresh source and sample verification before activation.
 
 ```powershell
-source-ledger propose --source-id SOURCE_ID --output-dir .sourceledger/proposals/SOURCE_ID --max-model-calls 0
-source-ledger propose --source-id SOURCE_ID --output-dir .sourceledger/proposals/SOURCE_ID-model --model-config .sourceledger/model.ollama.json --max-model-calls 1
+source-ledger propose --source-id SOURCE_ID --output-dir .sourceledger/proposals/SOURCE_ID
 ```
 
-Use a new output directory for each proposal. The result is a preview/draft and is not verified or activated. The request protocol is the [Ollama chat API](https://docs.ollama.com/api/chat); use the [Ollama FAQ](https://docs.ollama.com/faq/) for server operation details.
+Use a new output directory for each proposal. The result is a preview/draft and is not verified or activated.
 
 ## 4. Run a bounded batch
 
-The agent checkpoints its run state. By default it permits zero model calls. `--max-steps` pauses after a bounded number of source steps; `--resume` uses the saved inputs and saved budgets rather than accepting changed ones. `--max-seconds` is a cooperative total-work deadline, not a hard process kill.
+The agent checkpoints its run state. `--max-steps` pauses after a bounded number of source steps; `--resume` uses the saved inputs and saved budgets rather than accepting changed ones. `--max-seconds` is a cooperative total-work deadline, not a hard process kill.
 
 ```powershell
 source-ledger agent --run-dir .sourceledger/runs/run-001 --max-sources 3 --max-seconds 120
 source-ledger agent --run-dir .sourceledger/runs/run-001 --resume
 ```
 
-To let the same batch search first, add `--search-config .sourceledger/search.searxng.json`. To opt into one local model call per available budget, add both `--model-config .sourceledger/model.ollama.json --max-model-calls 1`. You can bypass search with one or more saved source IDs:
+To let the same batch search first, add `--search-config .sourceledger/search.searxng.json`. You can bypass search with one or more saved source IDs:
 
 ```powershell
 source-ledger agent --run-dir .sourceledger/runs/run-002 --source-id SOURCE_ID --max-sources 1 --max-seconds 120

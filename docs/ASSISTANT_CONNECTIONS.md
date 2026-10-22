@@ -265,7 +265,7 @@ the clients' official local MCP instructions when their settings UI differs: [Co
 
 The browser UI also supports an explicit **Run in web UI** action for a saved source recommendation request. In **Connections**, select the installed Codex CLI or Claude Code CLI, choose its provider-default model or enter a model ID, set a timeout from 30 to 600 seconds (default 180), and save. The CLI must be installed and logged in on the computer running SourceLedger. See the providers’ [Codex CLI](https://developers.openai.com/codex/cli/) and [Claude Code setup](https://code.claude.com/docs/en/setup) instructions. Availability reports installation only; authentication is checked when the job runs. Native CLI authentication and account usage rules apply. SourceLedger does not store API keys, install or log in to the CLI, or silently fall back to another provider. This setting does not change the model in an open desktop conversation.
 
-Running a request queues a local worker job. It only returns unverified recommendation candidates for manual review and selection in Sources; it does not start a price collection job or create price observations. The provider CLI may access web pages while searching. Existing collection model calls remain opt-in and default to zero.
+Running a request queues a local worker job. It only returns unverified recommendation candidates for manual review and selection in Sources; it does not start a price collection job or create price observations. The provider CLI may access web pages while searching.
 
 The connection is not a cloud deployment. Codex/Claude web or mobile access,
 remote artifact download, direct reuse of a host browser session and

@@ -68,6 +68,17 @@ def test_config_budget_limits_are_enforced(tmp_path):
         validate_config(tmp_path, config.name)
 
 
+def test_legacy_max_model_calls_is_accepted_only_as_zero_and_never_forwarded(monkeypatch, tmp_path):
+    _workspace(tmp_path)
+    for operation, base in (("propose", {"source_id": "source-a"}), ("agent", {})):
+        assert prepare_job_args(tmp_path, operation, {**base, "max_model_calls": 0})["max_model_calls"] == 0
+        with pytest.raises(ValueError, match="model calls"):
+            prepare_job_args(tmp_path, operation, {**base, "max_model_calls": 1})
+        with pytest.raises(ValueError, match="model calls"):
+            prepare_job_args(tmp_path, operation, {**base, "model_config": "model.json"})
+    assert "max_model_calls" not in prepare_job_args(tmp_path, "agent", {})
+
+
 def test_symlinked_workspace_and_files_are_rejected(tmp_path):
     real = tmp_path / "real"
     real.mkdir()

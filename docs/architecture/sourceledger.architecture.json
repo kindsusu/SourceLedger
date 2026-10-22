@@ -187,7 +187,7 @@
       "dot": "violet",
       "title": "Optional capabilities",
       "items": [
-        "SearXNG is optional; Ollama may assist selector proposals only.",
+        "SearXNG is optional.",
         "Automatic agent activation needs explicit --activate and known samples; manual collection does not."
       ]
     },
