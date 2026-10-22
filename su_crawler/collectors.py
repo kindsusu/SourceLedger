@@ -1359,7 +1359,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 return max(1.0, remaining_ms() - final_reserve_ms)
 
             def capture_variant(selections: dict[str, str], selection_values: dict[str, str] | None = None,
-                                listing_expectation: dict[str, Any] | None = None) -> None:
+                                listing_expectation: dict[str, Any] | None = None, *,
+                                price_settlement: dict[str, str] | None = None) -> None:
                 nonlocal variant_bytes, challenge_seen
                 require_navigation_policy()
                 _check_url(source, page.url)
@@ -1378,6 +1379,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 variant_snapshots.append({"content": html, "final_url": snapshot['probe']['url'],
                                           "fetched_at": snapshot['captured_at'], "selections": selections,
                                           "selection_values": selection_values or {}})
+                if price_settlement is not None:
+                    variant_snapshots[-1]["price_settlement"] = dict(price_settlement)
                 variant_bytes += len(html)
 
             for index, step in enumerate(source.recipe):

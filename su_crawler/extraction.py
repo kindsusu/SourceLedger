@@ -254,6 +254,9 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
                            fetched_at=snapshot.get("fetched_at", result.fetched_at), variant_snapshots=[])
             selections = snapshot.get("selections") or {}
             selection_values = snapshot.get("selection_values") or {}
+            price_settlement = snapshot.get("price_settlement")
+            settlement_status = (price_settlement.get("status") if isinstance(price_settlement, dict)
+                                 and isinstance(price_settlement.get("status"), str) else None)
             for candidate in extract(item, source):
                 if isinstance(selections, dict) and "scroll_items" in selections:
                     key = json.dumps([candidate.locator, candidate.fields, candidate.specs],
@@ -264,9 +267,16 @@ def extract(result: FetchResult, source: Source) -> list[Candidate]:
                 candidate.locator = f"capture:{index + 1}/{candidate.locator}"
                 candidate.derived_values["capture_snapshot_index"] = index
                 # A visible ready marker may already be visible from the prior
-                # choice. It does not prove that a quoted price has settled.
+                # choice. It does not prove that a quoted price has settled;
+                # only a reviewed price element that changed after the
+                # selection, once the network was quiet, does.
                 if selection_values:
-                    candidate.review_flags.append("selection_price_settlement_unconfirmed")
+                    if settlement_status is not None:
+                        candidate.derived_values["price_settlement"] = settlement_status
+                    if settlement_status == "identical_after_quiet":
+                        candidate.review_flags.append("identical_amounts_after_network_quiet_review")
+                    elif settlement_status != "changed":
+                        candidate.review_flags.append("selection_price_settlement_unconfirmed")
                 if isinstance(selections, dict):
                     for selector, label in selections.items():
                         if selector in {"page", "scroll_items"}:

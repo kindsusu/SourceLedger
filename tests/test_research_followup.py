@@ -269,3 +269,91 @@ def test_restart_after_ledger_commit_reuses_sealed_run(tmp_path, monkeypatch):
         assert len(store.observations(result["run_id"])) == 1
     finally:
         store.close()
+
+
+def _blocked_job(tmp_path, monkeypatch, url="https://shop.example.test/item"):
+    monkeypatch.setattr(catalog_collection, "collect", lambda s, b, backend: FetchResult(s.id, "fetched", backend, content=b"<html>No metadata</html>", final_url=s.location))
+    return completed_job(tmp_path, monkeypatch, [url])
+
+
+def _evidence_args(url):
+    return dict(url=url, captured_at="2026-10-01T00:00:00+00:00", page_text="Widget 12.30 USD",
+                fields={"name": "Widget", "price": "12.30"}, locator="card")
+
+
+def _submission_state(result):
+    output = Path(result["output_dir"])
+    store = Store(output)
+    try:
+        count = store.db.execute("SELECT count(*) FROM browser_submissions").fetchone()[0]
+    finally:
+        store.close()
+    folder = output / "browser-evidence"
+    return count, sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+
+
+def test_final_url_is_optional_and_policy_record_is_stored_on_the_row(tmp_path, monkeypatch):
+    url = "https://shop.example.test/item"
+    job, result = _blocked_job(tmp_path, monkeypatch, url)
+    args = _evidence_args(url)
+    plain = submit_browser_evidence(tmp_path, job["id"], **args)
+    record = plain["observation"]["host_capture_policy"]
+    assert record["redirected"] is False and record["robots"] == "not_needed" and record["final_url"] == url
+    assert plain["observation"]["status"] == "review" and not plain["observation"]["comparable"]
+    store = Store(Path(result["output_dir"]))
+    try:
+        stored = [row for row in store.observations(result["run_id"]) if row["id"] == plain["submission_id"]][0]
+    finally:
+        store.close()
+    assert stored["host_capture_policy"] == record
+    saved = json.loads(Path(stored["evidence_path"]).read_text(encoding="utf-8"))
+    assert saved["final_url"] == url and saved["capture_policy"] == record
+    same = submit_browser_evidence(tmp_path, job["id"], final_url=url + "#frag", **args)
+    assert same["submission_id"] == plain["submission_id"]
+    view = asyncio.run(build_assistant_server(tmp_path).call_tool("get_job_observations", {"job_id": job["id"]}))[1]
+    assert view["evidence_count"] == 1
+
+
+def test_redirected_final_url_needs_same_host_and_allowed_robots(tmp_path, monkeypatch):
+    from su_crawler import host_capture_policy as policy
+    url = "https://shop.example.test/item"
+    job, result = _blocked_job(tmp_path, monkeypatch, url)
+    decisions = iter([("disallowed", "robots.txt disallows collection"), ("unavailable", "Unable to check robots.txt"), ("allowed", "ok")])
+    monkeypatch.setattr(policy, "_live_robots_check", lambda host: (lambda final: next(decisions)))
+    final = "https://www.shop.example.test/item/2"
+    with pytest.raises(ValueError, match="approved page's host"):
+        submit_browser_evidence(tmp_path, job["id"], final_url="https://other.example.test/item", **_evidence_args(url))
+    with pytest.raises(ValueError, match="disallowed by robots"):
+        submit_browser_evidence(tmp_path, job["id"], final_url=final, **_evidence_args(url))
+    with pytest.raises(ValueError, match="could not be verified"):
+        submit_browser_evidence(tmp_path, job["id"], final_url=final, **_evidence_args(url))
+    assert _submission_state(result) == (0, [])
+    ok = submit_browser_evidence(tmp_path, job["id"], final_url=final, **_evidence_args(url))
+    assert ok["observation"]["host_capture_policy"]["redirected"] is True
+    assert ok["observation"]["host_capture_policy"]["final_url"] == final
+    assert ok["observation"]["status"] == "review" and not ok["observation"]["comparable"]
+
+
+def test_policy_denied_page_rejects_host_evidence_and_writes_nothing(tmp_path, monkeypatch):
+    url = "https://shop.example.test/item"
+    job, result = _blocked_job(tmp_path, monkeypatch, url)
+    result["result"]["coverage"][0]["status"] = "policy_denied"
+    runtime._write_json(runtime._job_path(tmp_path, job["id"]).with_name("result.json"), result)
+    with pytest.raises(ValueError, match="denied by collection policy"):
+        submit_browser_evidence(tmp_path, job["id"], **_evidence_args(url))
+    with pytest.raises(Exception, match="denied by collection policy"):
+        asyncio.run(build_assistant_server(tmp_path).call_tool("submit_browser_evidence", {"job_id": job["id"], **_evidence_args(url)}))
+    assert _submission_state(result) == (0, [])
+    (tmp_path / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    with pytest.raises(ValueError, match="denied by collection policy"):
+        submit_browser_evidence(tmp_path, job["id"], screenshot_path="shot.png", **_evidence_args(url))
+    assert _submission_state(result) == (0, [])
+
+
+def test_final_url_with_credentials_or_private_address_is_rejected(tmp_path, monkeypatch):
+    url = "https://shop.example.test/item"
+    job, result = _blocked_job(tmp_path, monkeypatch, url)
+    for final in ("https://user:pw@shop.example.test/item", "ftp://shop.example.test/item", "https://127.0.0.1/item"):
+        with pytest.raises(ValueError):
+            submit_browser_evidence(tmp_path, job["id"], final_url=final, **_evidence_args(url))
+    assert _submission_state(result) == (0, [])

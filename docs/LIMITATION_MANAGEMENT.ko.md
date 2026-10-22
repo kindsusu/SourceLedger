@@ -17,6 +17,14 @@ MCP `update_research_plan` 또는 웹 UI의 고급 수집 규칙에서 `collecti
 
 `scroll_list`는 항목이 누적되는 목록과 명시적인 종료 표시를 지원하며, 목록 교체·가상 스크롤은 부분 수집으로 남긴다. `enumerate_buttons`는 `data-value`가 있는 제출용이 아닌 버튼 그룹 하나를 지원한다. 페이지 이동 전 캡처에 있는 링크도 같은 호스트의 탐색 대상으로 유지한다. 선택 상태 수는 고유 상품 수와 다르다. 준비 표시가 보인다는 사실만으로 비동기 가격 갱신을 확정할 수 없으므로 옵션 후보는 검토 표시를 유지한다.
 
+`enumerate_options`와 `enumerate_buttons`에는 선택 항목 `price_selector`를 지정할 수 있다. 필드 선택자가 읽는 견적 가격 요소를 가리킨다. 수집기는 옵션을 선택할 때마다 그 요소의 화면 텍스트를 선택 직전 값(하위 옵션은 상위 옵션 선택 후의 값)과 비교하고, 추적 중인 네트워크와 텍스트가 잠잠해질 때까지 기다린다.
+
+- `changed`: 가격 텍스트가 바뀐 뒤 안정됐다. 후보에 가격 갱신 검토 표시를 붙이지 않는다.
+- `identical_after_quiet`: 추가 대기 후에도 텍스트가 같다. 두 옵션의 가격이 같거나 화면이 갱신되지 않았을 수 있으므로 `identical_amounts_after_network_quiet_review` 검토 표시를 붙인다.
+- 그 밖의 결과(`no_price_displayed`, `untracked`, `timeout`): `selection_price_settlement_unconfirmed` 검토 표시를 유지한다.
+
+캡처마다 `price_settlement`(결과·선택자·텍스트 해시)를 저장하고 단계 추적 기록에 결과별 건수를 남긴다. `price_selector`가 없으면 기존 동작과 같고 옵션 후보는 모두 `selection_price_settlement_unconfirmed`를 유지한다.
+
 ## 접근과 재처리
 
 1. **인증:** 권한 있는 기존 로컬 프로필을 명시적으로 사용한다. 비밀번호를 자동 취득하거나 접근 제한을 우회하지 않는다. 프로필은 Git에 포함하지 않는다.
