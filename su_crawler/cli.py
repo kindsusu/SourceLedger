@@ -200,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
                              project_dir=args.project_dir, scope=args.scope)
         elif args.command == "collect-plan":
             from .research_unattended import collect_url_file, exit_code
+            from .power import keep_full_speed
+            keep_full_speed()  # a scheduled task has no window; see su_crawler/power.py
             if not args.yes:
                 raise ValueError("Refusing to collect without --yes. Review the URL file, then rerun with --yes "
                                  "to approve collecting every URL in it.")

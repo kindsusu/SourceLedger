@@ -580,6 +580,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "worker":
         if args.idle_timeout < 0 or args.idle_timeout > 86400:
             parser.error("--idle-timeout must be from 0 to 86400 seconds")
+        from .power import keep_full_speed
+        keep_full_speed()  # a windowless worker is otherwise throttled as background work
         return _run_worker(_root(args.root), _job_id(args.token), args.idle_timeout)
     return 2
 
