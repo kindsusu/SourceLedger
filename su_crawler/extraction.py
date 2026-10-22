@@ -131,7 +131,8 @@ def _extract_html(result: FetchResult, source: Source) -> list[Candidate]:
                 )
                 candidates.append(Candidate(fields, evidence, f"css-row:{index}", "html_css", specs,
                                             source_visibility=visibility, evidence_mode=mode))
-        return candidates
+        from .network_evidence import corroborate
+        return corroborate(candidates, result)
 
     # Share the same bounded structured-data parser, visible-price checks and
     # review semantics as catalog collection.

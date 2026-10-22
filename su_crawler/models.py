@@ -91,6 +91,9 @@ class FetchResult:
     # Each browser state is independently persistable evidence. Entries contain
     # content bytes, final_url, fetched_at, selections, and optional screenshot.
     variant_snapshots: list[dict[str, Any]] = field(default_factory=list)
+    # Bounded same-site JSON fetch/XHR responses the page loaded: url (no
+    # query), status, content_type and body bytes. Corroboration only.
+    network_responses: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

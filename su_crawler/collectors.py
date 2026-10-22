@@ -6,6 +6,7 @@ source bytes and observations about the fetch; they never invent fields.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from contextlib import ExitStack, contextmanager
 import hashlib
 import importlib.util
@@ -27,6 +28,7 @@ import httpx
 from .models import FetchResult, Source, resolve_path, utc_now
 from .browser_runtime import browser_headless, select_browser_runtime
 from .browser_settlement import SETTLEMENT_STATE_JS, install_tracker_sync, wait_settled_sync
+from .network_evidence import has_product_records
 from .browser_enumeration import ListingChanged, SnapshotBudgetExceeded, enumerate_buttons, enumerate_options, paginate, scroll_list, validate_enumeration_step
 from .access_challenges import detect_challenge
 
@@ -322,6 +324,40 @@ def _read_limited(response: httpx.Response) -> bytes:
             raise ValueError("Response exceeds the size limit")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+NETWORK_RESPONSE_LIMIT = 20
+NETWORK_RESPONSE_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _network_bodies(responses: list[Any], trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Read the bounded JSON responses a page loaded; skipped ones stay on the trace."""
+    kept: list[dict[str, Any]] = []
+    skipped: Counter = Counter()
+    for response in responses:
+        try:
+            declared = int(response.headers.get("content-length") or 0)
+            if declared > NETWORK_RESPONSE_MAX_BYTES:
+                skipped["size_limit"] += 1
+                continue
+            body = response.body()
+        except Exception:
+            skipped["unreadable"] += 1
+            continue
+        if len(body) > NETWORK_RESPONSE_MAX_BYTES:
+            skipped["size_limit"] += 1
+            continue
+        if not has_product_records(body):
+            # Settings, translations and account state are not price evidence.
+            skipped["no_product_records"] += 1
+            continue
+        kept.append({"url": _safe_url(response.url), "status": response.status,
+                     "content_type": (response.headers.get("content-type") or "").split(";")[0].strip(),
+                     "body": body})
+    if responses:
+        trace.append({"event": "network_responses", "kept": len(kept), "skipped": dict(skipped),
+                      "limit": NETWORK_RESPONSE_LIMIT, "at": utc_now()})
+    return kept
 
 
 def _result(source: Source, backend: str, status: str, **kwargs: Any) -> FetchResult:
@@ -1231,11 +1267,19 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             page = context.new_page()
             install_tracker_sync(page)
             document_status: dict[str, int] = {}
+            json_responses: list[Any] = []
 
             def observe_response(response: Any) -> None:
                 try:
                     if response.request.resource_type == "document" and response.frame == page.main_frame:
                         document_status["latest"] = response.status
+                    elif (not source.profile_dir and len(json_responses) < NETWORK_RESPONSE_LIMIT
+                          and response.request.resource_type in {"fetch", "xhr"} and response.status < 400
+                          and "json" in (response.headers.get("content-type") or "").lower()
+                          and _host_allowed(urlsplit(response.url).hostname or "", source.allowed_domains)):
+                        # Bodies are read after the final capture; an
+                        # authorized profile's API data is never retained.
+                        json_responses.append(response)
                 except Exception:
                     return
 
@@ -1513,6 +1557,7 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             return _result(source, "playwright", "fetched", content=html, media_type="text/html", final_url=final_url,
                            fetched_at=snapshot['captured_at'], screenshot=screenshot, trace=trace,
                            variant_snapshots=variant_snapshots,
+                           network_responses=_network_bodies(json_responses, trace),
                            message=UNSETTLED_MESSAGE if unsettled else "")
     except _AccessChallengeFound as exc:
         return challenge_result(exc.challenge, page.url)

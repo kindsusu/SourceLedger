@@ -14,7 +14,8 @@ from .models import Candidate, FetchResult, Source, stable_id
 def extraction_version() -> str:
     root = Path(__file__).parent
     files = [root / 'extraction.py', root / 'models.py']
-    for name in ('structured_data.py', 'generic_extraction.py', 'amounts.py', 'evidence_normalization.py'):
+    for name in ('structured_data.py', 'generic_extraction.py', 'amounts.py', 'evidence_normalization.py',
+                 'network_evidence.py'):
         if (root / name).is_file():
             files.append(root / name)
     files.extend(sorted((root / 'adapters').glob('*.py')))
