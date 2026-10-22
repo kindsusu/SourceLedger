@@ -26,13 +26,30 @@ def test_same_url_is_accepted_without_robots_lookup():
     assert check_host_capture(PAGE, APPROVED, APPROVED + "#top", robots_check=check)["redirected"] is False
 
 
-@pytest.mark.parametrize("status", ["blocked", "timeout", "visited", "no_data"])
-def test_recoverable_page_statuses_are_allowed(status):
-    assert check_host_capture({"url": APPROVED, "status": status}, APPROVED)["redirected"] is False
+@pytest.mark.parametrize("status", ["blocked", "visited", "no_data"])
+def test_answered_page_statuses_need_no_new_robots_decision(status):
+    check = robots("disallowed")
+    record = check_host_capture({"url": APPROVED, "status": status}, APPROVED, robots_check=check)
+    assert record["redirected"] is False and record["robots"] == "not_needed" and not check.calls
 
 
-@pytest.mark.parametrize("status", ["unprocessed", "interrupted"])
-def test_unattempted_page_needs_robots_decision_even_without_redirect(status):
+def test_robots_unavailable_failure_cannot_be_backfilled_without_robots_allow():
+    # The collector records robots.txt trouble as a plain failure, not policy_denied.
+    page = {"url": APPROVED, "status": "failed", "reason": "robots.txt access is unavailable"}
+    with pytest.raises(ValueError, match="could not be verified"):
+        check_host_capture(page, APPROVED, robots_check=robots("unavailable", "robots.txt access is unavailable"))
+    check = robots("allowed")
+    assert check_host_capture(page, APPROVED, robots_check=check)["robots"] == "allowed"
+    assert check.calls == [APPROVED]
+
+
+def test_omitted_final_url_is_recorded_as_unreported():
+    assert check_host_capture(PAGE, APPROVED)["final_url_reported"] is False
+    assert check_host_capture(PAGE, APPROVED, APPROVED)["final_url_reported"] is True
+
+
+@pytest.mark.parametrize("status", ["unprocessed", "interrupted", "timeout", "failed", "tool_unavailable"])
+def test_unproven_page_needs_robots_decision_even_without_redirect(status):
     page = {"url": APPROVED, "status": status}
     check = robots("allowed")
     record = check_host_capture(page, APPROVED, robots_check=check)

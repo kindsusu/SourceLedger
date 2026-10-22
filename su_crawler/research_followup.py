@@ -438,9 +438,11 @@ def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields
                 proof = {key: {"raw": value, "location": locator, "display_state": "unconfirmed",
                                "proof_kind": "assistant_supplied_text"} for key, value in fields.items()}
                 normalized, price_kind, currency_marker = _literal_interpretations(fields)
+                review_flags = ["Browser text and field association supplied by host AI; independent verification pending"]
+                if not policy["final_url_reported"]:
+                    review_flags.append("Host did not report the final URL; redirects were not checked")
                 candidate = Candidate(dict(fields), proof, locator, "host_browser_submission",
-                                      review_flags=["Browser text and field association supplied by host AI; independent verification pending"],
-                                      evidence_mode="document_text")
+                                      review_flags=review_flags, evidence_mode="document_text")
                 candidate.derived_values["scope_assessment"] = assess_conditions(candidate, snapshot.get("conditions", []))
                 candidate.derived_values["literal_interpretations"] = normalized
                 if price_kind:

@@ -200,6 +200,9 @@ def test_retry_only_failed_page_reuses_success_and_rejects_new_url(tmp_path, mon
             return FetchResult(s.id, "timeout", backend, message="temporary failure", final_url=s.location)
         return FetchResult(s.id, "fetched", backend, content=html_product("Widget", price="10", currency="USD"), final_url=s.location)
     monkeypatch.setattr(catalog_collection, "collect", fetch)
+    # A timed-out page has no robots allow on record; the guard asks again (offline here).
+    from su_crawler import host_capture_policy
+    monkeypatch.setattr(host_capture_policy, "_live_robots_check", lambda host: lambda url: ("allowed", "test"))
     job, result = completed_job(tmp_path, monkeypatch, urls)
     evidence = submit_browser_evidence(tmp_path, job["id"], url=urls[1], captured_at=utc_now(),
                                       page_text="Widget unavailable", fields={"name": "Widget"}, locator="card")
@@ -299,6 +302,8 @@ def test_final_url_is_optional_and_policy_record_is_stored_on_the_row(tmp_path, 
     plain = submit_browser_evidence(tmp_path, job["id"], **args)
     record = plain["observation"]["host_capture_policy"]
     assert record["redirected"] is False and record["robots"] == "not_needed" and record["final_url"] == url
+    assert record["final_url_reported"] is False
+    assert any("did not report the final URL" in flag for flag in plain["observation"]["review_flags"])
     assert plain["observation"]["status"] == "review" and not plain["observation"]["comparable"]
     store = Store(Path(result["output_dir"]))
     try:
@@ -308,10 +313,14 @@ def test_final_url_is_optional_and_policy_record_is_stored_on_the_row(tmp_path, 
     assert stored["host_capture_policy"] == record
     saved = json.loads(Path(stored["evidence_path"]).read_text(encoding="utf-8"))
     assert saved["final_url"] == url and saved["capture_policy"] == record
+    reported = submit_browser_evidence(tmp_path, job["id"], final_url=url, **args)
+    assert reported["submission_id"] != plain["submission_id"]
+    assert reported["observation"]["host_capture_policy"]["final_url_reported"] is True
+    assert not any("did not report the final URL" in flag for flag in reported["observation"]["review_flags"])
     same = submit_browser_evidence(tmp_path, job["id"], final_url=url + "#frag", **args)
-    assert same["submission_id"] == plain["submission_id"]
+    assert same["submission_id"] == reported["submission_id"]
     view = asyncio.run(build_assistant_server(tmp_path).call_tool("get_job_observations", {"job_id": job["id"]}))[1]
-    assert view["evidence_count"] == 1
+    assert view["evidence_count"] == 2
 
 
 def test_redirected_final_url_needs_same_host_and_allowed_robots(tmp_path, monkeypatch):

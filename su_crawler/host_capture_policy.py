@@ -9,8 +9,10 @@ from .models import Source
 from .research_plans import canonical_url
 
 ROBOTS_TIMEOUT_SECONDS = 10.0
-# Coverage states for pages the collector never fetched (no robots decision on record).
-UNATTEMPTED_STATUSES = frozenset({"unprocessed", "interrupted"})
+# Coverage states that exist only after the page itself answered, so robots.txt
+# allowed the request. Every other state (failed, timeout, unprocessed, ...) may
+# have stopped before or at robots.txt and needs a fresh decision.
+ROBOTS_PROVEN_STATUSES = frozenset({"visited", "no_data", "blocked"})
 
 
 def _ip_literal(host: str):
@@ -66,7 +68,8 @@ def check_host_capture(page: dict, approved_url: str, final_url: str | None = No
 
     ``page`` is the job's coverage entry for ``approved_url``. Pages the program itself refused cannot be
     backfilled through a host browser. A final URL that differs from the approved URL (a redirect) must stay on
-    the approved host and be allowed by robots.txt. No DNS resolution happens here.
+    the approved host and be allowed by robots.txt, as must a page with no robots allow on record. No DNS
+    resolution happens here.
     """
     status = (page or {}).get("status")
     if status == "policy_denied":
@@ -77,18 +80,20 @@ def check_host_capture(page: dict, approved_url: str, final_url: str | None = No
     checks += ["http_scheme", "no_credentials", "approved_host_scope", "public_address"]
     canonical_final, canonical_approved = canonical_url(final), canonical_url(approved_url)
     redirected = canonical_final != canonical_approved
-    # The program never reached robots.txt for a page it did not attempt, so the
-    # host capture must not stand in for that decision either.
-    pending = ([canonical_approved] if status in UNATTEMPTED_STATUSES else []) + ([canonical_final] if redirected else [])
+    # Only a page response proves the collector's robots check passed. A page that
+    # was never attempted, or failed before or at robots.txt, has no allow on record.
+    pending = ([canonical_approved] if status not in ROBOTS_PROVEN_STATUSES else []) + ([canonical_final] if redirected else [])
     robots = "not_needed"
     for target in pending:
         decision, reason = (robots_check or _live_robots_check(urlsplit(approved_url).hostname or host))(target)
         if decision == "disallowed":
             raise ValueError("URL is disallowed by robots.txt; host-browser evidence cannot bypass robots policy")
         if decision != "allowed":
-            raise ValueError(f"Robots policy could not be verified ({reason or decision}); redirected or unattempted captures need a verifiable robots decision")
+            raise ValueError(f"Robots policy could not be verified ({reason or decision}); redirected captures and pages without a recorded robots allow need a verifiable robots decision")
         robots = "allowed"
     if pending:
         checks.append("robots_allowed")
+    # A host that omits final_url leaves redirects unchecked; record that rather
+    # than assume the browser stayed on the approved URL.
     return {"approved_url": canonical_approved, "final_url": canonical_final, "redirected": redirected,
-            "robots": robots, "checks": checks}
+            "final_url_reported": final_url is not None, "robots": robots, "checks": checks}
