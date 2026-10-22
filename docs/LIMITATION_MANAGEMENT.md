@@ -6,7 +6,13 @@ Collection now distinguishes reading a page, enumerating its reviewed controls, 
 
 ## Reviewed collection rules
 
-Use `update_research_plan` (or the web UI's advanced collection rules) to add `changes.collection_rules`. Keys must be exact plan candidate URLs. A rule can contain `recipe`, field `selectors`, an optional `row_selector`, and an optional workspace-relative `profile_dir`. Every edit invalidates confirmation. Review the revised execution plan before confirming it. The collector itself does not call a model or paid API.
+Use `update_research_plan` (or the web UI's advanced collection rules) to add `changes.collection_rules`. Keys are exact plan candidate URLs, or `site:<host>/<path glob>` patterns that match at least one candidate (an exact URL wins, then the most specific pattern). A rule can contain `recipe`, field `selectors`, an optional `row_selector`, and an optional workspace-relative `profile_dir`. Every edit invalidates confirmation. Review the revised execution plan before confirming it. The collector itself does not call a model or paid API.
+
+A rule the host assistant proposes carries `"origin": "proposed"`.
+- **Safety checks:** a proposed rule cannot type, use a profile, or press purchase, sign-in, submit or subscription controls.
+- **Context:** `prepare_rule_proposal` captures one candidate page and returns its outline, controls and what generic extraction found.
+- **Trial:** `trial_collection_rule` runs the rule once and records the result in a new plan revision. A rule is verified only when it finds priced rows, the saved evidence re-extracts to the same rows, the page settled and no access challenge appeared.
+- **Collection:** jobs apply a proposed rule only after the user confirms a verified trial. Every job re-checks the trial receipt; a rule edited after its trial is held back (`held_rules`).
 
 ```json
 {

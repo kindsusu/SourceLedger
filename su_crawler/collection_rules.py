@@ -52,8 +52,15 @@ def _rule_key(raw_key, allowed_urls):
     return key
 
 
-def normalize_rules(value, allowed_urls):
+def normalize_rules(value, allowed_urls, *, existing=None, allow_trials=False):
+    """Validate reviewed or assistant-proposed rules.
+
+    ``origin`` "proposed" marks an assistant proposal, which also passes the
+    proposal safety checks. Trial records are written by the trial runner
+    only (``allow_trials``); an edit may carry an existing record unchanged.
+    """
     from .collectors import _safe_step, _expand_options
+    from .rule_trials import ORIGINS, normalize_trial, validate_proposed
     if not isinstance(value, dict) or len(value) > 50:
         raise ValueError('collection_rules must map at most 50 selected URLs or site patterns to reviewed rules')
     if len(json.dumps(value, ensure_ascii=False).encode('utf-8')) > 65536:
@@ -61,7 +68,8 @@ def normalize_rules(value, allowed_urls):
     result = {}
     for raw_url, rule in value.items():
         url = _rule_key(raw_url, allowed_urls)
-        if not isinstance(rule, dict) or set(rule) - {'recipe', 'selectors', 'row_selector', 'profile_dir'}:
+        if not isinstance(rule, dict) or set(rule) - {'recipe', 'selectors', 'row_selector', 'profile_dir',
+                                                      'origin', 'trial'}:
             raise ValueError('Invalid collection rule fields')
         recipe = rule.get('recipe', [])
         if not isinstance(recipe, list) or len(recipe) > 20:
@@ -91,6 +99,18 @@ def normalize_rules(value, allowed_urls):
             if not isinstance(profile, str) or not profile or Path(profile).is_absolute() or '..' in Path(profile).parts or ':' in profile:
                 raise ValueError('profile_dir must be a workspace-relative existing browser profile')
             clean['profile_dir'] = profile
+        origin = rule.get('origin')
+        if origin is not None:
+            if origin not in ORIGINS:
+                raise ValueError('origin must be reviewed or proposed')
+            if origin == 'proposed':
+                validate_proposed(clean)
+            clean['origin'] = origin
+        if 'trial' in rule:
+            trial = normalize_trial(rule['trial'])
+            if not allow_trials and ((existing or {}).get(url) or {}).get('trial') != trial:
+                raise ValueError('Trial records come from trial_collection_rule; run a trial instead of editing one')
+            clean['trial'] = trial
         result[url] = clean
     return result
 
