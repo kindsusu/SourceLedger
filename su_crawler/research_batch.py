@@ -15,6 +15,7 @@ from . import research_plans as plans
 from .assistant_workspace import _managed_output, workspace_root
 from .browser_sampling import (COUNTER_KEYS as _SAMPLING_COUNTERS, DEFAULT_BROWSER_SAMPLE_RATIO,
                                BrowserSamplingPolicy, browser_sampling_scope, validate_sample_ratio)
+from .collection_rules import rules_for
 from .models import utc_now
 from .research import _atomic_write, _locked
 
@@ -368,8 +369,7 @@ def execute_batch_run(root: str | Path, args: dict, *, job_id: str) -> dict:
                 raise BatchStopped("Worker stopped between batches; resume the same job")
             subset = selected[index * clean["batch_size"]:(index + 1) * clean["batch_size"]]
             snapshot = {**plan, "candidates": subset,
-                        "collection_rules": {url: rule for url, rule in plan.get('collection_rules', {}).items()
-                                             if url in {item['url'] for item in subset}}}
+                        "collection_rules": rules_for(plan.get('collection_rules', {}), [item['url'] for item in subset])}
             checkpoint_id = _batch_checkpoint(job_id, index)
             started_at = utc_now()
             result = collect_plan(base, snapshot, output_dir=output, max_pages=len(subset),
@@ -534,8 +534,7 @@ def execute_batch_retry(root: str | Path, clean: dict, *, job_id: str) -> dict:
         parent_entry = parent_journal["batches"][index]
         subset = selected[index * clean["batch_size"]:(index + 1) * clean["batch_size"]]
         snapshot = {**plan, "candidates": subset,
-                    "collection_rules": {url: rule for url, rule in plan.get("collection_rules", {}).items()
-                                         if url in {item["url"] for item in subset}}}
+                    "collection_rules": rules_for(plan.get("collection_rules", {}), [item["url"] for item in subset])}
         checkpoint_id = _retry_checkpoint(job_id, index)
         started_at = utc_now()
         with browser_sampling_scope(sampling):

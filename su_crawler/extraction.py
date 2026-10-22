@@ -135,9 +135,9 @@ def _extract_html(result: FetchResult, source: Source) -> list[Candidate]:
 
     # Share the same bounded structured-data parser, visible-price checks and
     # review semantics as catalog collection.
-    from .generic_extraction import extract_generic
+    from .generic_extraction import apply_market_currency, extract_generic
 
-    return extract_generic(result, source)
+    return apply_market_currency(extract_generic(result, source), source.market_currency)
 
 
 def _price_marker_currency(fields: dict[str, Any], evidence: dict[str, dict[str, Any]]) -> None:

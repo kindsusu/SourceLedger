@@ -1310,12 +1310,16 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 # A page-specific row selector narrows the stability probe. Without
                 # one, the visible document is conservative (e.g. a ticking page
                 # can time out rather than manufacture a verified observation).
-                for _ in range(2):
+                # Only after the whole page timed out may the product region
+                # found in the static HTML (settle_selector) stand in for it:
+                # rotating banners elsewhere then no longer block a stable list.
+                selector, hinted, attempts = source.row_selector, False, 0
+                while attempts < 2:
                     # Leave time to retain an unsettled snapshot after a timeout.
                     left = remaining_ms() / 1000
                     available = left - (min(UNSETTLED_CAPTURE_SECONDS, left * 0.2) if allow_unsettled else 0)
                     settled = wait_settled_sync(
-                        page, lambda: page.evaluate(_OBSERVATION_PROBE_JS, source.row_selector),
+                        page, lambda: page.evaluate(_OBSERVATION_PROBE_JS, selector),
                         ready=lambda value: bool(value.get('text')),
                         timeout_seconds=min(15, max(0.5, available)),
                     )
@@ -1323,13 +1327,18 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                     trace.append({'event': 'observation_settlement', 'status': settled['status'],
                                   'duration_ms': round(settled['elapsed_seconds'] * 1000, 1),
                                   'pending': network.get('pending'), 'loading': network.get('loading'),
-                                  'at': utc_now()})
+                                  'at': utc_now(), **({'scope_selector': selector} if hinted else {})})
                     if settled['status'] != 'settled':
+                        if (not hinted and selector is None and source.settle_selector
+                                and remaining_ms() / 1000 > 3 + (UNSETTLED_CAPTURE_SECONDS if allow_unsettled else 0)):
+                            selector, hinted = source.settle_selector, True
+                            continue
                         if allow_unsettled:
                             return capture_unsettled('settle_timeout')
                         raise PlaywrightTimeoutError('Observation did not settle')
+                    attempts += 1
                     snapshot = _evidence_snapshot(page, listing_expectation,
-                                                  observation=settled['probe'], selector=source.row_selector,
+                                                  observation=settled['probe'], selector=selector,
                                                   network_version=settled['network']['version'])
                     if not snapshot.get('observation_changed'):
                         require_navigation_policy()

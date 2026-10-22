@@ -228,6 +228,8 @@ def test_collect_plan_cli_runs_unattended_and_reuses_confirmation(tmp_path, monk
         assert runtime.runtime_status(workspace)["status"] == "stopped"
 
         plan_id = summary["plan"]["id"]
+        # The operator approved the URL list itself: its pages are the whole scope.
+        assert plans.get_plan(workspace, plan_id)["plan"]["scope_mode"] == "approved_pages"
         assert main([*common, "--yes", "--plan-id", plan_id]) == 0
         again = json.loads(capsys.readouterr().out)
         assert again["plan"]["reused_confirmation"] is True

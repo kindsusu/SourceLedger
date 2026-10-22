@@ -108,6 +108,23 @@ def currency_for(marker: str, hint: str | None = None) -> str | None:
     return hint if hint in codes else None
 
 
+_MARKETS = {
+    "USD": ("us", "usa", "u.s.", "u.s.a.", "united states", "america", "미국"),
+    "CAD": ("ca", "canada", "캐나다"), "AUD": ("au", "australia", "호주"),
+    "NZD": ("nz", "new zealand", "뉴질랜드"), "SGD": ("sg", "singapore", "싱가포르"),
+    "HKD": ("hk", "hong kong", "홍콩"), "JPY": ("jp", "japan", "일본"), "CNY": ("cn", "china", "중국"),
+    "KRW": ("kr", "korea", "south korea", "republic of korea", "한국", "대한민국"),
+}
+
+
+def market_currency(market: str | None) -> str | None:
+    """The currency of a plan's market named by country or ISO code, else None."""
+    text = " ".join(str(market or "").split()).strip().casefold()
+    if text.upper() in ISO_CODES:
+        return text.upper()
+    return next((code for code, names in _MARKETS.items() if text in names), None)
+
+
 def amount_from_token(token: str) -> str | None:
     """Replay a preserved amount token (used by evidence normalization)."""
     amounts = find_amounts(token)

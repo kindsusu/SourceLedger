@@ -231,8 +231,11 @@ def build_assistant_server(root: str | Path, *, legacy_tools: bool = False):
         changes may include request_text, topic, summary, categories, include_terms, exclude_terms,
         conditions [{field,operator,value}],
         selected_candidate_ids, removed_candidate_ids, added_candidates [{url,name?,kind?,reason?}].
-        collection_rules maps exact candidate URLs to reviewed {recipe, selectors, row_selector?, profile_dir?}.
+        collection_rules maps exact candidate URLs, or 'site:<host>/<path glob>' patterns matching at least one
+        candidate, to reviewed {recipe, selectors, row_selector?, profile_dir?}; an exact URL beats a pattern.
         refresh_policy is {mode: 'incremental' or 'full', full_interval_days: 1..365}.
+        scope_mode 'approved_pages' (set only when the user says every product on the selected pages is in
+        scope) lets rows skip scope review; the default 'conditions' keeps it.
         New plans default to full approved-scope collection with item change comparison.
         Incremental checks are opt-in; their full_interval_days is checked when another run starts.
         This is evaluated on execution, not a background schedule. Dynamic pages still render.

@@ -15,6 +15,7 @@ import uuid
 
 from .assistant_workspace import workspace_guard
 from .scope_conditions import normalize_conditions
+from .collection_rules import rules_for
 
 
 MAX_REQUEST = 12000
@@ -23,8 +24,21 @@ MAX_CANDIDATES = 1000  # Explicitly reviewed full-site URL inventories; AI previ
 MAX_DOCUMENT_BYTES = 256 * 1024
 _PREVIEW_KEYS = {"summary", "topic", "categories", "candidates", "note", "include_terms", "exclude_terms", "conditions"}
 _EDIT_KEYS = {"request_text", "include_terms", "exclude_terms", "topic", "summary", "categories",
-              "conditions", "selected_candidate_ids", "removed_candidate_ids", "added_candidates", "collection_rules", "refresh_policy"}
+              "conditions", "selected_candidate_ids", "removed_candidate_ids", "added_candidates", "collection_rules", "refresh_policy", "scope_mode"}
 _CANDIDATE_KEYS = {"name", "url", "evidence_url", "reason", "kind"}
+
+
+# "conditions" (default): every row stays in review until the plan's scope and
+# natural-language conditions are verified. "approved_pages": the user states
+# that every product shown on the approved pages is in scope, so rows need no
+# scope review (filter terms or structured conditions still apply).
+SCOPE_MODES = frozenset({"conditions", "approved_pages"})
+
+
+def normalize_scope_mode(value) -> str:
+    if value not in SCOPE_MODES:
+        raise ValueError("scope_mode must be conditions or approved_pages")
+    return value
 
 
 def _now() -> str:
@@ -249,6 +263,8 @@ def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes:
         if "refresh_policy" in edit:
             from .catalog_refresh import normalize_refresh_policy
             plan["refresh_policy"] = normalize_refresh_policy(edit["refresh_policy"])
+        if "scope_mode" in edit:
+            plan["scope_mode"] = normalize_scope_mode(edit["scope_mode"])
         if "topic" in edit:
             plan["topic"] = _topic({**plan["topic"], **_object(edit["topic"], "topic", {"industry", "product", "market"})})
         candidates = [dict(item) for item in plan["candidates"]]
@@ -283,8 +299,7 @@ def revise_plan(root: str | Path, plan_id: str, expected_revision: int, changes:
         if 'collection_rules' in edit:
             plan['collection_rules'] = normalize_rules(edit['collection_rules'], {c['url'] for c in candidates})
         elif 'collection_rules' in plan:
-            plan['collection_rules'] = {url: rule for url, rule in plan['collection_rules'].items()
-                                        if url in {c['url'] for c in candidates}}
+            plan['collection_rules'] = rules_for(plan['collection_rules'], [c['url'] for c in candidates])
         plan["state"] = "preview" if candidates else "draft"
         _save(db, plan)
     return {"plan": plan}
@@ -433,7 +448,7 @@ def candidate_page(plan: dict[str, Any], *, offset: int = 0, limit: int = 20) ->
     excluded = plan.get("excluded_urls", [])
     return {"candidates": page, "candidate_total": len(candidates), "candidate_offset": offset,
             "candidate_limit": limit, "candidate_has_more": offset + limit < len(candidates),
-            "collection_rules": {item["url"]: rules[item["url"]] for item in page if item["url"] in rules},
+            "collection_rules": rules_for(rules, [item["url"] for item in page]),
             "excluded_urls": excluded[:100], "excluded_url_total": len(excluded)}
 
 
@@ -530,8 +545,7 @@ def import_urls(root: str | Path, plan_id: str, expected_revision: int, urls: li
         plan["excluded_urls"] = [url for url in plan["excluded_urls"] if url not in wanted]
         plan["candidates"] = candidates
         if "collection_rules" in plan:
-            remaining = {item["url"] for item in candidates}
-            plan["collection_rules"] = {url: rule for url, rule in plan["collection_rules"].items() if url in remaining}
+            plan["collection_rules"] = rules_for(plan["collection_rules"], [item["url"] for item in candidates])
         plan["state"] = "preview"
         _save(db, plan)
     return {"plan": plan, "added": sum(url not in existing for url in clean),
