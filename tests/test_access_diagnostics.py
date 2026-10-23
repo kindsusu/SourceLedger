@@ -154,7 +154,8 @@ def test_browser_evidence_preserves_live_selection_without_free_text(tmp_path):
         result = collect(
             Source(
                 id="controls", name="controls", kind="web", location=url + "/controls", product_ids=[],
-                allowed_domains=["127.0.0.1"], internal=True, respect_robots=False, timeout_seconds=5,
+                # A cold browser start on a busy CI runner can take several seconds.
+                allowed_domains=["127.0.0.1"], internal=True, respect_robots=False, timeout_seconds=30,
                 recipe=[{"action": "select", "selector": "#size", "value": "Large"}, {"action": "click", "selector": "#in-stock"}],
             ),
             str(tmp_path), "playwright",

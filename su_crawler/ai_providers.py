@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Any
 
-from .assistant_workspace import workspace_guard
+from .assistant_workspace import workspace_guard, workspace_root
 from .research import _atomic_write
 from .search import _public_url
 from .research_plans import canonical_url
@@ -185,8 +185,8 @@ def _codex_models() -> list[dict[str, str]]:
 
 
 def get_ai_configuration(root: str | Path) -> dict:
-    with workspace_guard(root) as base:
-        settings = _load_settings(base)
+    # Settings are replaced atomically, so reading needs no workspace lock.
+    settings = _load_settings(workspace_root(root))
     codex = _codex_command() is not None
     claude = _claude_command() is not None
     return {"settings": settings, "recommendation": model_recommendation(settings["provider"], settings["model"]),

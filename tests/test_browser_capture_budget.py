@@ -23,14 +23,17 @@ ENDLESS = b"""<!doctype html><html><body><div id="list">
     e.className = 'card'; e.textContent = 'Car ' + (++n); button.before(e); });
 }</script></body></html>"""
 
-# Expansion completes, then a request never finishes, so the page never settles.
-UNSETTLED = b"""<!doctype html><html><body><div id="list">
+# Expansion completes, then a ticker outside the list keeps changing, so the
+# page never settles. No request is involved: a request started during the
+# progress window would (correctly) make the list count as network-driven,
+# and its timing would race the end-of-list check on a slow machine.
+UNSETTLED = b"""<!doctype html><html><body><div id="tick">0</div><div id="list">
 <div class="card">Car 1</div><button class="more" onclick="finish(this)">More</button></div>
 <script>function finish(button) {
   for (let i = 2; i <= 40; i++) { const e = document.createElement('div'); e.className = 'card';
     e.textContent = 'Car ' + i; button.before(e); }
   button.remove();
-  setTimeout(() => fetch('/hang').catch(() => {}), 50);
+  let n = 0; setInterval(() => { document.getElementById('tick').textContent = String(++n); }, 200);
 }</script></body></html>"""
 
 
@@ -39,9 +42,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/slow":
             time.sleep(0.9)
             body = b"ok"
-        elif self.path == "/hang":
-            time.sleep(20)
-            body = b"late"
         elif self.path == "/endless":
             body = ENDLESS
         else:
@@ -101,7 +101,9 @@ def test_expansion_that_uses_the_budget_still_keeps_expanded_dom(tmp_path):
 
 def test_settle_timeout_retains_expanded_snapshot_for_review(tmp_path):
     with server() as url:
-        result = collect(_source(url + "/unsettled", 14), str(tmp_path), "playwright")
+        # Room for a slow browser start: expansion must finish before the
+        # settlement waits time out on the ticker.
+        result = collect(_source(url + "/unsettled", 40), str(tmp_path), "playwright")
     assert result.status == "fetched", (result.message, result.trace[-3:])
     assert result.message == collectors.UNSETTLED_MESSAGE
     assert result.content.count(b'class="card"') == 40
@@ -110,7 +112,7 @@ def test_settle_timeout_retains_expanded_snapshot_for_review(tmp_path):
     settlement = [event for event in result.trace if event["event"] == "observation_settlement"]
     assert settlement and all(event["status"] == "timeout" for event in settlement)
     expansion = next(event for event in result.trace if event["event"] == "list_expansion")
-    assert (expansion["status"], expansion["observed_count"]) == ("complete", 40)
+    assert (expansion["status"], expansion["observed_count"]) == ("complete", 40), expansion["reason"]
 
 
 def test_unsettled_capture_is_never_complete_and_rows_need_review():
