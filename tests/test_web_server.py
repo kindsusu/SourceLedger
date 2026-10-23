@@ -362,3 +362,19 @@ def test_generated_dashboard_relative_workbook_link_resolves(tmp_path, monkeypat
         href = unescape(re.search(rb"href='([^']+\.xlsx)'", body).group(1).decode("utf-8"))
         status, _, content = request(server, "GET", urljoin(dashboard_url, href))
         assert status == 200 and content == report.read_bytes()
+
+
+
+def test_bootstrap_reads_do_not_need_the_workspace_lock(tmp_path):
+    """A long job holds the workspace lock; the page refresh must still load."""
+    from su_crawler import research_plans
+    from su_crawler.ai_providers import get_ai_configuration
+    from su_crawler import research
+    from su_crawler.assistant_workspace import workspace_guard
+    from su_crawler.recommendations import list_recommendations
+    research.init_workspace(tmp_path / "research.json", industry="Retail", product="Lamps", market="KR")
+    plan = research_plans.create_plan(tmp_path, "Lamps")["plan"]
+    with workspace_guard(tmp_path):
+        assert list_recommendations(tmp_path) == {"requests": []}
+        assert get_ai_configuration(tmp_path)["settings"]
+        assert [item["id"] for item in research_plans.list_plans(tmp_path)["plans"]] == [plan["id"]]
