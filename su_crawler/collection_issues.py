@@ -70,6 +70,17 @@ def _prior_sections(store, run_id: str, page: dict) -> list[dict]:
     return []
 
 
+def _timed_out_before(store, run_id: str, url: str) -> bool:
+    """True when an earlier run recorded the same page as a timeout."""
+    if store is None or not url:
+        return False
+    rows = store.db.execute('''SELECT rc.data FROM run_coverage rc JOIN runs r ON r.id=rc.run_id
+                               WHERE rc.run_id<>? AND r.started_at <= (SELECT started_at FROM runs WHERE id=?)
+                               ORDER BY r.started_at DESC LIMIT 30''', (run_id, run_id))
+    return any(prior.get('url') == url and prior.get('status') == 'timeout'
+               for row in rows for prior in json.loads(row[0]))
+
+
 def issues_from_coverage(store, run_id: str, coverage: list[dict]) -> list[dict]:
     issues: list[dict] = []
     for page in coverage:
@@ -82,6 +93,11 @@ def issues_from_coverage(store, run_id: str, coverage: list[dict]) -> list[dict]
         if page_status not in {'visited', 'fetched'}:
             trace_hint = json.dumps(page.get('trace') or [], ensure_ascii=False, default=str)[:10000]
             code, action = _classify(page_status, f"{page.get('reason') or ''} {trace_hint}")
+            if page_status == 'timeout' and _timed_out_before(store, run_id, url):
+                # The program's own browser timed out on this page in an earlier
+                # run too (not a launch failure): offer the host browser instead
+                # of another identical retry.
+                code, action = 'browser_handoff', 'submit_browser_evidence'
             issues.append(_issue(run_id, url, '', '', code, str(page.get('reason') or page_status),
                                  action, {'page_status': page_status, 'evidence_ref': page.get('evidence_path'),
                                           'trace': page.get('trace', [])}, scope,

@@ -378,6 +378,28 @@ def _browser_price_profile(config, source, normalized):
     return "rental" if has_term and has_contract_condition else "unit"
 
 
+def _capture_time(captured_at):
+    try:
+        captured = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("captured_at must be an ISO timestamp with timezone") from exc
+    if captured.tzinfo is None or captured > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise ValueError("Capture time must have a timezone and must not be in the future")
+    return captured
+
+
+def _png_screenshot(root, screenshot_path):
+    if screenshot_path is None:
+        return None
+    path = relative_file(root, screenshot_path, "screenshot_path")
+    if path.stat().st_size > 10 * 1024 * 1024:
+        raise ValueError("Screenshot exceeds 10 MiB")
+    screenshot = path.read_bytes()
+    if not screenshot.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("Screenshot must be a PNG capture")
+    return screenshot
+
+
 def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields, locator,
                             screenshot_path=None, final_url=None):
     """Validate literal field support; never promote host assertions to verified prices."""
@@ -401,20 +423,8 @@ def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields
             raise ValueError(f"Field {key} has no exact support in page_text; do not infer or normalize values")
     if not fields.get("name"):
         raise ValueError("A source-supported product name is required")
-    try:
-        captured = datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise ValueError("captured_at must be an ISO timestamp with timezone") from exc
-    if captured.tzinfo is None or captured > datetime.now(timezone.utc) + timedelta(minutes=5):
-        raise ValueError("Capture time must have a timezone and must not be in the future")
-    screenshot = None
-    if screenshot_path is not None:
-        path = relative_file(root, screenshot_path, "screenshot_path")
-        if path.stat().st_size > 10 * 1024 * 1024:
-            raise ValueError("Screenshot exceeds 10 MiB")
-        screenshot = path.read_bytes()
-        if not screenshot.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise ValueError("Screenshot must be a PNG capture")
+    _capture_time(captured_at)
+    screenshot = _png_screenshot(root, screenshot_path)
     snapshot = confirmed_snapshot(root, job["arguments"]["plan_id"], job["arguments"]["expected_revision"])
     payload = {"url": url, "final_url": policy["final_url"], "capture_policy": policy,
                "captured_at": captured_at, "page_text": page_text, "fields": fields,
@@ -481,4 +491,110 @@ def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields
             store.close()
     return {"submission_id": submission_id, "status": "review", "literal_support": "matched",
             "independent_verification": "pending", "observation": row,
+            "report_path": result["report_path"]}
+
+
+HOST_TOOLS = frozenset({"ego-browser", "claude-in-chrome", "manual", "other"})
+SNAPSHOT_MAX_BYTES = 10 * 1024 * 1024
+
+
+def submit_browser_snapshot(root, job_id, *, url, captured_at, html_path, tool, final_url=None,
+                            screenshot_path=None, selections=None):
+    """Import a host-browser HTML snapshot; the program extracts the rows, which stay in review.
+
+    The page passes the same policy as text evidence (approved URL, final URL,
+    robots). Rows come from the site adapter or generic extraction of the
+    saved bytes, never from the host's own reading, and keep static-HTML
+    display state: a host snapshot is never treated as a rendered capture.
+    """
+    from dataclasses import replace
+    from .amounts import market_currency
+    from .catalog_collection import _price_profile
+    from .extraction import extract
+    from .generic_extraction import apply_market_currency, extract_generic
+    from .models import FetchResult
+    from .pipeline import _save_evidence
+    from .validation import validate
+
+    job, result, output = completed(root, job_id)
+    url = canonical_url(url)
+    page = next((item for item in result["result"]["coverage"]
+                 if item["url"] == url and item["status"] != "excluded"), None)
+    if page is None:
+        raise ValueError("Snapshot URL must be an approved page recorded in this job's coverage")
+    policy = check_host_capture(page, url, final_url)
+    if tool not in HOST_TOOLS:
+        raise ValueError("tool must be ego-browser, claude-in-chrome, manual or other")
+    if selections is not None and (not isinstance(selections, dict) or len(selections) > 20 or any(
+            not isinstance(k, str) or not isinstance(v, str) or len(k) > 200 or len(v) > 200
+            for k, v in selections.items())):
+        raise ValueError("selections must map up to 20 controls to their chosen labels")
+    _capture_time(captured_at)
+    screenshot = _png_screenshot(root, screenshot_path)
+    path = relative_file(root, html_path, "html_path")
+    if path.stat().st_size > SNAPSHOT_MAX_BYTES:
+        raise ValueError("HTML snapshot exceeds 10 MiB")
+    content = path.read_bytes()
+    if b"<" not in content[:4096]:
+        raise ValueError("html_path must be an HTML document")
+    snapshot = confirmed_snapshot(root, job["arguments"]["plan_id"], job["arguments"]["expected_revision"])
+    host = urlsplit(url).hostname
+    source = Source("catalog_source_" + stable_id(url), host, "web", url, [], allowed_domains=[host],
+                    adapter=HOST_ADAPTERS.get(host),
+                    market_currency=market_currency((snapshot.get("topic") or {}).get("market")))
+    fetched = FetchResult(source.id, "fetched", "host_browser", content=content, media_type="text/html",
+                          final_url=policy["final_url"], fetched_at=captured_at, screenshot=screenshot,
+                          trace=[{"event": "host_browser_snapshot", "tool": tool, "selections": selections or {},
+                                  "capture_policy": policy}])
+    candidates = extract(fetched, source) if source.adapter else []
+    candidates = candidates or apply_market_currency(extract_generic(replace(fetched, trace=[])),
+                                                     source.market_currency)
+    if not candidates:
+        raise ValueError("No product rows could be read from the snapshot; submit_browser_evidence takes literal text")
+    submission_id = "snapshot_" + stable_id(result["run_id"], url, policy["final_url"], captured_at,
+                                            hashlib.sha256(content).hexdigest(), tool, selections or {})
+    flag = f"Captured by the host browser ({tool}); confirm before comparing"
+    rows = []
+    with workspace_lock(output):
+        store = Store(output)
+        try:
+            existing = [json.loads(item[0]) for item in store.db.execute(
+                "SELECT data FROM browser_submissions WHERE run_id=? AND id LIKE ?",
+                (result["run_id"], submission_id + ":%"))]
+            if existing:
+                rows = existing
+            else:
+                count = store.db.execute("SELECT count(*) FROM browser_submissions WHERE run_id=?",
+                                         (result["run_id"],)).fetchone()[0]
+                if count + len(candidates) > 200:
+                    raise ValueError("Browser submission limit reached for this run")
+                evidence_dir = _managed_output(workspace_root(root), output / "browser-evidence", "browser evidence")
+                evidence_path, digest = _save_evidence(evidence_dir, fetched, source)
+                for index, candidate in enumerate(candidates, 1):
+                    candidate.review_flags.append(flag)
+                    if not policy["final_url_reported"]:
+                        candidate.review_flags.append("Host did not report the final URL; redirects were not checked")
+                    candidate.derived_values["scope_assessment"] = assess_conditions(
+                        candidate, snapshot.get("conditions", []))
+                    name = str(candidate.fields.get("name") or url)
+                    product = Product("browser_product_" + stable_id(url, candidate.locator, name), name,
+                                      identifiers={"name": name}, price_profile=_price_profile(source, candidate))
+                    row = validate(candidate, product, source, run_id=result["run_id"], task_id=submission_id,
+                                   evidence_path=evidence_path, evidence_sha256=digest, collected_at=captured_at,
+                                   source_url=url).to_dict()
+                    row.update(id=f"{submission_id}:{index}", status="review", verification_level="review",
+                               comparable=False, comparison_key=None, host_capture_policy=policy,
+                               evidence_artifacts=dict(fetched.evidence_artifacts))
+                    rows.append(row)
+                with store.db:
+                    store.db.executemany("INSERT INTO browser_submissions(id,run_id,data) VALUES(?,?,?)",
+                                         [(row["id"], result["run_id"], json.dumps(row, ensure_ascii=False))
+                                          for row in rows])
+            from .pipeline import report_for_run
+            report_for_run(_config(output, result["run_id"], root), store, result["run_id"])
+        finally:
+            store.close()
+    return {"submission_id": submission_id, "status": "review", "rows": len(rows),
+            "observations": [{key: row["raw_fields"].get(key) for key in ("name", "price", "currency")}
+                             for row in rows[:5]],
             "report_path": result["report_path"]}
