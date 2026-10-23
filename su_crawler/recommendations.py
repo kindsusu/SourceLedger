@@ -9,7 +9,7 @@ import re
 import uuid
 
 from . import research
-from .assistant_workspace import research_path, workspace_guard
+from .assistant_workspace import research_path, workspace_guard, workspace_root
 from .models import utc_now
 from .search import _public_url
 
@@ -156,9 +156,11 @@ def _check_topic(request: dict[str, Any], workspace: dict[str, Any]) -> None:
 
 
 def list_recommendations(root: str | Path) -> dict[str, Any]:
-    with workspace_guard(root) as base:
-        research.load_workspace(research_path(base))
-        return {"requests": _load(_sidecar(base))["requests"]}
+    # Both files are replaced atomically, so reading needs no workspace lock
+    # (which a long-running job may hold while the web page refreshes).
+    base = workspace_root(root)
+    research.load_workspace(research_path(base))
+    return {"requests": _load(_sidecar(base))["requests"]}
 
 
 def create_recommendation_request(root: str | Path, *, query: str, kind: str = "keyword") -> dict[str, Any]:

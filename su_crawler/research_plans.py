@@ -1,7 +1,7 @@
 """Editable, revisioned research plans. Suggestions are never observations."""
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -13,7 +13,7 @@ import re
 import sqlite3
 import uuid
 
-from .assistant_workspace import workspace_guard
+from .assistant_workspace import workspace_guard, workspace_root
 from .scope_conditions import normalize_conditions
 from .collection_rules import rules_for
 
@@ -228,10 +228,18 @@ def create_plan(root: str | Path, request_text: str, include_terms: list[str] | 
 
 
 def list_plans(root: str | Path) -> dict[str, Any]:
-    with _db(root) as db:
-        rows = db.execute("SELECT body FROM plan_revisions AS p WHERE revision=("
-                          "SELECT MAX(revision) FROM plan_revisions WHERE plan_id=p.plan_id) "
-                          "ORDER BY rowid DESC LIMIT 100").fetchall()
+    # A read-only snapshot needs no workspace lock, which long-running jobs
+    # may hold; SQLite gives the read its own consistent transaction.
+    path = _path(workspace_root(root))
+    if not path.is_file():
+        return {"plans": []}
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+        try:
+            rows = db.execute("SELECT body FROM plan_revisions AS p WHERE revision=("
+                              "SELECT MAX(revision) FROM plan_revisions WHERE plan_id=p.plan_id) "
+                              "ORDER BY rowid DESC LIMIT 100").fetchall()
+        except sqlite3.OperationalError:  # no plan has been saved yet
+            rows = []
     loaded = [json.loads(row[0]) for row in rows]
     for plan in loaded:
         plan.setdefault("conditions", [])
