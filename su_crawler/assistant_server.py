@@ -701,6 +701,31 @@ def build_assistant_server(root: str | Path, *, legacy_tools: bool = False):
                               "browser_reuse": args.get("browser_reuse", False),
                               "browser_concurrency": args.get("browser_concurrency", 1)})
 
+    @server.tool(annotations=read_only)
+    def get_browser_snapshot_script() -> dict[str, Any]:
+        """Script for a host-browser HTML snapshot (for submit_browser_snapshot).
+
+        Run it in the page once it shows the wanted state (ego-browser: page.evaluate), save the
+        returned string as UTF-8 .html inside the workspace, optionally save a PNG screenshot.
+        """
+        from .host_capture_policy import HOST_SNAPSHOT_SCRIPT
+        return {"script": HOST_SNAPSHOT_SCRIPT, "returns": "HTML string with computed hidden and struck marks"}
+
+    @server.tool(annotations=mutate)
+    def submit_browser_snapshot(job_id: str, url: str, captured_at: str, html_path: str, tool: str,
+                                final_url: str | None = None, screenshot_path: str | None = None,
+                                selections: dict[str, str] | None = None) -> dict[str, Any]:
+        """Import a host-browser HTML snapshot of an approved page; SourceLedger extracts the rows.
+
+        tool: ego-browser, claude-in-chrome, manual or other. html_path/screenshot_path are
+        workspace-relative files (HTML up to 10 MiB, PNG up to 10 MiB). Send final_url. The same URL,
+        redirect and robots policy as submit_browser_evidence applies. Rows stay review-only and are
+        never treated as the program's rendered capture. selections maps controls to chosen labels.
+        """
+        from .research_followup import submit_browser_snapshot as submit
+        return submit(base, job_id, url=url, captured_at=captured_at, html_path=html_path, tool=tool,
+                      final_url=final_url, screenshot_path=screenshot_path, selections=selections)
+
     @server.tool(annotations=mutate)
     def submit_browser_evidence(job_id: str, url: str, captured_at: str, page_text: str,
                                 fields: dict[str, str], locator: str, screenshot_path: str | None = None,

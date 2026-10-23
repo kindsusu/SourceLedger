@@ -97,3 +97,50 @@ def check_host_capture(page: dict, approved_url: str, final_url: str | None = No
     # than assume the browser stayed on the approved URL.
     return {"approved_url": canonical_approved, "final_url": canonical_final, "redirected": redirected,
             "final_url_reported": final_url is not None, "robots": robots, "checks": checks}
+
+
+# Run in the host browser's page (e.g. ego-browser ``page.evaluate``) after the
+# page shows the wanted state; save the returned string as a UTF-8 .html file
+# inside the workspace. It mirrors the collector's own evidence snapshot: form
+# state is kept, typed text is dropped, and computed hidden or struck-through
+# elements are marked so extraction can judge display without CSS. The marks
+# are still the host's claim, so imported rows stay in review.
+HOST_SNAPSHOT_SCRIPT = r"""() => {
+  const clone = document.documentElement.cloneNode(true);
+  const originals = Array.from(document.querySelectorAll('select, input, textarea'));
+  const copies = Array.from(clone.querySelectorAll('select, input, textarea'));
+  originals.forEach((original, index) => {
+    const copy = copies[index];
+    if (!copy) return;
+    const tag = original.tagName.toLowerCase();
+    const type = (original.type || '').toLowerCase();
+    if (tag === 'select') {
+      Array.from(copy.options).forEach((option, optionIndex) => {
+        option.toggleAttribute('selected', Boolean(original.options[optionIndex] && original.options[optionIndex].selected));
+      });
+    } else if (type === 'checkbox' || type === 'radio') {
+      copy.toggleAttribute('checked', Boolean(original.checked));
+    } else {
+      copy.removeAttribute('value');
+    }
+    if (tag === 'textarea') copy.textContent = '';
+  });
+  const originalElements = Array.from(document.body ? document.body.querySelectorAll('*') : []);
+  const copiedElements = Array.from(clone.querySelectorAll('body *'));
+  originalElements.forEach((original, index) => {
+    const copy = copiedElements[index];
+    if (!copy) return;
+    const style = window.getComputedStyle(original);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || style.opacity === '0') {
+      copy.setAttribute('hidden', '');
+      copy.setAttribute('data-sourceledger-computed-hidden', 'true');
+    }
+    if ((style.textDecorationLine || '').includes('line-through')) {
+      copy.setAttribute('data-sourceledger-computed-line-through', 'true');
+    }
+  });
+  // Keep JSON-LD and JSON data scripts: they corroborate shown prices.
+  clone.querySelectorAll('script:not([type="application/ld+json"]):not([type="application/json"]), noscript, template')
+    .forEach(node => node.remove());
+  return '<!doctype html>\n' + clone.outerHTML;
+}"""
