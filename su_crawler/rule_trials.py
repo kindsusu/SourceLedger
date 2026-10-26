@@ -8,15 +8,20 @@ A rule the host assistant proposes is stored in the plan with ``origin``
 3. at least one priced row, no access challenge, a settled page,
 4. a trial receipt that records the rule's fingerprint.
 
+When the plan's ledger holds a complete earlier capture of the page, the trial
+also reads it with the rule and records the comparison (``pair``).
+
 Only ``trial_rule`` writes trial records; plan edits cannot. The plan
 revision that records a trial still needs the user's confirmation before a
 job uses the rule, and every job re-checks the receipt before applying it.
 """
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import json
 import re
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -28,7 +33,7 @@ from .models import FetchResult, Source, stable_id, utc_now
 
 ORIGINS = frozenset({"reviewed", "proposed"})
 TRIAL_KEYS = frozenset({"status", "reason", "url", "at", "rule_fingerprint", "receipt", "receipt_sha256",
-                        "evidence_sha256", "rows", "priced_rows", "sample"})
+                        "evidence_sha256", "rows", "priced_rows", "sample", "pair"})
 # Steps of a proposed rule may never press anything that buys, signs in or submits.
 FORBIDDEN_TARGET = re.compile(r"submit|buy|purchase|checkout|cart|basket|payment|\bpay\b|order|log-?in|sign-?in|"
                               r"sign-?up|register|subscribe|구매|결제|주문|장바구니|로그인|회원가입|가입하기|구독", re.I)
@@ -219,10 +224,17 @@ def prepare_context(root: str | Path, plan_id: str, url: str, *, collector=None)
     base = workspace_root(root)
     plan = plans.get_plan(base, plan_id)["plan"]
     url = _approved_url(plan, url)
+    from .research_batch import _output
     result = (collector or collect)(_source(plan, url), str(base), "playwright")
     if result.status != "fetched":
         return {"url": url, "status": result.status, "message": result.message}
-    return {"url": url, "status": result.status, **page_context(result)}
+    context = {"url": url, "status": result.status, **page_context(result)}
+    # A rule that reads both this page and the last complete capture the same
+    # way shows that only the page format changed; trial_rule compares them.
+    last_good = _last_good(_output(base, plan_id), url)
+    if last_good is not None:
+        context["last_good_capture"] = {key: last_good[0][key] for key in ("run_id", "evidence_ref")}
+    return context
 
 
 # -- trial ---------------------------------------------------------------------
@@ -236,6 +248,51 @@ def _rows(result: FetchResult, source: Source) -> list:
 
 def _semantic(rows: list) -> list:
     return [(row.locator, sorted((key, str(value)) for key, value in row.fields.items())) for row in rows]
+
+
+def _last_good(output: Path, url: str) -> tuple[dict, bytes] | None:
+    """The page's last complete capture in the plan's ledger, and its saved bytes."""
+    from .collection_issues import last_good_capture, prior_coverage
+    database = output / "prices.sqlite3"
+    if database.is_symlink() or not database.is_file():
+        return None
+    with closing(sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
+        capture = last_good_capture(prior_coverage(db), url)
+    root = output.resolve()
+    for ref in (capture or {}).get("evidence_refs", []):
+        path = Path(ref).resolve()
+        if path.is_relative_to(root) and path.is_file():
+            return {**capture, "evidence_ref": ref}, path.read_bytes()
+    return None
+
+
+def _identity(row) -> str:
+    fields = row.fields
+    return str(fields.get("item_id") or fields.get("url_id") or fields.get("name") or row.locator)
+
+
+def _pair(rows: list, last_rows: list, capture: dict, digest: str) -> dict[str, Any]:
+    """Compare the rule's rows from the current page with its rows from the last complete capture.
+
+    The same items with the same fields on both shows that only the page
+    format changed. Differences may be real price changes since then, so a
+    person confirms them; the pair never verifies or fails a trial by itself.
+    """
+    def keyed(found: list) -> dict[str, list]:
+        items: dict[str, list] = {}
+        for row in found:
+            items.setdefault(_identity(row), sorted((key, str(value)) for key, value in row.fields.items()))
+        return items
+    now, then = keyed(rows), keyed(last_rows)
+    shared = now.keys() & then.keys()
+    changed = sorted(key for key in shared if now[key] != then[key])
+    status = ("unreadable" if not last_rows else "unmatched" if not shared else
+              "same" if not changed and now.keys() == then.keys() else "changed")
+    return {"status": status, "run_id": capture["run_id"], "evidence_ref": capture["evidence_ref"],
+            "evidence_sha256": digest, "last_good_rows": len(last_rows),
+            "same": len(shared) - len(changed), "changed": len(changed),
+            "only_current": len(now.keys() - then.keys()), "only_last_good": len(then.keys() - now.keys()),
+            "changed_sample": changed[:3]}
 
 
 def trial_rule(root: str | Path, plan_id: str, expected_revision: int, rule_key: str, url: str | None = None,
@@ -281,6 +338,12 @@ def trial_rule(root: str | Path, plan_id: str, expected_revision: int, rule_key:
         record.update(status="failed" if problems else "verified", reason="; ".join(problems),
                       evidence_sha256=digest, rows=len(rows), priced_rows=priced,
                       sample=[{key: row.fields.get(key) for key in ("name", "price", "currency")} for row in rows[:3]])
+        last_good = _last_good(output, url)
+        if last_good is not None:
+            capture, content = last_good
+            last_rows = _rows(replace(result, content=content, trace=[], variant_snapshots=[],
+                                      network_responses=[]), source)
+            record["pair"] = _pair(rows, last_rows, capture, hashlib.sha256(content).hexdigest())
     receipt_name = f"{record['rule_fingerprint']}.{stable_id(record['at'], url)}.json"
     receipt = output / "rule-trials" / receipt_name
     receipt.parent.mkdir(parents=True, exist_ok=True)
