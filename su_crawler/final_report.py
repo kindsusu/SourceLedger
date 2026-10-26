@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from copy import copy
+from datetime import date, datetime, time, timedelta
 from html import escape
 import os
 from pathlib import Path
@@ -14,6 +15,8 @@ from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
 
 from .report import _validate_xlsx
+from .xlsx_readback import excel_literal, expected_from_rows, read_values, verify_cells
+from .xlsx_sheets import cell_text
 
 
 def _header_row(ws):
@@ -39,9 +42,21 @@ def _safe_link(link):
     return copy(link)
 
 
-def _copy_cell(source: Cell, target: Cell, style_cache: dict | None = None):
+def _shown(values: dict | None, ws, cell):
+    """The value Excel shows for ``cell`` of source sheet ``ws`` (see read_values)."""
+    row = (values or {}).get(ws.title, {}).get(cell.row - 1)
+    return row[cell.column - 1] if row is not None and cell.column <= len(row) else None
+
+
+def _copy_cell(source: Cell, target: Cell, style_cache: dict | None = None, shown=None):
     # A supplied workbook is data. Formula cells must remain literal after merging.
-    target.value = str(source.value) if source.data_type == "f" else source.value
+    if source.data_type == "f":
+        target.value = str(source.value)
+    elif isinstance(source.value, str) and isinstance(shown, str):
+        # openpyxl decodes _xHHHH_ escapes only in part; copy the text Excel shows.
+        target.value = cell_text(shown)
+    else:
+        target.value = source.value
     # Copying style objects cell by cell dominated large merges. Within one
     # source workbook, cells with the same style indices get the same target
     # style, so resolve each distinct style once and reuse its index array.
@@ -69,10 +84,10 @@ def _copy_cell(source: Cell, target: Cell, style_cache: dict | None = None):
         target.data_type = "s"
 
 
-def _copy_sheet(source, destination, *, source_run=None, style_cache=None):
+def _copy_sheet(source, destination, *, source_run=None, style_cache=None, values=None):
     for row in source:
         for cell in row:
-            _copy_cell(cell, destination.cell(cell.row, cell.column), style_cache)
+            _copy_cell(cell, destination.cell(cell.row, cell.column), style_cache, _shown(values, source, cell))
         if source.row_dimensions[row[0].row].height is not None:
             destination.row_dimensions[row[0].row].height = source.row_dimensions[row[0].row].height
     for key, dim in source.column_dimensions.items():
@@ -114,6 +129,7 @@ def _merge(paths, destination):
     try:
         for index, path in enumerate(paths, 1):
             wb = load_workbook(path, data_only=False)
+            values = read_values(path)
             style_cache = {}  # source style indices -> target style indices, per source workbook
             try:
                 info = _run_info(wb)
@@ -122,18 +138,20 @@ def _merge(paths, destination):
                 if "Run Summary" in wb:
                     ws = wb["Run Summary"]
                     for row in range(_header_row(ws) + 1, ws.max_row + 1):
-                        run_details.append((run_id, ws.cell(row, 1), ws.cell(row, 2)))
+                        field, value = ws.cell(row, 1), ws.cell(row, 2)
+                        run_details.append((run_id, (field, _shown(values, ws, field)),
+                                            (value, _shown(values, ws, value))))
                 if "Collection Changes" in wb:
                     ws = wb["Collection Changes"]
                     for row in range(1, 5):
-                        change_details.append((run_id, row, tuple(ws[row])))
+                        change_details.append((run_id, row, tuple((cell, _shown(values, ws, cell)) for cell in ws[row])))
                 for source in wb:
                     if source.title in {"Run Summary", "Source Runs"}:
                         continue
                     headers = _headers(source)
                     if source.title not in sheet_state:
                         target = combined.create_sheet(source.title)
-                        _copy_sheet(source, target, source_run=run_id, style_cache=style_cache)
+                        _copy_sheet(source, target, source_run=run_id, style_cache=style_cache, values=values)
                         sheet_state[source.title] = (headers, _header_row(source), len(headers) + 1,
                                                      target.max_row)
                         continue
@@ -144,7 +162,7 @@ def _merge(paths, destination):
                     start = last_row + 1
                     for source_row in source.iter_rows(min_row=_header_row(source) + 1):
                         for cell in source_row:
-                            _copy_cell(cell, target.cell(start, cell.column), style_cache)
+                            _copy_cell(cell, target.cell(start, cell.column), style_cache, _shown(values, source, cell))
                         target.cell(start, provenance_col, run_id).data_type = "s"
                         start += 1
                     last_row = start - 1
@@ -178,8 +196,8 @@ def _merge(paths, destination):
         for run_id, field, value in run_details:
             row = details.max_row + 1
             details.cell(row, 1, run_id).data_type = "s"
-            _copy_cell(field, details.cell(row, 2))
-            _copy_cell(value, details.cell(row, 3))
+            _copy_cell(field[0], details.cell(row, 2), shown=field[1])
+            _copy_cell(value[0], details.cell(row, 3), shown=value[1])
         if change_details:
             changes = combined.create_sheet("Change Summaries", 3)
             changes.append(["Source Run", "Original row", *[f"Column {n}" for n in range(1, 10)]])
@@ -187,16 +205,38 @@ def _merge(paths, destination):
                 row = changes.max_row + 1
                 changes.cell(row, 1, run_id).data_type = "s"
                 changes.cell(row, 2, original_row)
-                for col, cell in enumerate(cells, 3):
-                    _copy_cell(cell, changes.cell(row, col))
+                for col, (cell, shown) in enumerate(cells, 3):
+                    _copy_cell(cell, changes.cell(row, col), shown=shown)
             changes.freeze_panes = "C2"
         for ws in (summary, provenance, details):
             for cell in ws[1]:
                 cell.font = copy(combined["Run Summary"]["A1"].font)
             ws.freeze_panes = "A2"
+        expected = _literal_cells(combined)
         combined.save(destination)
+        # Publish only a merged workbook whose every cell reads back as intended.
+        verify_cells(destination, expected)
     finally:
         combined.close()
+
+
+def _literal_cells(workbook):
+    """Escape text so Excel shows it as held, and return what each sheet must read back as."""
+    from openpyxl.utils.datetime import to_excel
+
+    expected = []
+    for ws in workbook.worksheets:
+        cells = []
+        for (row, col), cell in ws._cells.items():
+            value = cell.value
+            if isinstance(value, str):
+                cell.value = excel_literal(value)
+                cell.data_type = "s"
+            elif isinstance(value, (datetime, date, time, timedelta)):
+                value = to_excel(value, workbook.epoch)  # stored as its serial number
+            cells.append((row, col, value))
+        expected.append((ws.title, expected_from_rows(cells)))
+    return expected
 
 
 _PRICE = "Recorded Price (not a final quote)"
