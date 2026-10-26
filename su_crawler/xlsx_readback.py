@@ -227,8 +227,8 @@ def _ref(row: int, col: int) -> str:
     return f"{letters}{row + 1}"
 
 
-def _compare_sheet(stream, name: str, expected: _Expected, strings: list[str]) -> None:
-    rows = expected.rows
+def _cells(stream, name: str, strings: list[str]):
+    """Yield zero-based (row, column, value) for every cell element."""
     for _, node in ElementTree.iterparse(stream):
         if node.tag == _MAIN + "row":
             node.clear()
@@ -238,10 +238,14 @@ def _compare_sheet(stream, name: str, expected: _Expected, strings: list[str]) -
         match = _REF.fullmatch(node.get("r") or "")
         if match is None:
             raise WorkbookMismatch(f"sheet {name!r}: cell without a plain reference")
-        row, col = int(match.group(2)) - 1, _column(match.group(1))
+        yield int(match.group(2)) - 1, _column(match.group(1)), _cell_value(node, strings)
+
+
+def _compare_sheet(stream, name: str, expected: _Expected, strings: list[str]) -> None:
+    rows = expected.rows
+    for row, col, got in _cells(stream, name, strings):
         cells = rows.get(row)
         want = cells[col] if cells is not None and col < len(cells) else None
-        got = _cell_value(node, strings)
         if want is _SEEN:
             raise WorkbookMismatch(f"sheet {name!r} cell {_ref(row, col)} appears twice")
         if want is None and got is None:
@@ -255,6 +259,24 @@ def _compare_sheet(stream, name: str, expected: _Expected, strings: list[str]) -
             if want is not None and want is not _SEEN:
                 raise WorkbookMismatch(f"sheet {name!r} cell {_ref(row, col)}: wrote {_short(want)}, "
                                        f"read back nothing")
+
+
+def read_values(path: str | Path) -> dict[str, dict[int, list[Any]]]:
+    """Each sheet's values as Excel shows them, as zero-based rows of columns.
+
+    Text is unescaped, numbers (dates included) are floats and a formula is
+    ``("formula", text)``.
+    """
+    values: dict[str, dict[int, list[Any]]] = {}
+    with zipfile.ZipFile(path) as archive:
+        sheets, strings = _sheets(archive)
+        for name, part in sheets:
+            cells = _Expected()
+            with archive.open(part) as stream:
+                for row, col, value in _cells(stream, name, strings):
+                    cells.put(row, col, value)
+            values[name] = cells.rows
+    return values
 
 
 def verify_cells(path: str | Path, expected: list[tuple[str, _Expected]], *, all_sheets: bool = True) -> None:

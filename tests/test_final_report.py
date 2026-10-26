@@ -285,3 +285,42 @@ def test_finalize_uses_current_summary_and_ignores_a_stale_one(tmp_path, monkeyp
     monkeypatch.setattr(final_report, "workbook_summary", lambda p: calls.append(p) or original(p))
     assert finalize_reports([path], path, metadata={"workbook_summary": summary}) == expected
     assert calls
+
+
+ESCAPE_LIKE = ["_x0041_ code", "line\r\nbreak", "keep x005F_ text", " spaced ", "plain"]
+
+
+def _escape_like_reports(tmp_path):
+    from su_crawler.models import CollectionConfig, Product, Source
+    from su_crawler.report import export_report
+    config = CollectionConfig("t", [Product("p1", "P")], [Source("s1", "S", "web", "https://a.example/p", ["p1"])],
+                              str(tmp_path), str(tmp_path))
+    paths = []
+    for run in ("r1", "r2"):
+        rows = [{"id": f"{run}-{i}", "task_id": "t", "product_id": "p1", "source_id": "s1", "status": "review",
+                 "raw_fields": {"name": name, "price": "12"}} for i, name in enumerate(ESCAPE_LIKE)]
+        paths.append(export_report(config, {"id": run}, [], rows, tmp_path / f"{run}.xlsx"))
+    return paths
+
+
+def test_batch_merge_keeps_text_exactly_as_excel_shows_the_sources(tmp_path):
+    from su_crawler.xlsx_readback import read_values
+    paths = _escape_like_reports(tmp_path)
+    finalize_reports(paths, tmp_path / "final.xlsx")
+    for path in paths:
+        source = read_values(path)["Results"]
+        assert [source[row][0] for row in sorted(source) if row] == ESCAPE_LIKE
+    merged = read_values(tmp_path / "final.xlsx")["Results"]
+    assert [merged[row][0] for row in sorted(merged) if row] == ESCAPE_LIKE * 2
+    assert {merged[row][-1] for row in sorted(merged) if row} == {"r1", "r2"}
+
+
+def test_batch_merge_that_does_not_read_back_publishes_nothing(tmp_path, monkeypatch):
+    from su_crawler import final_report
+    from su_crawler.xlsx_readback import WorkbookMismatch
+    paths = _escape_like_reports(tmp_path)
+    # A writer fault: text is stored unescaped, so Excel would decode "_x0041_".
+    monkeypatch.setattr(final_report, "excel_literal", lambda text: text)
+    with pytest.raises(WorkbookMismatch, match=r"wrote '_x0041_ code', read back 'A code'"):
+        finalize_reports(paths, tmp_path / "final.xlsx")
+    assert not list(tmp_path.glob("final*")) and not list(tmp_path.glob(".final.*"))

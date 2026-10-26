@@ -81,6 +81,6 @@ Activation creates a standalone config with absolute file paths. It does not reg
 
 ## 5. Accumulate observations
 
-Keep the same `output_dir` for a research series. Each new `run` appends a run and its observations to SQLite; `run --resume RUN_ID` continues an unfinished run. Evidence files retain their SHA-256 hashes, and XLSX files are generated for each run. A workbook is published only after it is read back and every cell matches what was written; otherwise the export fails and no partial file is left. Unknown values remain blank. CSV is supported as input, while output remains SQLite plus XLSX.
+Keep the same `output_dir` for a research series. Each new `run` appends a run and its observations to SQLite; `run --resume RUN_ID` continues an unfinished run. Evidence files retain their SHA-256 hashes, and XLSX files are generated for each run. A run workbook, and a final report merged from several runs, is published only after it is read back and every cell matches what was written; otherwise the export fails and no partial file is left. Unknown values remain blank. CSV is supported as input, while output remains SQLite plus XLSX.
 
 See [implementation status](STATUS.md) for tested behavior and [the roadmap](ROADMAP.md) for recipe recovery, scheduling, and client integration work.
