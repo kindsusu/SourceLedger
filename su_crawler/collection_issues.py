@@ -7,6 +7,10 @@ import json
 
 RETRYABLE_CODES = {'transient_failure', 'exhausted_limit'}
 MAX_RETRY_CHAIN = 3
+# Gaps a rule repair can fix; their evidence pairs the current capture with
+# the last complete capture of the same page.
+REPAIR_CODES = {'structure_changed', 'unknown_enumeration', 'unverified_option'}
+PRIOR_RUNS = 30
 
 
 def _identity(run_id: str, url: str, section: str, option: str, code: str) -> str:
@@ -45,16 +49,45 @@ def _scope(page: dict) -> dict:
             if page.get(key) is not None}
 
 
-def _prior_sections(store, run_id: str, page: dict) -> list[dict]:
+def prior_coverage(db, run_id: str | None = None) -> list[tuple[str, list[dict]]]:
+    """Coverage of the newest earlier runs (the newest runs when ``run_id`` is None)."""
+    if run_id is None:
+        rows = db.execute('''SELECT rc.run_id, rc.data FROM run_coverage rc JOIN runs r ON r.id=rc.run_id
+                             ORDER BY r.started_at DESC LIMIT ?''', (PRIOR_RUNS,))
+    else:
+        rows = db.execute('''SELECT rc.run_id, rc.data FROM run_coverage rc JOIN runs r ON r.id=rc.run_id
+                             WHERE rc.run_id<>? AND r.started_at <= (SELECT started_at FROM runs WHERE id=?)
+                             ORDER BY r.started_at DESC LIMIT ?''', (run_id, run_id, PRIOR_RUNS))
+    return [(prior_run, json.loads(data)) for prior_run, data in rows]
+
+
+def last_good_capture(prior: list[tuple[str, list[dict]]], url: str) -> dict | None:
+    """The newest earlier capture of ``url`` whose every section was complete.
+
+    Paired with the current capture it lets a repaired rule be checked on both
+    pages: the same items with the same fields from each shows that only the
+    page format changed.
+    """
+    for prior_run, pages in prior:
+        for page in pages:
+            sections = page.get('sections') or []
+            if (page.get('url') != url or page.get('status') != 'visited' or not sections
+                    or any(section.get('status') != 'complete' for section in sections)):
+                continue
+            refs = sorted({ref.strip() for section in sections
+                           for ref in str(section.get('evidence_ref') or '').split(';') if ref.strip()})
+            if refs:
+                return {'run_id': prior_run, 'evidence_refs': refs}
+    return None
+
+
+def _prior_sections(prior_runs: list[tuple[str, list[dict]]], page: dict) -> list[dict]:
     """Compare only an explicit recipe or a stable source and adapter on the same URL."""
     scope = _scope(page)
     if not scope.get('recipe_fingerprint') and not (scope.get('source_id') and scope.get('adapter')):
         return []
-    rows = store.db.execute('''SELECT rc.data FROM run_coverage rc JOIN runs r ON r.id=rc.run_id
-                               WHERE rc.run_id<>? AND r.started_at <= (SELECT started_at FROM runs WHERE id=?)
-                               ORDER BY r.started_at DESC LIMIT 30''', (run_id, run_id))
-    for row in rows:
-        for prior in json.loads(row[0]):
+    for _, pages in prior_runs:
+        for prior in pages:
             if prior.get('url') != page.get('url'):
                 continue
             old_scope = _scope(prior)
@@ -70,19 +103,17 @@ def _prior_sections(store, run_id: str, page: dict) -> list[dict]:
     return []
 
 
-def _timed_out_before(store, run_id: str, url: str) -> bool:
+def _timed_out_before(prior: list[tuple[str, list[dict]]], url: str) -> bool:
     """True when an earlier run recorded the same page as a timeout."""
-    if store is None or not url:
-        return False
-    rows = store.db.execute('''SELECT rc.data FROM run_coverage rc JOIN runs r ON r.id=rc.run_id
-                               WHERE rc.run_id<>? AND r.started_at <= (SELECT started_at FROM runs WHERE id=?)
-                               ORDER BY r.started_at DESC LIMIT 30''', (run_id, run_id))
-    return any(prior.get('url') == url and prior.get('status') == 'timeout'
-               for row in rows for prior in json.loads(row[0]))
+    return bool(url) and any(page.get('url') == url and page.get('status') == 'timeout'
+                             for _, pages in prior for page in pages)
 
 
 def issues_from_coverage(store, run_id: str, coverage: list[dict]) -> list[dict]:
     issues: list[dict] = []
+    # Earlier coverage is read once for every page of this run.
+    prior = prior_coverage(store.db, run_id) if store is not None else []
+    last_good: dict[str, dict | None] = {}
     for page in coverage:
         if page.get('status') == 'excluded':
             continue
@@ -93,7 +124,7 @@ def issues_from_coverage(store, run_id: str, coverage: list[dict]) -> list[dict]
         if page_status not in {'visited', 'fetched'}:
             trace_hint = json.dumps(page.get('trace') or [], ensure_ascii=False, default=str)[:10000]
             code, action = _classify(page_status, f"{page.get('reason') or ''} {trace_hint}")
-            if page_status == 'timeout' and _timed_out_before(store, run_id, url):
+            if page_status == 'timeout' and _timed_out_before(prior, url):
                 # The program's own browser timed out on this page in an earlier
                 # run too (not a launch failure): offer the host browser instead
                 # of another identical retry.
@@ -122,6 +153,11 @@ def issues_from_coverage(store, run_id: str, coverage: list[dict]) -> list[dict]
                         # Generic extraction: which method chose the prices and the
                         # collection_rules entry that would pin it after approval.
                         'method', 'platform', 'suggested_rule') if key in section}
+            if code in REPAIR_CODES:
+                if url not in last_good:
+                    last_good[url] = last_good_capture(prior, url)
+                if last_good[url]:
+                    evidence['last_good_capture'] = last_good[url]
             issues.append(_issue(run_id, url, name, '', code, reason, action, evidence, scope,
                                  attempts=page.get('attempts', 0)))
             for key in ('missing_locators', 'mismatched_locators'):
@@ -129,7 +165,7 @@ def issues_from_coverage(store, run_id: str, coverage: list[dict]) -> list[dict]
                     issues.append(_issue(run_id, url, name, str(locator), 'unverified_option',
                                          f'{key}: {locator}', 'inspect_source_evidence',
                                          {'evidence_ref': section.get('evidence_ref'), 'locator': locator}, scope))
-        old = _prior_sections(store, run_id, page)
+        old = _prior_sections(prior, page)
         current = {str(s.get('section')): s for s in sections}
         if page_status not in {'visited', 'fetched', 'no_data'}:
             continue

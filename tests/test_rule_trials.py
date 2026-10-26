@@ -124,3 +124,92 @@ def test_skeleton_summarizes_long_runs_of_identical_siblings():
                          final_url=URL)
     skeleton = page_context(result)["skeleton"]
     assert skeleton.count("li.item") == 4 and "47 more li.item" in skeleton
+
+
+# The page moved its rows from a table to a list; a repaired rule reads both.
+REPAIRED = {"origin": "proposed", "row_selector": "ul.list > li.item, table.rates tr.item",
+            "selectors": {"name": "a.title", "price": "span.price"}}
+
+
+def table_page(prices=(19, 29, 39)):
+    rows = "".join(f'<tr class="item"><td><a class="title" href="/p/{i}">Lamp {i}</a></td>'
+                   f'<td><span class="price">{price},000원</span></td></tr>' for i, price in enumerate(prices, 1))
+    return f'<html><body><h1>Lamps</h1><table class="rates">{rows}</table></body></html>'.encode()
+
+
+def record_complete_capture(output, html, *, inside=True):
+    """A ledger whose earlier run captured URL completely, with its saved page."""
+    from su_crawler.storage import Store
+    evidence = (output if inside else output.parent) / "evidence" / "last-good.html"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_bytes(html)
+    store = Store(output)
+    try:
+        with store.db:
+            store.db.execute("INSERT INTO runs(id,config_hash,status,started_at,demo) VALUES(?,?,?,?,?)",
+                             ("good", "x", "completed", "2026-10-01T00:00:00+00:00", 0))
+        store.save_run_coverage("good", [{"url": URL, "status": "visited", "sections": [
+            {"section": "page_scope", "status": "complete", "evidence_ref": str(evidence)}]}])
+    finally:
+        store.close()
+    return evidence
+
+
+def test_structure_gaps_carry_the_last_complete_capture(tmp_path):
+    from su_crawler.collection_issues import issues_from_coverage
+    from su_crawler.storage import Store
+    evidence = record_complete_capture(tmp_path, table_page())
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            store.db.execute("INSERT INTO runs(id,config_hash,status,started_at,demo) VALUES(?,?,?,?,?)",
+                             ("now", "x", "completed", "2026-10-02T00:00:00+00:00", 0))
+        issues = issues_from_coverage(store, "now", [
+            {"url": URL, "status": "visited", "sections": [{"section": "page_scope", "status": "unknown",
+                                                             "reason": "No rows recognized"}]},
+            {"url": URL + "/other", "status": "visited", "sections": [{"section": "page_scope", "status": "unknown"}]},
+            {"url": URL + "/down", "status": "failed", "reason": "HTTP 500"}])
+    finally:
+        store.close()
+    by_url = {issue["page_url"]: issue for issue in issues}
+    assert by_url[URL]["evidence"]["last_good_capture"] == {"run_id": "good", "evidence_refs": [str(evidence)]}
+    assert "last_good_capture" not in by_url[URL + "/other"]["evidence"]  # never captured completely
+    assert "last_good_capture" not in by_url[URL + "/down"]["evidence"]  # a retry, not a repair
+
+
+def test_trial_reads_the_last_complete_capture_with_the_rule(tmp_path):
+    plan = plan_with_rule(tmp_path, REPAIRED)
+    output = tmp_path / "catalog-prices" / plan["id"]
+    record_complete_capture(output, table_page())
+    context = prepare_context(tmp_path, plan["id"], URL, collector=fetch)
+    assert context["last_good_capture"]["run_id"] == "good"
+    trial = trial_rule(tmp_path, plan["id"], plan["revision"], URL, collector=fetch)["trial"]
+    assert trial["status"] == "verified"
+    assert {key: trial["pair"][key] for key in ("status", "run_id", "same", "changed", "only_current",
+                                                 "only_last_good")} == {
+        "status": "same", "run_id": "good", "same": 3, "changed": 0, "only_current": 0, "only_last_good": 0}
+    receipt = json.loads((output / "rule-trials" / trial["receipt"]).read_text(encoding="utf-8"))
+    assert receipt["pair"] == trial["pair"]
+
+
+def test_a_changed_or_unreadable_pair_is_reported_not_decided(tmp_path):
+    plan = plan_with_rule(tmp_path, REPAIRED)
+    output = tmp_path / "catalog-prices" / plan["id"]
+    record_complete_capture(output, table_page(prices=(19, 25, 39)))
+    trial = trial_rule(tmp_path, plan["id"], plan["revision"], URL, collector=fetch)["trial"]
+    # The price may really have changed since; a person decides.
+    assert trial["status"] == "verified"
+    assert (trial["pair"]["status"], trial["pair"]["changed"], trial["pair"]["changed_sample"]) == (
+        "changed", 1, ["Lamp 2"])
+    # The unrepaired rule finds no list rows in the earlier table, so no item lines up.
+    plan = plan_with_rule(tmp_path / "other")
+    record_complete_capture(tmp_path / "other" / "catalog-prices" / plan["id"], table_page())
+    trial = trial_rule(tmp_path / "other", plan["id"], plan["revision"], URL, collector=fetch)["trial"]
+    assert (trial["pair"]["status"], trial["pair"]["only_current"]) == ("unmatched", 3)
+
+
+def test_a_last_good_capture_outside_the_plan_output_is_ignored(tmp_path):
+    plan = plan_with_rule(tmp_path, REPAIRED)
+    record_complete_capture(tmp_path / "catalog-prices" / plan["id"], table_page(), inside=False)
+    trial = trial_rule(tmp_path, plan["id"], plan["revision"], URL, collector=fetch)["trial"]
+    assert trial["status"] == "verified" and "pair" not in trial

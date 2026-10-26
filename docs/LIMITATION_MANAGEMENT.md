@@ -12,6 +12,7 @@ A rule the host assistant proposes carries `"origin": "proposed"`.
 - **Safety checks:** a proposed rule cannot type, use a profile, or press purchase, sign-in, submit or subscription controls.
 - **Context:** `prepare_rule_proposal` captures one candidate page and returns its outline, controls and what generic extraction found.
 - **Trial:** `trial_collection_rule` runs the rule once and records the result in a new plan revision. A rule is verified only when it finds priced rows, the saved evidence re-extracts to the same rows, the page settled and no access challenge appeared.
+- **Last complete capture:** a structure, enumeration or unverified-option issue records `last_good_capture`, the newest earlier run that captured the page with every section complete and its saved page. The trial reads that page with the rule too and records `pair`: the same items with the same fields on both (`same`) shows that only the page format changed. `changed`, `unmatched` or `unreadable` is reported for a person to judge, because prices may really have changed; the pair never verifies or fails a trial.
 - **Collection:** jobs apply a proposed rule only after the user confirms a verified trial. Every job re-checks the trial receipt; a rule edited after its trial is held back (`held_rules`).
 
 ```json
