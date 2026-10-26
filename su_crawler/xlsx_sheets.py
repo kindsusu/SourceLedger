@@ -24,6 +24,8 @@ from typing import Any
 from xml.etree import ElementTree
 import zipfile
 
+from .xlsx_readback import excel_literal, expected_from_rows, verify_cells
+
 # Excel stores at most 32,767 UTF-16 code units in a cell. Longer text would
 # be truncated silently by xlsxwriter or rejected by Excel; the report says so.
 EXCEL_CELL_LIMIT = 32767
@@ -167,7 +169,8 @@ def _write_openpyxl(wb: Any, spec: SheetSpec) -> None:
     for r, c, value, style in spec.cells():
         cell = ws.cell(r, c)
         if value is not None:
-            cell.value = value
+            # openpyxl writes _xHHHH_ text unescaped, which Excel would decode.
+            cell.value = excel_literal(value) if isinstance(value, str) else value
             if isinstance(value, str):
                 cell.data_type = "s"  # Source text must never become an Excel formula.
         if style:
@@ -199,6 +202,7 @@ def _replace_openpyxl(path: Path, specs: list[SheetSpec]) -> None:
         temp = _temp_near(path)
         wb.save(temp)
         validate_package(temp)
+        _verify_specs(temp, specs)
         os.replace(temp, path)
         temp = None
     finally:
@@ -208,6 +212,12 @@ def _replace_openpyxl(path: Path, specs: list[SheetSpec]) -> None:
 
 
 # ------------------------------------------------------------- package splice
+
+def _verify_specs(path: Path, specs: list[SheetSpec]) -> None:
+    """Compare the replaced sheets of a staged workbook with their specs."""
+    verify_cells(path, [(spec.name, expected_from_rows((r, c, value) for r, c, value, _ in spec.cells()))
+                        for spec in specs], all_sheets=False)
+
 
 class SpliceUnsupported(Exception):
     """The workbook package has a shape this editor does not rewrite."""
@@ -364,7 +374,7 @@ def sheet_xml(spec: SheetSpec, xf_ids: dict[str, int]) -> bytes:
             parts.append(f'<c r="{ref}"{style_attr}><v>{value}</v></c>')
         else:
             space = ' xml:space="preserve"' if value != value.strip() or "\n" in value else ""
-            parts.append(f'<c r="{ref}"{style_attr} t="inlineStr"><is><t{space}>{_xml_text(value)}</t></is></c>')
+            parts.append(f'<c r="{ref}"{style_attr} t="inlineStr"><is><t{space}>{_xml_text(excel_literal(value))}</t></is></c>')
     if current is not None:
         parts.append("</row>")
     parts.append("</sheetData>")
@@ -555,6 +565,7 @@ def _splice(path: Path, specs: list[SheetSpec]) -> None:
                 for name, data in replacements.items():
                     target.writestr(name, data)
             validate_package(temp)
+            _verify_specs(temp, specs)
         except BaseException:
             temp.unlink(missing_ok=True)
             raise
