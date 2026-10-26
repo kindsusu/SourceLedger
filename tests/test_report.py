@@ -340,7 +340,9 @@ def test_append_sheets_replace_in_place_without_reloading_workbook(tmp_path, mon
         assert wb.sheetnames[-4:] == ["Collection Changes", "Item Changes", "Catalog coverage", "Collection Issues"]
         assert wb.sheetnames.count("Catalog coverage") == 1
         issues = wb["Collection Issues"]
-        assert issues["F2"].value == "=SUM(1)_x0001_" and issues["F2"].data_type == "s"
+        # Stored escaped, so Excel shows the literal marker "=SUM(1)_x0001_"
+        # instead of decoding it to a control character; openpyxl shows it raw.
+        assert issues["F2"].value == "=SUM(1)_x005F_x0001_" and issues["F2"].data_type == "s"
         assert issues["A1"].font.bold and issues["A1"].fill.fgColor.rgb == "001F4E78"
         assert issues.freeze_panes == "A2" and issues.auto_filter.ref == "A1:I2"
         assert wb["Collection Changes"]["F4"].value is True

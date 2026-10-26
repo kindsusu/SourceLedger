@@ -81,6 +81,6 @@ source-ledger.cmd init --lang ko --industry "산업용 부품" --product "공정
 
 ## 5. 데이터 누적
 
-같은 연구의 `output_dir`을 유지하면 새 `run`마다 SQLite에 실행·관측이 누적됩니다. 미완료 실행은 `run --resume RUN_ID`로 이어갑니다. 근거는 SHA-256과 함께 보존되며 실행별 XLSX를 생성합니다. 없는 값은 빈칸입니다. CSV는 입력을 지원하며 출력은 SQLite와 XLSX입니다.
+같은 연구의 `output_dir`을 유지하면 새 `run`마다 SQLite에 실행·관측이 누적됩니다. 미완료 실행은 `run --resume RUN_ID`로 이어갑니다. 근거는 SHA-256과 함께 보존되며 실행별 XLSX를 생성합니다. XLSX는 다시 읽어 모든 셀이 쓴 값과 같을 때만 게시하며, 다르면 내보내기를 실패로 끝내고 중간 파일을 남기지 않습니다. 없는 값은 빈칸입니다. CSV는 입력을 지원하며 출력은 SQLite와 XLSX입니다.
 
 현재 확인 범위는 [구현 상태](IMPLEMENTATION_STATUS.md), 규칙 복구·예약 운영·클라이언트 연결 등 후속 작업은 [로드맵](ROADMAP.ko.md)을 참고하세요.

@@ -10,9 +10,8 @@ import tempfile
 from typing import Any
 from urllib.parse import urlparse
 
-import xlsxwriter
-
 from .models import CollectionConfig
+from .xlsx_readback import RecordingWorkbook, verify_cells
 from .xlsx_sheets import SheetSpec, cell_text, replace_sheets, validate_package, write_xlsxwriter
 
 
@@ -440,7 +439,7 @@ def _export(
     os.close(fd)
     tmp_path = Path(tmp_name)
     try:
-        wb = xlsxwriter.Workbook(tmp_path, {"strings_to_formulas": False, "strings_to_urls": False})
+        wb = RecordingWorkbook(tmp_path, {"strings_to_formulas": False, "strings_to_urls": False})
         fmts = {
             "header": wb.add_format({"bold": True, "font_color": "#FFFFFF", "bg_color": "#1F4E78", "border": 1, "text_wrap": True}),
             "banner": wb.add_format({"bold": True, "font_color": "#9C0006", "bg_color": "#FFC7CE", "align": "center"}),
@@ -689,8 +688,11 @@ def _export(
         for spec in audit_specs:
             write_xlsxwriter(wb, spec, spec_formats)
         sheet_names = [sheet.name for sheet in wb.worksheets()]
+        expected = wb.expected_cells()
         wb.close()
         _validate_xlsx(tmp_path, deep=deep_validation)
+        # Publish only a workbook whose every cell reads back as written.
+        verify_cells(tmp_path, expected)
         os.replace(tmp_path, output_path)
         summary = {"result_rows": result_cells, "price_column": True,
                    "evidence_urls": [] if result_cells else evidence_urls,
