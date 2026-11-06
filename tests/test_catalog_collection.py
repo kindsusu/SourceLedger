@@ -314,3 +314,15 @@ def test_plan_market_resolves_dollar_sign_currency(tmp_path):
     assert {(row["currency"], row["status"]) for row in observations} == {("USD", "verified")}
     proof = observations[0]["evidence"]["currency"]
     assert proof["proof_kind"] == "marker_with_plan_market" and proof["marker"] == "$"
+
+
+@pytest.mark.parametrize("max_seconds, expected", [(300, 300.0), (10, 60.0)])
+def test_ledger_replay_gets_the_batch_budget_not_a_fixed_minute(tmp_path, max_seconds, expected):
+    # Replaying a page with thousands of captured rows can take over a minute;
+    # a fixed 60 s run limit dropped later pages' rows as budget_exhausted.
+    url = "https://shop.example/product"
+    result = collect_plan(tmp_path, plan([url]), output_dir=tmp_path / "results", max_pages=1,
+                          max_seconds=max_seconds, follow_links=False,
+                          collector=fake({(url, "http"): html_product("Shirt", price="10", currency="USD")}, []))
+    config = json.loads(Path(result["config_path"]).read_text(encoding="utf-8"))
+    assert config["max_run_seconds"] == expected
