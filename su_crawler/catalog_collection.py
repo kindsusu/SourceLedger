@@ -1000,8 +1000,11 @@ def collect_plan(root: str | Path, snapshot: dict, *, output_dir: str | Path,
             (FetchResult(**result), [Candidate(**candidate) for candidate in candidates])
             for result, candidates in captures[url]["responses"]] for url in ordered}
         coverage.sort(key=lambda item: (rank.get(item["url"], len(rank)), item["url"]))
+    # The run below only replays the captures above into the ledger; a page with
+    # thousands of rows took over a minute, and a fixed 60 s limit then dropped
+    # the later pages' rows as budget_exhausted.
     config = CollectionConfig(f"{topic['industry']} — {topic['product']} — {topic['market']}", products, sources,
-                              str(destination), str(destination), max_run_seconds=60)
+                              str(destination), str(destination), max_run_seconds=max(60.0, float(max_seconds)))
     collection_wall_seconds = time.monotonic() - started
     timing_totals = {"page_seconds_sum": 0.0, "fetch_seconds_sum": 0.0,
                      "extraction_seconds_sum": 0.0, "browser_startup_seconds_sum": 0.0,
