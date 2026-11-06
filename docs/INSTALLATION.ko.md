@@ -32,7 +32,7 @@ setup.cmd --mcp
 setup.cmd --dev
 ```
 
-`--browser`는 선택 Playwright 패키지와 Chromium을 설치합니다. `--mcp`는 로컬 MCP 의존성을, `--dev`는 테스트 의존성을 설치합니다. launcher는 위치 기준으로 프로젝트의 `.venv`를 사용하므로 `Activate.ps1` 실행이나 PowerShell 실행 정책 변경이 필요 없습니다. CLI 인자는 그대로 전달되며, 한국어 첫 설정은 다음처럼 실행합니다.
+`--browser`는 선택 Playwright 패키지를 설치하고 Chromium을 저장소 폴더 안의 `.venv\ms-playwright`(macOS/Linux는 `.venv/ms-playwright`)에 내려받습니다. Playwright 기본 폴더(`%LOCALAPPDATA%\ms-playwright`)는 패키지형 데스크톱 앱의 터미널에서 설치하면 앱 전용 위치로 바뀌어 저장되므로, launcher·더블클릭·작업 스케줄러에서는 보이지 않습니다("Executable doesn't exist"). 저장소 폴더는 이렇게 바뀌지 않습니다. SourceLedger의 모든 프로세스는 `PLAYWRIGHT_BROWSERS_PATH`가 없고 `.venv\ms-playwright`가 있으면 그 폴더를 씁니다. 기본 폴더에 Chromium을 설치한 기존 설치는 그대로 동작하고, `PLAYWRIGHT_BROWSERS_PATH`를 직접 지정했다면 설치와 실행 모두 그 값을 따릅니다. `--mcp`는 로컬 MCP 의존성을, `--dev`는 테스트 의존성을 설치합니다. launcher는 위치 기준으로 프로젝트의 `.venv`를 사용하므로 `Activate.ps1` 실행이나 PowerShell 실행 정책 변경이 필요 없습니다. CLI 인자는 그대로 전달되며, 한국어 첫 설정은 다음처럼 실행합니다.
 
 ```bat
 source-ledger.cmd init --lang ko

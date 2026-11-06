@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from su_crawler import browser_runtime
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,6 +74,42 @@ def test_optional_install_creates_venv_and_installs_browser_last(tmp_path, monke
         str(python), "-m", "pip", "install", "--editable", f"{tmp_path}[browser,mcp,test]"
     ]
     assert calls[-1] == [str(python), "-m", "playwright", "install", "chromium"]
+
+
+def test_browser_installs_inside_the_environment(tmp_path, monkeypatch):
+    make_existing_environment(tmp_path)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="3.12\n", stderr="")
+
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    setup_script.install(root=tmp_path, browser=True, runner=run)
+    command, kwargs = calls[-1]
+    assert command[1:] == ["-m", "playwright", "install", "chromium"]
+    folder = tmp_path / ".venv" / browser_runtime.BROWSERS_DIR
+    assert kwargs["env"] == {"PLAYWRIGHT_BROWSERS_PATH": str(folder)}
+    folder.mkdir()  # what the install creates; the package then finds it from the environment's prefix
+    environ = {}
+    assert browser_runtime.use_environment_browsers(environ, prefix=tmp_path / ".venv") == folder
+
+
+def test_browser_install_follows_an_explicit_browsers_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path / "shared"))
+    assert setup_script.browser_env(tmp_path / ".venv") == {}
+
+
+def test_subprocess_runner_adds_requested_environment(tmp_path, monkeypatch):
+    observed = {}
+
+    def run(command, **kwargs):
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(setup_script.subprocess, "run", run)
+    setup_script._run(["python", "--version"], cwd=tmp_path, env={"PLAYWRIGHT_BROWSERS_PATH": "x"})
+    assert observed["env"]["PLAYWRIGHT_BROWSERS_PATH"] == "x" and observed["env"]["PYTHONUTF8"] == "1"
 
 
 def test_invalid_existing_environment_is_preserved(tmp_path):

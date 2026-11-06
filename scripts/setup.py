@@ -23,9 +23,11 @@ def venv_python(environment: Path) -> Path:
     return environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 
 
-def _run(command: Sequence[str], *, cwd: Path, capture_output: bool = False) -> subprocess.CompletedProcess[str]:
+def _run(command: Sequence[str], *, cwd: Path, capture_output: bool = False,
+         env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONUTF8"] = "1"
+    environment.update(env or {})
     return subprocess.run(
         list(command), cwd=cwd, check=True, text=True,
         capture_output=capture_output, encoding="utf-8", errors="replace", env=environment,
@@ -82,8 +84,17 @@ def install(
     command.append(target)
     runner(command, cwd=root)
     if browser:
-        runner([str(python), "-m", "playwright", "install", "chromium"], cwd=root)
+        runner([str(python), "-m", "playwright", "install", "chromium"], cwd=root, env=browser_env(environment))
     return python
+
+
+def browser_env(environment: Path) -> dict[str, str]:
+    """Install Chromium inside the environment (su_crawler.browser_runtime finds it there), unless the operator set
+    PLAYWRIGHT_BROWSERS_PATH. Playwright's default folder is redirected inside packaged Windows apps, so a browser
+    installed from one would be invisible to launchers and scheduled tasks."""
+    if "PLAYWRIGHT_BROWSERS_PATH" in os.environ:
+        return {}
+    return {"PLAYWRIGHT_BROWSERS_PATH": str(environment / "ms-playwright")}
 
 
 def parser() -> argparse.ArgumentParser:
