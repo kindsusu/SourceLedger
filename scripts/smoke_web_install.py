@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
@@ -109,21 +110,24 @@ def main() -> int:
                 while time.monotonic() < deadline and runtime_status(workspace)["status"] != "stopped":
                     time.sleep(0.1)
                 assert runtime_status(workspace)["status"] == "stopped"
-                # "stopped" means the worker released its lock. Its process, and on
-                # Windows the venv launcher that started it, keep runtime/worker.log
-                # open until they exit; Windows cannot delete the workspace before.
-                while time.monotonic() < deadline and _pid_alive(pid):
-                    time.sleep(0.1)
-                assert not _pid_alive(pid), f"worker process {pid} did not exit"
-                log = workspace / "runtime" / "worker.log"
-                while True:
-                    try:
-                        log.unlink(missing_ok=True)
-                        break
-                    except PermissionError:
-                        if time.monotonic() >= deadline:
-                            raise
+                # "stopped" means the worker released its lock. On Windows its process,
+                # and the venv launcher that started it, keep runtime/worker.log open
+                # until they exit, and the workspace cannot be deleted before. (Elsewhere
+                # an exited worker stays a zombie until this process reaps it, so a
+                # liveness check there would wait for nothing.)
+                if os.name == "nt":
+                    while time.monotonic() < deadline and _pid_alive(pid):
                         time.sleep(0.1)
+                    assert not _pid_alive(pid), f"worker process {pid} did not exit"
+                    log = workspace / "runtime" / "worker.log"
+                    while True:
+                        try:
+                            log.unlink(missing_ok=True)
+                            break
+                        except PermissionError:
+                            if time.monotonic() >= deadline:
+                                raise
+                            time.sleep(0.1)
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
