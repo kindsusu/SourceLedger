@@ -32,7 +32,7 @@ setup.cmd --mcp
 setup.cmd --dev
 ```
 
-`--browser` installs the optional Playwright package and downloads Chromium. `--mcp` installs the local MCP dependency. `--dev` installs the test dependency. The launcher uses the repository's `.venv` by location, so it does not require `Activate.ps1` or a PowerShell execution-policy change. CLI arguments pass through unchanged; for Korean first-run prompts use:
+`--browser` installs the optional Playwright package and downloads Chromium into `.venv\ms-playwright` (`.venv/ms-playwright` on macOS/Linux), inside the repository folder. Playwright's default folder (`%LOCALAPPDATA%\ms-playwright`) is redirected when setup runs inside a packaged desktop app's terminal, so a browser installed there is invisible to the launcher, a double-click or a scheduled task ("Executable doesn't exist"); the repository folder is not redirected. Every SourceLedger process uses `.venv\ms-playwright` when it exists and `PLAYWRIGHT_BROWSERS_PATH` is not set. Older installs with Chromium in the default folder keep working, and an explicit `PLAYWRIGHT_BROWSERS_PATH` is respected by both setup and SourceLedger. `--mcp` installs the local MCP dependency. `--dev` installs the test dependency. The launcher uses the repository's `.venv` by location, so it does not require `Activate.ps1` or a PowerShell execution-policy change. CLI arguments pass through unchanged; for Korean first-run prompts use:
 
 ```bat
 source-ledger.cmd init --lang ko
