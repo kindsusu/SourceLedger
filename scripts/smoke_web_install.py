@@ -14,7 +14,7 @@ def main() -> int:
     import httpx
     import su_crawler
     from openpyxl import load_workbook
-    from su_crawler.assistant_runtime import runtime_status, stop_worker
+    from su_crawler.assistant_runtime import _pid_alive, runtime_status, stop_worker
     from su_crawler.web_server import build_web_server
 
     checkout = Path(__file__).resolve().parents[1]
@@ -103,11 +103,27 @@ def main() -> int:
                     mcp_checked = True
         finally:
             if worker_started:
+                pid = runtime_status(workspace)["pid"]
                 stop_worker(workspace)
                 deadline = time.monotonic() + 10
                 while time.monotonic() < deadline and runtime_status(workspace)["status"] != "stopped":
                     time.sleep(0.1)
                 assert runtime_status(workspace)["status"] == "stopped"
+                # "stopped" means the worker released its lock. Its process, and on
+                # Windows the venv launcher that started it, keep runtime/worker.log
+                # open until they exit; Windows cannot delete the workspace before.
+                while time.monotonic() < deadline and _pid_alive(pid):
+                    time.sleep(0.1)
+                assert not _pid_alive(pid), f"worker process {pid} did not exit"
+                log = workspace / "runtime" / "worker.log"
+                while True:
+                    try:
+                        log.unlink(missing_ok=True)
+                        break
+                    except PermissionError:
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.1)
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
