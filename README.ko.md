@@ -99,16 +99,19 @@ launcher는 위치 기준으로 프로젝트 `.venv`를 사용하므로 Windows�
 데모는 합성 HTML/CSV만 읽으며 실제 시장 가격을 사용하지 않습니다.
 
 ```powershell
-.\source-ledger.cmd run --config examples/demo.json
-.\source-ledger.cmd status --config examples/demo.json --run-id <실행_ID>
-.\source-ledger.cmd observations --config examples/demo.json --run-id <실행_ID>
-.\source-ledger.cmd export --config examples/demo.json --run-id <실행_ID>
+$run = .\source-ledger.cmd run --config examples/demo.json | ConvertFrom-Json
+$runId = $run.id
+.\source-ledger.cmd status --config examples/demo.json --run-id $runId
+.\source-ledger.cmd observations --config examples/demo.json --run-id $runId
+.\source-ledger.cmd export --config examples/demo.json --run-id $runId
 .\source-ledger.cmd doctor
 ```
 
+설치 후 저장소 루트에서 실행합니다. `run`이 출력한 JSON의 `id`가 실행 ID이며, 같은 데모 설정에 이 변수를 사용합니다. 데모 출력 디렉터리는 `examples/demo.json`을 기준으로 해석한 `outputs/demo`입니다.
+
 `su-crawler`는 호환을 위해 유지되는 명령 별칭입니다. 새 스크립트와 문서에는 `source-ledger`를 사용하세요. 아래 명령 예시는 이식성 있는 checkout에서는 launcher 접두어를 붙이고, 셸에 설치된 `source-ledger` 명령이 있을 때만 직접 실행하세요.
 
-`run --max-tasks N`으로 감독 가능한 배치만 실행할 수 있고, 반환된 실행 ID로 `run --resume <실행_ID>`를 재개합니다. 산출물은 설정의 `output_dir` 아래 SQLite 실행 이력, 원문 증거, XLSX 보고서로 저장됩니다.
+`run --max-tasks N`으로 감독 가능한 배치만 실행할 수 있고, 위 PowerShell 세션의 `$runId`로 `run --resume $runId`를 재개합니다. 산출물은 설정의 `output_dir` 아래 SQLite 실행 이력, 원문 증거, XLSX 보고서로 저장됩니다.
 
 ## 설정 범위
 
