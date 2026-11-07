@@ -111,7 +111,14 @@ $runId = $run.id
 
 `su-crawler`는 호환을 위해 유지되는 명령 별칭입니다. 새 스크립트와 문서에는 `source-ledger`를 사용하세요. 아래 명령 예시는 이식성 있는 checkout에서는 launcher 접두어를 붙이고, 셸에 설치된 `source-ledger` 명령이 있을 때만 직접 실행하세요.
 
-`run --max-tasks N`으로 감독 가능한 배치만 실행할 수 있고, 위 PowerShell 세션의 `$runId`로 `run --resume $runId`를 재개합니다. 산출물은 설정의 `output_dir` 아래 SQLite 실행 이력, 원문 증거, XLSX 보고서로 저장됩니다.
+작업 한 건을 처리한 뒤 멈췄다가 이어서 실행하려면, 방금 멈춘 실행의 ID를 전달합니다.
+
+```powershell
+$batch = .\source-ledger.cmd run --config examples/demo.json --max-tasks 1 | ConvertFrom-Json
+.\source-ledger.cmd run --config examples/demo.json --resume $batch.id
+```
+
+설정의 `output_dir`에는 SQLite 실행 이력, 원문 증거, XLSX 보고서가 저장됩니다.
 
 ## 설정 범위
 

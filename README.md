@@ -111,7 +111,14 @@ Run these commands from the repository root after setup. `run` prints JSON whose
 
 `su-crawler` remains a compatible command alias. Use `source-ledger` for new scripts and documentation. In the command examples below, use the launcher prefix for a portable checkout, or invoke the installed `source-ledger` command only when it is available in your shell.
 
-Run a bounded batch with `run --max-tasks N`, then continue it with `run --resume $runId` in the PowerShell session above. Outputs are stored below the configured `output_dir`: a SQLite run history, source evidence, and an XLSX report.
+To pause after one task and then continue, resume the ID from that bounded run:
+
+```powershell
+$batch = .\source-ledger.cmd run --config examples/demo.json --max-tasks 1 | ConvertFrom-Json
+.\source-ledger.cmd run --config examples/demo.json --resume $batch.id
+```
+
+The configured `output_dir` holds the SQLite run history, source evidence, and XLSX report.
 
 ## Configuration
 
