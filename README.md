@@ -99,16 +99,26 @@ The UI is a local interface. This milestone does not provide remote hosting, a t
 The demo reads synthetic HTML and CSV fixtures only. It does not contain market prices.
 
 ```powershell
-.\source-ledger.cmd run --config examples/demo.json
-.\source-ledger.cmd status --config examples/demo.json --run-id <RUN_ID>
-.\source-ledger.cmd observations --config examples/demo.json --run-id <RUN_ID>
-.\source-ledger.cmd export --config examples/demo.json --run-id <RUN_ID>
+$run = .\source-ledger.cmd run --config examples/demo.json | ConvertFrom-Json
+$runId = $run.id
+.\source-ledger.cmd status --config examples/demo.json --run-id $runId
+.\source-ledger.cmd observations --config examples/demo.json --run-id $runId
+.\source-ledger.cmd export --config examples/demo.json --run-id $runId
 .\source-ledger.cmd doctor
 ```
 
+Run these commands from the repository root after setup. `run` prints JSON whose `id` is the run ID; the variable uses that ID for the same demo configuration. The demo's output directory is `outputs/demo` (resolved from `examples/demo.json`).
+
 `su-crawler` remains a compatible command alias. Use `source-ledger` for new scripts and documentation. In the command examples below, use the launcher prefix for a portable checkout, or invoke the installed `source-ledger` command only when it is available in your shell.
 
-Run a bounded batch with `run --max-tasks N`, then continue it with `run --resume <RUN_ID>`. Outputs are stored below the configured `output_dir`: a SQLite run history, source evidence, and an XLSX report.
+To pause after one task and then continue, resume the ID from that bounded run:
+
+```powershell
+$batch = .\source-ledger.cmd run --config examples/demo.json --max-tasks 1 | ConvertFrom-Json
+.\source-ledger.cmd run --config examples/demo.json --resume $batch.id
+```
+
+The configured `output_dir` holds the SQLite run history, source evidence, and XLSX report.
 
 ## Configuration
 
