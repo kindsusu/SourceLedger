@@ -1,4 +1,4 @@
-"""Shared, read-only Playwright browser runtime selection."""
+"""Playwright browser runtime selection, and where setup installed the managed browser."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,7 +6,29 @@ import os
 from pathlib import Path
 import platform
 import shutil
-from typing import Any, Mapping
+import sys
+from typing import Any, Mapping, MutableMapping
+
+
+BROWSERS_ENV = "PLAYWRIGHT_BROWSERS_PATH"
+BROWSERS_DIR = "ms-playwright"  # inside the environment; scripts/setup.py installs Chromium there
+
+
+def use_environment_browsers(environ: MutableMapping[str, str] | None = None,
+                             prefix: str | Path | None = None) -> Path | None:
+    """Point Playwright at ``<environment>/ms-playwright`` when setup installed Chromium there.
+
+    Playwright's default folder (%LOCALAPPDATA%\\ms-playwright) is redirected inside packaged Windows apps, so a
+    browser installed from one is invisible to processes started elsewhere. The environment folder is not.
+    An explicit PLAYWRIGHT_BROWSERS_PATH, or no such folder (older installs), leaves Playwright's default."""
+    environment = os.environ if environ is None else environ
+    if BROWSERS_ENV in environment:
+        return None
+    folder = Path(sys.prefix if prefix is None else prefix) / BROWSERS_DIR
+    if not folder.is_dir():
+        return None
+    environment[BROWSERS_ENV] = str(folder)
+    return folder
 
 
 @dataclass(frozen=True)

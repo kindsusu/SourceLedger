@@ -2,7 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from su_crawler.browser_runtime import browser_headless, select_browser_runtime
+from su_crawler.browser_runtime import (
+    BROWSERS_ENV, browser_headless, select_browser_runtime, use_environment_browsers,
+)
 
 
 class Chromium:
@@ -54,3 +56,24 @@ def test_headless_environment_contract(value, expected):
 def test_invalid_headless_environment_is_rejected():
     with pytest.raises(ValueError, match="must be 1 or 0"):
         browser_headless({"SOURCELEDGER_HEADLESS": "sometimes"})
+
+
+def test_environment_browsers_are_used_when_setup_installed_them(tmp_path):
+    (tmp_path / "ms-playwright").mkdir()
+    environ = {}
+    assert use_environment_browsers(environ, prefix=tmp_path) == tmp_path / "ms-playwright"
+    assert environ == {BROWSERS_ENV: str(tmp_path / "ms-playwright")}
+
+
+@pytest.mark.parametrize("value", ["D:/browsers", ""])
+def test_an_explicit_browsers_path_is_left_alone(tmp_path, value):
+    (tmp_path / "ms-playwright").mkdir()
+    environ = {BROWSERS_ENV: value}
+    assert use_environment_browsers(environ, prefix=tmp_path) is None
+    assert environ == {BROWSERS_ENV: value}
+
+
+def test_older_installs_keep_playwrights_default_folder(tmp_path):
+    environ = {}
+    assert use_environment_browsers(environ, prefix=tmp_path) is None
+    assert environ == {}
