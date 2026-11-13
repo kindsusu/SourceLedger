@@ -125,7 +125,7 @@ def test_live_robots_check_uses_collector_helpers_without_network(monkeypatch):
         def __exit__(self, *exc):
             return False
 
-    def decision(client, source, url, cache, timeout):
+    def decision(client, source, url, cache, timeout, profile):
         seen.update(client=client, domains=source.allowed_domains, url=url, cache=cache)
         return "allowed", "ok"
     monkeypatch.setattr(collectors, "_new_http_client", lambda timeout: Client())

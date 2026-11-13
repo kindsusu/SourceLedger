@@ -295,3 +295,7 @@ MCP로 조사 누락 조회, 검토 대기 브라우저 근거 제출, 부분 �
 MCP 실행 설정으로 브라우저 재사용과 브라우저 동시성 2개를 선택해 비교할 수 있습니다. [브라우저 최적화와 검증 계획](docs/BROWSER_OPTIMIZATION.ko.md)을 참고하세요.
 
 버전을 게시하기 전 해당 커밋의 [CI 및 검증된 릴리즈 절차](docs/CI_RELEASE.ko.md)를 확인하세요.
+
+## 호스트별 브라우저 User-Agent
+
+작업 폴더의 `.sourceledger/request-profile.json`에 예를 들어 `{"hosts":["shop.example.test"],"override_disallow_hosts":[]}`를 저장하면 해당 호스트의 페이지와 robots 요청에만 일반 데스크톱 Chrome UA를 사용합니다. 기본 대상은 없으며 리디렉션마다 정확한 호스트를 다시 확인합니다. 읽힌 `Disallow`를 예외로 처리하려면 대상 호스트를 `override_disallow_hosts`에도 명시합니다. 빈 배열이면 기존 차단을 유지하고, 예외를 켜도 접근 오류·도메인·주소·속도 제한은 유지합니다. 설정 우선순위와 선택 가능한 브라우저는 [영문 안내](README.md#per-host-browser-user-agent)를 참고하세요.

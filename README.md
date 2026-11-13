@@ -308,3 +308,15 @@ To inspect one output directory before storage maintenance, run `python -m su_cr
 Optional browser reuse and browser concurrency 2 are available for controlled comparisons through MCP execution settings. See [browser optimization and validation](docs/BROWSER_OPTIMIZATION.md).
 
 Before publishing a version, require the [CI and verified release checks](docs/CI_RELEASE.md) for the exact commit.
+
+## Per-host browser User-Agent
+
+To use an ordinary desktop Chrome UA on selected public pages and their robots checks, save the following in the workspace's ignored `.sourceledger/request-profile.json`. The public distribution does not select any hosts by default.
+
+```json
+{"hosts":["shop.example.test"],"override_disallow_hosts":[]}
+```
+
+Entries match exact DNS hostnames on each redirect; include aliases separately. Internal sources, unselected hosts and browser subresources keep their existing headers. An optional `user_agent` accepts a standard desktop Chrome or Edge UA. The first available configuration wins: `SOURCELEDGER_REQUEST_PROFILE` (absolute file path), workspace file, then checkout file.
+
+Both the previous crawler identity and the browser identity must pass robots checks by default. To permit a parsed `Disallow` for one selected host, add its exact hostname to `override_disallow_hosts`; remove it to restore enforcement. The collector still retrieves robots.txt; access errors, domain/address restrictions and rate limits are unchanged. Crawl4AI jobs whose allowed domains include a selected host use the guarded Playwright renderer for per-hop checks. Changing this header does not establish that a request came from a human.
