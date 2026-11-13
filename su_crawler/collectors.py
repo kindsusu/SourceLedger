@@ -33,7 +33,9 @@ from .browser_enumeration import ListingChanged, SnapshotBudgetExceeded, enumera
 from .access_challenges import detect_challenge
 
 
-USER_AGENT = "source-ledger/0.3 (+authorized price research)"
+# httpx's own default: a common HTTP-client identity that names neither this project nor its operator.
+# It is not a browser UA. robots.txt is matched against it, so rules for its "python-httpx" token or "*" apply.
+USER_AGENT = f"python-httpx/{httpx.__version__}"
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 SCREENSHOT_JPEG_QUALITY = 70
 MAX_VARIANT_SNAPSHOTS = 200
