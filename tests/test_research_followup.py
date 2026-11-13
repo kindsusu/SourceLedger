@@ -202,7 +202,7 @@ def test_retry_only_failed_page_reuses_success_and_rejects_new_url(tmp_path, mon
     monkeypatch.setattr(catalog_collection, "collect", fetch)
     # A timed-out page has no robots allow on record; the guard asks again (offline here).
     from su_crawler import host_capture_policy
-    monkeypatch.setattr(host_capture_policy, "_live_robots_check", lambda host: lambda url: ("allowed", "test"))
+    monkeypatch.setattr(host_capture_policy, "_live_robots_check", lambda host, base_dir=None: lambda url: ("allowed", "test"))
     job, result = completed_job(tmp_path, monkeypatch, urls)
     evidence = submit_browser_evidence(tmp_path, job["id"], url=urls[1], captured_at=utc_now(),
                                       page_text="Widget unavailable", fields={"name": "Widget"}, locator="card")
@@ -328,7 +328,7 @@ def test_redirected_final_url_needs_same_host_and_allowed_robots(tmp_path, monke
     url = "https://shop.example.test/item"
     job, result = _blocked_job(tmp_path, monkeypatch, url)
     decisions = iter([("disallowed", "robots.txt disallows collection"), ("unavailable", "Unable to check robots.txt"), ("allowed", "ok")])
-    monkeypatch.setattr(policy, "_live_robots_check", lambda host: (lambda final: next(decisions)))
+    monkeypatch.setattr(policy, "_live_robots_check", lambda host, base_dir=None: (lambda final: next(decisions)))
     final = "https://www.shop.example.test/item/2"
     with pytest.raises(ValueError, match="approved page's host"):
         submit_browser_evidence(tmp_path, job["id"], final_url="https://other.example.test/item", **_evidence_args(url))

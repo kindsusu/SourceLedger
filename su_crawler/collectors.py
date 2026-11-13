@@ -25,6 +25,7 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 
+from .request_profile import OVERRIDE_REASON, RequestProfile, load_profile
 from .models import FetchResult, Source, resolve_path, utc_now
 from .browser_runtime import browser_headless, select_browser_runtime
 from .browser_settlement import SETTLEMENT_STATE_JS, install_tracker_sync, wait_settled_sync
@@ -406,17 +407,20 @@ def _file_collect(source: Source, base_dir: str) -> FetchResult:
 
 def _get_following_policy(
     client: httpx.Client, source: Source, url: str, *, headers: dict[str, str] | None = None,
-    enforce_robots: bool = False, timeout: float | None = None,
+    enforce_robots: bool | None = None, timeout: float | None = None, profile: RequestProfile = RequestProfile(),
 ) -> tuple[httpx.Response, list[dict[str, Any]]]:
     trace: list[dict[str, Any]] = []
     current = url
     for _ in range(MAX_REDIRECTS + 1):
         _check_url(source, current)
-        if enforce_robots:
-            _require_robots_access(client, source, current, timeout=timeout)
+        # None identifies the robots download itself; never recurse into that request.
+        if enforce_robots or (enforce_robots is False and not source.internal and profile.selected(current)):
+            _require_robots_access(client, source, current, timeout=timeout, profile=profile, trace=trace)
         # Validators can identify a prior response, so never forward them to a
         # redirect target (including another allowed domain).
-        request_headers = headers if current == url else None
+        request_headers = dict(headers or {}) if current == url else {}
+        if not source.internal and profile.selected(current):
+            request_headers["User-Agent"] = profile.user_agent
         options: dict[str, Any] = {"timeout": httpx.Timeout(timeout)} if timeout is not None else {}
         response = client.send(client.build_request("GET", current, headers=request_headers, **options), stream=True)
         trace.append({"event": "http", "url": _safe_url(str(response.url)), "status": response.status_code, "at": utc_now()})
@@ -435,7 +439,7 @@ _AMBIENT = object()
 
 def _robots_decision(client: httpx.Client, source: Source, url: str,
                      cache: RobotsPolicyCache | None | object = _AMBIENT,
-                     timeout: float | None = None) -> tuple[str, str]:
+                     timeout: float | None = None, profile: RequestProfile = RequestProfile()) -> tuple[str, str]:
     """Return allowed/disallowed/unavailable without treating fetch errors as rules.
 
     Pass ``cache`` explicitly from callbacks (such as Playwright route
@@ -445,13 +449,15 @@ def _robots_decision(client: httpx.Client, source: Source, url: str,
     robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
     if cache is _AMBIENT:
         cache = _robots_cache.get()
-    key = (parsed.scheme, parsed.netloc.lower(), USER_AGENT, tuple(sorted(source.allowed_domains)), source.internal)
+    if source.internal:
+        profile = RequestProfile()
+    key = (parsed.scheme, parsed.netloc.lower(), USER_AGENT, profile, tuple(sorted(source.allowed_domains)), source.internal)
     cached = cache.get(key) if cache is not None else None
     if cached is not None:
         parser, reason = cached
         if parser is None:
             return "unavailable" if reason != "robots.txt not found" else "allowed", reason
-        return ("allowed", "robots.txt allows collection") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt disallows collection")
+        return profile.robots(parser, url, USER_AGENT)
 
     def unavailable(reason: str, *, transient: bool) -> tuple[str, str]:
         if cache is not None:
@@ -459,7 +465,7 @@ def _robots_decision(client: httpx.Client, source: Source, url: str,
         return "unavailable", reason
 
     try:
-        response, _ = _get_following_policy(client, source, robots_url, timeout=timeout)
+        response, _ = _get_following_policy(client, source, robots_url, timeout=timeout, profile=profile)
         if response.status_code in {404, 410}:
             response.close()
             if cache is not None:
@@ -474,6 +480,10 @@ def _robots_decision(client: httpx.Client, source: Source, url: str,
         if response.status_code >= 500:
             response.close()
             return unavailable("robots.txt server error", transient=True)
+        if profile.selected(url) and not 200 <= response.status_code < 300:
+            # A redirect without Location or an unsolicited 304 supplied no robots file.
+            response.close()
+            return unavailable("robots.txt did not return a usable response", transient=True)
         try:
             data = _read_limited(response).decode(response.encoding or "utf-8", errors="replace")
         finally:
@@ -483,15 +493,18 @@ def _robots_decision(client: httpx.Client, source: Source, url: str,
         parser.parse(data.splitlines())
         if cache is not None:
             cache.put(key, parser, "robots.txt policy loaded")
-        return ("allowed", "robots.txt allows collection") if parser.can_fetch(USER_AGENT, url) else ("disallowed", "robots.txt disallows collection")
+        return profile.robots(parser, url, USER_AGENT)
     except (httpx.HTTPError, OSError, ValueError, PolicyError):
         return unavailable("Unable to check robots.txt", transient=True)
 
 
 def _require_robots_access(client: httpx.Client, source: Source, url: str,
                            cache: RobotsPolicyCache | None | object = _AMBIENT, *,
-                           timeout: float | None = None) -> None:
-    decision, reason = _robots_decision(client, source, url, cache, timeout)
+                           timeout: float | None = None, profile: RequestProfile = RequestProfile(),
+                           trace: list[dict[str, Any]] | None = None) -> None:
+    decision, reason = _robots_decision(client, source, url, cache, timeout, profile)
+    if decision == "allowed" and reason == OVERRIDE_REASON and trace is not None:
+        trace.append({"event": "robots_disallow_override", "url": _safe_url(url), "at": utc_now()})
     if decision == "disallowed":
         raise _policy_error("robots_disallowed", "robots.txt does not allow collection")
     if decision == "unavailable":
@@ -523,7 +536,7 @@ def _http_metadata(response: httpx.Response) -> dict[str, str]:
     return metadata
 
 
-def _http_collect(source: Source, validators: dict[str, str] | None = None) -> FetchResult:
+def _http_collect(source: Source, validators: dict[str, str] | None = None, *, profile: RequestProfile = RequestProfile()) -> FetchResult:
     try:
         _check_url(source, source.location)
     except PolicyError as exc:
@@ -535,7 +548,7 @@ def _http_collect(source: Source, validators: dict[str, str] | None = None) -> F
             client = (pool.client() if pool is not None
                       else scope.enter_context(_new_http_client(source.timeout_seconds)))
             response, trace = _get_following_policy(client, source, source.location, headers=_conditional_headers(validators),
-                                                    enforce_robots=source.respect_robots, timeout=source.timeout_seconds)
+                                                    enforce_robots=source.respect_robots, timeout=source.timeout_seconds, profile=profile)
             # A pooled connection is returned only after the body is closed.
             scope.callback(response.close)
             final_url = str(response.url)
@@ -1125,7 +1138,7 @@ def browser_session(reuse: bool = True) -> Any:
         session.close()
 
 
-def _browser_collect(source: Source, base_dir: str) -> FetchResult:
+def _browser_collect(source: Source, base_dir: str, *, profile: RequestProfile = RequestProfile()) -> FetchResult:
     try:
         _check_url(source, source.location)
     except PolicyError as exc:
@@ -1158,6 +1171,8 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
     browser = None
     navigation_robots_failure: list[Exception] = []
     pending_redirect: list[str] = []
+    error_commits = 0
+    redirect_commit = 0
     browser_phase = 'startup'
 
     def require_navigation_policy() -> None:
@@ -1172,12 +1187,13 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             # robots cache explicitly so navigations reuse its decisions.
             robots_cache = cleanup.enter_context(robots_policy_scope(_robots_cache.get()))
             robots_client = None
-            if source.respect_robots:
+            if source.respect_robots or profile.hosts:
                 pool = _http_pool.get()
                 robots_client = (pool.client() if pool is not None else
                                  cleanup.enter_context(_new_http_client(min(source.timeout_seconds, max(0.1, deadline - time.monotonic())))))
-                _require_robots_access(robots_client, source, source.location, robots_cache,
-                                       timeout=max(0.1, deadline - time.monotonic()))
+                if source.respect_robots or profile.selected(source.location):
+                    _require_robots_access(robots_client, source, source.location, robots_cache,
+                                           timeout=max(0.1, deadline - time.monotonic()), profile=profile, trace=trace)
             # Unroute and close while Playwright's driver is still running.
             # An outer finally executes too late: __exit__ already stops it.
             if session is not None:
@@ -1195,9 +1211,9 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
                 launch_args: dict[str, Any] = {"headless": browser_headless(), **runtime.launch_options()}
                 launch_started = time.monotonic()
                 if source.profile_dir:
-                    profile = resolve_path(base_dir, source.profile_dir)
-                    profile.mkdir(parents=True, exist_ok=True)
-                    context = pw.chromium.launch_persistent_context(str(profile), timeout=remaining_ms(), **launch_args)
+                    browser_dir = resolve_path(base_dir, source.profile_dir)
+                    browser_dir.mkdir(parents=True, exist_ok=True)
+                    context = pw.chromium.launch_persistent_context(str(browser_dir), timeout=remaining_ms(), **launch_args)
                 else:
                     browser = pw.chromium.launch(timeout=remaining_ms(), **launch_args)
                     launch_ms = round((time.monotonic() - launch_started) * 1000, 1)
@@ -1210,26 +1226,30 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
             context.add_init_script("document.addEventListener('submit', event => event.preventDefault(), true)")
 
             def guard(route: Any, request: Any) -> None:
+                nonlocal redirect_commit
                 if request.is_navigation_request() and request.frame == request.frame.page.main_frame:
                     try:
                         if request.method.upper() not in {"GET", "HEAD"}:
                             raise _policy_error("navigation_method_denied", "Browser navigation method is not allowed")
                         _check_url(source, request.url)
-                        if robots_client is not None:
+                        if robots_client is not None and (source.respect_robots or profile.selected(request.url)):
                             _require_robots_access(robots_client, source, request.url, robots_cache,
-                                                   timeout=max(0.1, deadline - time.monotonic()))
+                                                   timeout=max(0.1, deadline - time.monotonic()), profile=profile, trace=trace)
                         # Browser-followed redirects do not reliably trigger a
                         # route callback. Stop at this response and perform the
                         # next navigation explicitly so each hop is checked.
-                        response = route.fetch(max_redirects=0, timeout=remaining_ms())
+                        override = ({"headers": {**request.all_headers(), "user-agent": profile.user_agent}}
+                                    if not source.internal and profile.selected(request.url) else {})
+                        response = route.fetch(max_redirects=0, timeout=remaining_ms(), **override)
                         if response.status in {301, 302, 303, 307, 308}:
                             location = response.headers.get("location")
                             if location:
                                 destination = urljoin(request.url, location)
                                 _check_url(source, destination)
-                                if robots_client is not None:
+                                if robots_client is not None and (source.respect_robots or profile.selected(destination)):
                                     _require_robots_access(robots_client, source, destination, robots_cache,
-                                                           timeout=max(0.1, deadline - time.monotonic()))
+                                                           timeout=max(0.1, deadline - time.monotonic()), profile=profile, trace=trace)
+                                redirect_commit = error_commits + 1
                                 pending_redirect.append(destination)
                                 trace.append({"event": "navigation_redirect_verified", "url": _safe_url(destination), "at": utc_now()})
                                 route.abort("blockedbyclient")
@@ -1287,7 +1307,20 @@ def _browser_collect(source: Source, base_dir: str) -> FetchResult:
 
             page.on("response", observe_response)
 
+            def note_error_commit(frame: Any) -> None:
+                nonlocal error_commits
+                if frame == page.main_frame and frame.url.startswith("chrome-error://"):
+                    error_commits += 1
+
+            page.on("framenavigated", note_error_commit)
+
             def settle_aborted_navigation() -> None:
+                # Consecutive aborted hops have the same error-page URL; wait
+                # for this hop's commit, not an earlier matching document.
+                if error_commits < redirect_commit:
+                    page.wait_for_event("framenavigated", predicate=lambda frame:
+                                        frame == page.main_frame and frame.url.startswith("chrome-error://"),
+                                        timeout=remaining_ms())
                 # The policy guard aborts a verified redirect. Its error-page
                 # commit must finish before the same tab starts the next hop;
                 # otherwise that late commit can interrupt destination goto.
@@ -1622,12 +1655,12 @@ async def _crawl4ai_run(url: str, timeout_seconds: float) -> tuple[str, str]:
         return result.html, result.url or url
 
 
-def _crawl4ai_collect(source: Source) -> FetchResult:
+def _crawl4ai_collect(source: Source, *, profile: RequestProfile = RequestProfile()) -> FetchResult:
     if importlib.util.find_spec("crawl4ai") is None:
         return _result(source, "crawl4ai", "tool_unavailable", message="The crawl4ai package is not installed")
     # Validate redirect policy with the strict HTTP collector before handing the
     # verified final URL to the optional browser adapter.
-    preflight = _http_collect(source)
+    preflight = _http_collect(source, profile=profile)
     if preflight.status != "fetched":
         preflight.backend = "crawl4ai"
         return preflight
@@ -1651,10 +1684,17 @@ def collect(source: Source, base_dir: str, backend: str, *, validators: dict[str
         return _file_collect(source, base_dir)
     if source.kind == "file":
         return _result(source, backend, "policy_denied", message="File sources can only be read by the file backend")
+    profile = RequestProfile() if source.internal else load_profile(base_dir)
     if backend == "http":
-        return _http_collect(source, validators=validators)
+        return _http_collect(source, validators=validators, profile=profile)
     if backend == "playwright":
-        return _browser_collect(source, base_dir)
+        return _browser_collect(source, base_dir, profile=profile)
     if backend == "crawl4ai":
-        return _crawl4ai_collect(source)
+        # The optional renderer has no per-hop header or robots callback. Use
+        # the guarded renderer when the allowed scope can reach a selected host.
+        if any(_host_allowed(host, source.allowed_domains) for host in profile.hosts):
+            rendered = _browser_collect(source, base_dir, profile=profile)
+            rendered.trace.insert(0, {"event": "scoped_browser_renderer", "requested_backend": "crawl4ai"})
+            return rendered
+        return _crawl4ai_collect(source, profile=profile)
     return _result(source, backend, "tool_unavailable", message=f"Unsupported backend: {backend}")

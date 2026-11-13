@@ -5,6 +5,7 @@ import ipaddress
 from collections.abc import Callable
 from urllib.parse import urlsplit
 
+from .request_profile import OVERRIDE_REASON, load_profile
 from .models import Source
 from .research_plans import canonical_url
 
@@ -22,15 +23,17 @@ def _ip_literal(host: str):
         return None
 
 
-def _live_robots_check(approved_host: str) -> Callable[[str], tuple[str, str]]:
+def _live_robots_check(approved_host: str, base_dir=None) -> Callable[[str], tuple[str, str]]:
     """Robots decision through the collector's own helper, client factory and user agent."""
     from . import collectors
     source = Source("host_capture_" + approved_host, approved_host, "web", f"https://{approved_host}/", [],
                     allowed_domains=[approved_host], timeout_seconds=ROBOTS_TIMEOUT_SECONDS)
 
+    profile = load_profile(base_dir)
+
     def check(url: str) -> tuple[str, str]:
         with collectors._new_http_client(ROBOTS_TIMEOUT_SECONDS) as client:
-            return collectors._robots_decision(client, source, url, None, ROBOTS_TIMEOUT_SECONDS)
+            return collectors._robots_decision(client, source, url, None, ROBOTS_TIMEOUT_SECONDS, profile)
     return check
 
 
@@ -62,7 +65,7 @@ def _check_url_shape(url: str, approved_url: str) -> str:
     return host.lower()
 
 
-def check_host_capture(page: dict, approved_url: str, final_url: str | None = None, *,
+def check_host_capture(page: dict, approved_url: str, final_url: str | None = None, *, base_dir=None,
                        robots_check: Callable[[str], tuple[str, str]] | None = None) -> dict:
     """Apply the collector's robots/domain/address policy to a host capture; raise ValueError on any violation.
 
@@ -85,11 +88,13 @@ def check_host_capture(page: dict, approved_url: str, final_url: str | None = No
     pending = ([canonical_approved] if status not in ROBOTS_PROVEN_STATUSES else []) + ([canonical_final] if redirected else [])
     robots = "not_needed"
     for target in pending:
-        decision, reason = (robots_check or _live_robots_check(urlsplit(approved_url).hostname or host))(target)
+        decision, reason = (robots_check or _live_robots_check(urlsplit(approved_url).hostname or host, base_dir))(target)
         if decision == "disallowed":
             raise ValueError("URL is disallowed by robots.txt; host-browser evidence cannot bypass robots policy")
         if decision != "allowed":
             raise ValueError(f"Robots policy could not be verified ({reason or decision}); redirected captures and pages without a recorded robots allow need a verifiable robots decision")
+        if reason == OVERRIDE_REASON and "robots_disallow_override" not in checks:
+            checks.append("robots_disallow_override")
         robots = "allowed"
     if pending:
         checks.append("robots_allowed")

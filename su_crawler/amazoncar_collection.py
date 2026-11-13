@@ -20,6 +20,7 @@ import shutil
 import time
 from urllib.robotparser import RobotFileParser
 
+from .request_profile import OVERRIDE_REASON, RequestProfile, load_profile
 from .browser_settlement import (SETTLEMENT_STATE_JS, install_tracker_async,
                                  signature_of, wait_settled_async)
 
@@ -353,19 +354,23 @@ async def collect_detail(page, item: dict, store: EvidenceStore) -> dict:
             "captures": captures, "quotes": quotes, "options": options}
 
 
-async def check_robots(page, store: EvidenceStore, product_paths: list[str]) -> None:
+async def check_robots(page, store: EvidenceStore, product_paths: list[str], profile: RequestProfile = RequestProfile()) -> None:
     response = await page.goto(BASE + "/robots.txt", wait_until="domcontentloaded", timeout=30_000)
-    text = await page.locator("body").inner_text()
     if response is None or response.status != 200:
         raise RuntimeError("robots.txt unavailable")
+    text = await page.locator("body").inner_text()
     parser = RobotFileParser()
     parser.parse(text.splitlines())
     paths = ["/list/NewCars", "/list/UsedCars", "/rentPrice", *product_paths]
-    prohibited = [path for path in paths if not parser.can_fetch("SourceLedgerPublicCatalog", BASE + path)]
+    if profile.selected(BASE):
+        paths.append("/product")
+    decisions = {path: profile.robots(parser, BASE + path, "SourceLedgerPublicCatalog") for path in paths}
+    prohibited = [path for path, (decision, _) in decisions.items() if decision != "allowed"]
     if prohibited:
         raise RuntimeError(f"robots.txt disallows {prohibited[:3]}")
     write_json(store.root / "robots.json", {"url": BASE + "/robots.txt", "utc": utc(),
-                                             "text": text, "content": store.put(text, ".txt")})
+                                             "text": text, "content": store.put(text, ".txt"),
+                                             "disallow_overrides": [p for p, (_, why) in decisions.items() if why == OVERRIDE_REASON]})
 
 
 async def discover_catalog(page, kind: str, store: EvidenceStore, journal: Journal) -> dict:
@@ -511,10 +516,30 @@ def replay(old_root: Path, output: Path, items: list[dict], journal: Journal) ->
     return {"missing": missing}
 
 
+async def _profile_catalog_page(page, profile: RequestProfile) -> None:
+    """Chromium re-pauses each redirect hop; a header override lasts just one request."""
+    session = await page.context.new_cdp_session(page)
+    main = (await session.send("Page.getFrameTree"))["frameTree"]["frame"]["id"]
+
+    async def resume(event):
+        params = {"requestId": event["requestId"]}
+        req = event["request"]
+        if event.get("frameId") == main and profile.selected(req["url"]):
+            params["headers"] = [{"name": name, "value": value} for name, value in req["headers"].items()
+                                 if name.lower() != "user-agent"]
+            params["headers"].append({"name": "User-Agent", "value": profile.user_agent})
+        await session.send("Fetch.continueRequest", params)
+
+    session.on("Fetch.requestPaused", resume)
+    await session.send("Fetch.enable", {"patterns": [{"resourceType": "Document", "requestStage": "Request"}]})
+
+
 async def run_live(items: list[dict], output: Path, concurrency: int, journal: Journal) -> dict:
     from playwright.async_api import async_playwright
 
     store = EvidenceStore(output)
+    profile = load_profile(output)
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         pages = [await browser.new_page(viewport={"width": 1440, "height": 1000})
@@ -523,7 +548,10 @@ async def run_live(items: list[dict], output: Path, concurrency: int, journal: J
         # navigate() installs the tracker before each page's first navigation.
         # robots.txt uses a direct goto and does not contain price observations.
         try:
-            await check_robots(catalog_page, store, [x["href"] for x in items])
+            if profile.selected(BASE):
+                for page in [catalog_page, *pages]:
+                    await _profile_catalog_page(page, profile)
+            await check_robots(catalog_page, store, [x["href"] for x in items], profile)
             journal.event("collection", "start", expected=len(items), concurrency=concurrency)
             queue = asyncio.Queue()
             for item in items:

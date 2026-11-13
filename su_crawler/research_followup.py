@@ -409,7 +409,7 @@ def submit_browser_evidence(root, job_id, *, url, captured_at, page_text, fields
     page = next((page for page in pages if page["url"] == url and page["status"] != "excluded"), None)
     if page is None:
         raise ValueError("Evidence URL must be an approved page recorded in this job's coverage")
-    policy = check_host_capture(page, url, final_url)
+    policy = check_host_capture(page, url, final_url, base_dir=workspace_root(root))
     if not isinstance(page_text, str) or not 1 <= len(page_text) <= 200_000:
         raise ValueError("page_text must contain 1 to 200000 characters of browser-captured text")
     if not isinstance(locator, str) or not 1 <= len(locator.strip()) <= 500:
@@ -522,7 +522,7 @@ def submit_browser_snapshot(root, job_id, *, url, captured_at, html_path, tool, 
                  if item["url"] == url and item["status"] != "excluded"), None)
     if page is None:
         raise ValueError("Snapshot URL must be an approved page recorded in this job's coverage")
-    policy = check_host_capture(page, url, final_url)
+    policy = check_host_capture(page, url, final_url, base_dir=workspace_root(root))
     if tool not in HOST_TOOLS:
         raise ValueError("tool must be ego-browser, claude-in-chrome, manual or other")
     if selections is not None and (not isinstance(selections, dict) or len(selections) > 20 or any(
