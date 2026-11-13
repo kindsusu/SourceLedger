@@ -160,3 +160,46 @@ def test_doctor_is_explicit_about_optional_and_unsupported_tools():
     assert report["ego_lite"]["connected"] is False
     assert "no runtime adapter" in report["ego_lite"]["reason"]
     assert report["agent_reach"]["connected"] is False
+
+
+class RecordingHandler(Handler):
+    seen: dict[str, str] = {}
+    robots = b"User-agent: *\nDisallow: /forbidden\n"
+
+    def do_GET(self):
+        type(self).seen[self.path] = self.headers.get("User-Agent", "")
+        if self.path == "/robots.txt":
+            return self._send(200, type(self).robots)
+        return super().do_GET()
+
+
+@contextmanager
+def recording_server(robots: bytes):
+    handler = type("Recording", (RecordingHandler,), {"seen": {}, "robots": robots})
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_port}", handler.seen
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+
+def test_requests_name_neither_the_project_nor_its_purpose(tmp_path):
+    import httpx
+
+    with recording_server(b"User-agent: *\nDisallow: /forbidden\n") as (url, seen):
+        result = collect(source(url + "/ok", internal=True, robots=True), str(tmp_path), "http")
+    assert result.status == "fetched"
+    assert set(seen) == {"/robots.txt", "/ok"}
+    for agent in seen.values():
+        assert agent == f"python-httpx/{httpx.__version__}"
+        assert not any(word in agent.lower() for word in ("source", "ledger", "research", "price"))
+
+
+def test_robots_rules_for_the_sent_agent_still_deny(tmp_path):
+    with recording_server(b"User-agent: python-httpx\nDisallow: /\n") as (url, seen):
+        result = collect(source(url + "/ok", internal=True, robots=True), str(tmp_path), "http")
+    assert result.status == "policy_denied"
+    assert "/ok" not in seen
