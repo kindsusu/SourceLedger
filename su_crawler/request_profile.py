@@ -5,6 +5,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -19,6 +20,28 @@ _BROWSER = re.compile(
 _DNS_LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 OVERRIDE_REASON = "local exact-host override of robots.txt Disallow"
 LOCAL_FILE = Path(".sourceledger") / "request-profile.json"
+OVERRIDE_FIELDS = ("host", "approved_by", "reason", "expires")
+
+
+def _approved_overrides(values: object, today: date) -> list[str]:
+    """Hosts of robots overrides that name an approver, a reason and an expiry date not yet passed.
+
+    Any other entry (a bare hostname, a missing field, an expired or unreadable date) is not
+    applied: collection then honors robots.txt for that host."""
+    if not isinstance(values, list):
+        raise ValueError("Expected a list of robots overrides")
+    hosts = []
+    for entry in values:
+        if not isinstance(entry, dict) or not all(
+                isinstance(entry.get(name), str) and entry[name].strip() for name in OVERRIDE_FIELDS):
+            continue
+        try:
+            expires = date.fromisoformat(entry["expires"].strip())
+        except ValueError:
+            continue
+        if expires >= today:
+            hosts.append(entry["host"])
+    return hosts
 
 
 def _hosts(values: object) -> frozenset[str]:
@@ -71,7 +94,7 @@ def load_profile(base_dir: str | Path | None = None) -> RequestProfile:
     if not isinstance(raw, dict) or raw.keys() - {"hosts", "user_agent", "override_disallow_hosts"}:
         raise ValueError("Invalid request-profile.json fields")
     hosts = _hosts(raw.get("hosts", sorted(defaults)))
-    override = _hosts(raw.get("override_disallow_hosts", []))
+    override = _hosts(_approved_overrides(raw.get("override_disallow_hosts", []), date.today()))
     ua = raw.get("user_agent", DESKTOP_UA)
     if not isinstance(ua, str) or len(ua) > 256 or not _BROWSER.fullmatch(ua):
         raise ValueError("Expected an unbranded desktop Chrome or Edge User-Agent")

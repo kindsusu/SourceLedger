@@ -15,6 +15,7 @@ from su_crawler.models import Source
 TARGET, OTHER = "shop.example.test", "other.example.test"
 PROFILE = rp.RequestProfile(frozenset([TARGET]))
 OVERRIDE = rp.RequestProfile(PROFILE.hosts, override_disallow_hosts=PROFILE.hosts)
+APPROVED = {"host": TARGET, "approved_by": "owner", "reason": "test", "expires": "2999-12-31"}
 
 
 def source(url, *, internal=False, domains=None, **settings):
@@ -35,7 +36,7 @@ def config(tmp_path, monkeypatch):
 
 
 def test_config_scope_and_precedence(config, monkeypatch, tmp_path):
-    profile = config({"hosts": [TARGET.upper()], "override_disallow_hosts": [TARGET]})
+    profile = config({"hosts": [TARGET.upper()], "override_disallow_hosts": [APPROVED]})
     assert profile == OVERRIDE
     assert not profile.selected("https://sub." + TARGET)
     assert not profile.selected("https://" + TARGET + ".example.test")
@@ -49,7 +50,7 @@ def test_config_scope_and_precedence(config, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("setting", [
     {"hosts": ["*.example.test"]}, {"hosts": ["https://shop.example.test"]},
-    {"hosts": [TARGET], "override_disallow_hosts": [OTHER]},
+    {"hosts": [TARGET], "override_disallow_hosts": [dict(APPROVED, host=OTHER)]},
     {"hosts": [TARGET], "user_agent": rp.DESKTOP_UA + " research"},
     {"hosts": [TARGET], "user_agent": rp.DESKTOP_UA + "\r\nX-Test: injected"},
 ])
@@ -147,7 +148,7 @@ def test_override_cannot_follow_to_denied_or_unapproved_host(monkeypatch):
 
 def test_internal_and_host_browser_preflight(monkeypatch, config, tmp_path):
     public_dns(monkeypatch)
-    config({"hosts": [TARGET], "override_disallow_hosts": [TARGET]})
+    config({"hosts": [TARGET], "override_disallow_hosts": [APPROVED]})
     seen = []
     def handler(req):
         seen.append((req.url.path, req.headers["user-agent"]))
@@ -299,7 +300,7 @@ def test_redirected_robots_uses_destination_headers_and_original_scope(monkeypat
 @pytest.mark.parametrize(("code", "expected"), [(401, "needs_auth"), (403, "blocked"), (429, "blocked")])
 def test_disallow_override_does_not_retry_page_access_errors(monkeypatch, config, tmp_path, code, expected):
     public_dns(monkeypatch)
-    config({"hosts": [TARGET], "override_disallow_hosts": [TARGET]})
+    config({"hosts": [TARGET], "override_disallow_hosts": [APPROVED]})
     seen = []
     def handler(req):
         seen.append(req.url.path)
@@ -308,3 +309,16 @@ def test_disallow_override_does_not_retry_page_access_errors(monkeypatch, config
     monkeypatch.setattr(collectors, "_new_http_client", lambda _: client(handler))
     result = collectors.collect(source(f"https://{TARGET}/private"), str(tmp_path), "http")
     assert result.status == expected and seen == ["/robots.txt", "/private"]
+
+
+@pytest.mark.parametrize("entry", [
+    TARGET,  # the format before approvals were required
+    {k: v for k, v in APPROVED.items() if k != "approved_by"},
+    dict(APPROVED, reason=" "),
+    dict(APPROVED, expires="2000-01-01"),
+    dict(APPROVED, expires="next month"),
+])
+def test_robots_override_needs_an_approver_a_reason_and_an_unexpired_date(config, entry):
+    # An exception without them is not applied; robots.txt is honored again.
+    profile = config({"hosts": [TARGET], "override_disallow_hosts": [entry]})
+    assert profile.hosts == {TARGET} and not profile.override_disallow_hosts
